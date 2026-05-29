@@ -1,0 +1,133 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# SZL Receipts MCP server Deployment
+# The server is a lightweight Python FastAPI process that:
+#   1. Accepts POST /receipt with a DSSE-wrapped payload
+#   2. Verifies the HMAC-SHA-256 signature
+#   3. Stores the receipt and streams it to connected dashboard clients via SSE
+#   4. Exposes GET /receipts for batch retrieval and GET /health for probes
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.server.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: szl-receipts-server
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/version: {{ .Chart.AppVersion }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    szl.io/component: receipts-server
+  annotations:
+    szl.io/doc: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/docs/ARCHITECTURE.md"
+spec:
+  replicas: {{ .Values.server.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: szl-receipts-server
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: szl-receipts-server
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/version: {{ .Chart.AppVersion }}
+        szl.io/component: receipts-server
+      annotations:
+        # Force pod restart when configmap changes
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: szl-receipts
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: receipts-server
+          image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag }}"
+          imagePullPolicy: {{ .Values.server.image.pullPolicy }}
+          command:
+            - python3
+            - /app/receipts_server.py
+          ports:
+            - name: http
+              containerPort: {{ .Values.server.port }}
+              protocol: TCP
+          env:
+            - name: SZL_PORT
+              value: "{{ .Values.server.port }}"
+            - name: SZL_LOG_LEVEL
+              value: "{{ .Values.server.logLevel }}"
+            - name: SZL_RECEIPT_STORE
+              value: "/data/receipts"
+            - name: SZL_HMAC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: szl-receipts-hmac
+                  key: hmac-key
+          volumeMounts:
+            - name: app-code
+              mountPath: /app
+            - name: receipt-store
+              mountPath: /data/receipts
+          resources:
+            {{- toYaml .Values.server.resources | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.server.readinessProbe | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.server.livenessProbe | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+      {{- if .Values.dashboard.enabled }}
+        - name: dashboard
+          image: "{{ .Values.dashboard.image.repository }}:{{ .Values.dashboard.image.tag }}"
+          imagePullPolicy: {{ .Values.dashboard.image.pullPolicy }}
+          ports:
+            - name: dashboard
+              containerPort: {{ .Values.dashboard.port }}
+              protocol: TCP
+          volumeMounts:
+            - name: dashboard-html
+              mountPath: /usr/share/nginx/html
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: nginx-tmp
+              mountPath: /tmp
+          resources:
+            {{- toYaml .Values.dashboard.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+      {{- end }}
+      volumes:
+        - name: app-code
+          configMap:
+            name: szl-receipts-server-code
+            defaultMode: 0755
+        - name: receipt-store
+          emptyDir: {}
+        {{- if .Values.dashboard.enabled }}
+        - name: dashboard-html
+          configMap:
+            name: szl-receipts-dashboard-html
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: nginx-tmp
+          emptyDir: {}
+        {{- end }}
+      terminationGracePeriodSeconds: 30

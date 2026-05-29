@@ -1,0 +1,58 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: szl-receipts-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: szl-receipts-server
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    szl.io/component: receipts-server
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app.kubernetes.io/name: szl-receipts-server
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: http
+      port: {{ .Values.service.serverPort }}
+      targetPort: http
+      protocol: TCP
+    {{- if .Values.dashboard.enabled }}
+    - name: dashboard
+      port: {{ .Values.service.dashboardPort }}
+      targetPort: dashboard
+      protocol: TCP
+    {{- end }}
+---
+# ServiceAccount for the szl-receipts pods
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: szl-receipts
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: szl-receipts-server
+    app.kubernetes.io/instance: {{ .Release.Name }}
+---
+# HMAC key secret — in production, inject from sealed secrets or UDS secret store
+# The default key here is a demo key only. Replace for any non-demo deployment.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: szl-receipts-hmac
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: szl-receipts-server
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    szl.io/secret-type: hmac-signing-key
+  annotations:
+    szl.io/rotate-before: "2026-12-31"
+    szl.io/key-type: "HMAC-SHA-256 demo key — replace for production"
+type: Opaque
+data:
+  # Base64("szl-dev-demo-key-2026-warhacker") — DEMO ONLY
+  hmac-key: {{ .Values.server.hmacKey | b64enc | quote }}

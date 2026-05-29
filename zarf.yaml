@@ -1,0 +1,112 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# SZL Receipts — UDS Zarf Package
+#
+# This package ships the SZL governance receipt emitter as a UDS add-on.
+# It is NOT a fork or repackage of uds-core. It runs as a separate workload
+# that communicates with the cluster over the network only. No AGPL code
+# is included or modified.
+#
+# This is NOT:
+#   - A replacement for uds-core security policies
+#   - A certified DoD package (Phase 2 intent)
+#   - A production-hardened system (demo-grade, cosign signing is Phase 2)
+#
+# References:
+#   Zarf schema: https://docs.zarf.dev/ref/zarf-package/
+#   UDS add-on pattern: https://github.com/defenseunicorns/uds-core
+
+kind: ZarfPackageConfig
+metadata:
+  name: szl-receipts
+  description: "SZL Governance Receipts — DSSE-wrapped audit receipts emitted from live Kubernetes workloads"
+  version: "0.1.0"
+  url: "https://szlholdings.com"
+  authors: "Stephen Paul Lutar JR <stephen@szlholdings.com>"
+  documentation: "https://github.com/szl-holdings/szl-uds-deployment"
+  # NOTE: cosign signing is Phase 2. When a cosign key is available, sign with:
+  #   zarf package publish szl-receipts.tar.zst oci://ghcr.io/szl-holdings --signing-key cosign.key
+
+variables:
+  - name: DOMAIN
+    description: "Cluster domain (must match UDS Core DOMAIN variable)"
+    default: "uds.dev"
+
+  - name: RECEIPT_HMAC_KEY
+    description: "HMAC-SHA-256 key for signing receipts (base64-encoded, 32+ bytes)"
+    default: "c3psLWRldi1kZW1vLWtleS0yMDI2LXdhcmhhY2tlcg=="
+    sensitive: true
+
+  - name: RECEIPTS_REPLICAS
+    description: "Number of szl-receipts-server replicas"
+    default: "1"
+
+  - name: LOG_LEVEL
+    description: "Log level for szl-receipts-server"
+    default: "info"
+
+components:
+  - name: szl-receipts-namespace
+    required: true
+    description: "Create the szl-receipts namespace with required labels"
+    manifests:
+      - name: szl-namespace
+        namespace: szl-receipts
+        files:
+          - manifests/namespace.yaml
+
+  - name: szl-receipts-server
+    required: true
+    description: "Deploy the SZL receipts MCP server and dashboard"
+    only:
+      flavor: upstream
+    charts:
+      - name: szl-receipts
+        namespace: szl-receipts
+        version: 0.1.0
+        localPath: charts/szl-receipts
+        valuesFiles:
+          - charts/szl-receipts/values.yaml
+    images:
+      # MCP receipts server — uses python:3.12-slim (air-gap bundled)
+      - docker.io/library/python:3.12-slim
+      # NGINX for the dashboard UI
+      - docker.io/library/nginx:1.27-alpine
+    actions:
+      onDeploy:
+        after:
+          - description: "Wait for szl-receipts-server to be ready"
+            maxTotalSeconds: 120
+            wait:
+              cluster:
+                kind: Deployment
+                name: szl-receipts-server
+                namespace: szl-receipts
+                condition: Available
+
+  - name: szl-receipts-pepr-policy
+    required: false
+    description: "Deploy the SZL Pepr policy that annotates Deployments/Jobs with receipt IDs"
+    import:
+      name: szl-receipt-policy
+      path: dist/pepr
+    actions:
+      onDeploy:
+        after:
+          - description: "Verify Pepr policy is loaded"
+            cmd: |
+              ./zarf tools kubectl get mutatingwebhookconfigurations.admissionregistration.k8s.io \
+                -l pepr.dev/controller=szl-receipts 2>/dev/null || \
+                echo "WARN: Pepr webhook not yet visible — may take up to 30s"
+
+  - name: szl-ui-dashboard
+    required: false
+    description: "NGINX-served SZL anatomy demo UI"
+    charts:
+      - name: szl-ui-dashboard
+        namespace: szl-receipts
+        version: 0.1.0
+        localPath: ui/chart
+    images:
+      - docker.io/library/nginx:1.27-alpine

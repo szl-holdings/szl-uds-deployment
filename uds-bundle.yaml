@@ -1,0 +1,74 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# SZL UDS Bundle — Warhacker Demo
+#
+# This bundle layers the SZL Receipts add-on on top of a minimal UDS Core
+# k3d development cluster. It is designed to run on a laptop in a k3d cluster.
+#
+# Prerequisites (installed by uds run install-deps):
+#   - uds CLI: https://github.com/defenseunicorns/uds-cli/releases
+#   - zarf CLI: https://github.com/zarf-dev/zarf/releases
+#   - k3d: https://k3d.io
+#   - Docker (for k3d)
+#
+# Deploy with:
+#   uds run start
+#
+# References:
+#   UDS Bundle schema: https://github.com/defenseunicorns/uds-cli
+#   k3d-standard bundle: https://github.com/defenseunicorns/uds-core/tree/main/bundles/k3d-standard
+
+kind: UDSBundle
+metadata:
+  name: szl-warhacker-demo
+  description: "SZL governance receipts running on a UDS Core k3d cluster — Warhacker 2026 demo"
+  version: "0.1.0"
+  authors: "Stephen Paul Lutar JR <stephen@szlholdings.com>"
+
+packages:
+  # ── Layer 1: k3d dev stack (k3d cluster bootstrap + registry + minio) ──────
+  - name: uds-k3d-dev
+    repository: ghcr.io/defenseunicorns/packages/uds-k3d
+    ref: 0.11.0
+
+  # ── Layer 2: Zarf init (internal registry + agent) ────────────────────────
+  - name: init
+    repository: ghcr.io/zarf-dev/packages/init
+    ref: v0.43.0
+
+  # ── Layer 3: UDS Core slim-dev (istio + pepr + keycloak lite) ─────────────
+  # NOTE: For a full demo with auth, swap ref to a release and add overrides.
+  # For Warhacker: slim-dev is sufficient to show UDS network policies + Pepr.
+  - name: core
+    repository: ghcr.io/defenseunicorns/packages/uds/core
+    ref: 0.27.3-slim-dev
+    optionalComponents:
+      - metrics-server
+
+  # ── Layer 4: SZL Receipts add-on ──────────────────────────────────────────
+  - name: szl-receipts
+    path: ./
+    ref: 0.1.0
+    overrides:
+      szl-receipts-server:
+        szl-receipts:
+          variables:
+            - name: DOMAIN
+              description: "Cluster domain"
+              path: global.domain
+              default: "uds.dev"
+            - name: RECEIPT_HMAC_KEY
+              description: "HMAC-SHA-256 signing key (base64)"
+              path: server.hmacKey
+            - name: RECEIPTS_REPLICAS
+              description: "Replica count"
+              path: server.replicas
+              default: "1"
+          values:
+            - path: server.logLevel
+              value: info
+            - path: ingress.enabled
+              value: true
+            - path: ingress.host
+              value: "szl.uds.dev"

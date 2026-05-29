@@ -1,0 +1,126 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# Default values for szl-receipts Helm chart.
+# These are overridden by uds-bundle.yaml variable bindings.
+
+global:
+  domain: "uds.dev"
+
+# ── MCP Receipts Server ───────────────────────────────────────────────────────
+server:
+  name: szl-receipts-server
+  image:
+    repository: docker.io/library/python
+    tag: "3.12-slim"
+    pullPolicy: IfNotPresent
+
+  replicas: 1
+
+  # HMAC-SHA-256 key for signing receipts (base64-encoded, 32 bytes minimum)
+  # Override via UDS bundle variable RECEIPT_HMAC_KEY or a Kubernetes Secret.
+  # In production, inject from a sealed secret or UDS secret store.
+  hmacKey: "c3psLWRldi1kZW1vLWtleS0yMDI2LXdhcmhhY2tlcg=="
+
+  logLevel: "info"
+
+  # Port the receipts server listens on inside the pod
+  port: 8443
+
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+
+  # Environment variables injected into the server pod
+  env:
+    - name: SZL_LOG_LEVEL
+      value: "info"
+    - name: SZL_RECEIPT_STORE
+      value: "/data/receipts"
+    - name: SZL_HMAC_KEY
+      valueFrom:
+        secretKeyRef:
+          name: szl-receipts-hmac
+          key: hmac-key
+
+  # Volume for persisting receipts across pod restarts (demo: emptyDir)
+  persistence:
+    enabled: false
+    size: "1Gi"
+    storageClass: ""
+
+  # Readiness probe
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8443
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8443
+    initialDelaySeconds: 15
+    periodSeconds: 30
+
+# ── Dashboard UI (NGINX) ──────────────────────────────────────────────────────
+dashboard:
+  enabled: true
+  name: szl-dashboard
+  image:
+    repository: docker.io/library/nginx
+    tag: "1.27-alpine"
+    pullPolicy: IfNotPresent
+
+  replicas: 1
+
+  port: 80
+
+  resources:
+    requests:
+      cpu: "10m"
+      memory: "32Mi"
+    limits:
+      cpu: "100m"
+      memory: "64Mi"
+
+# ── Service ───────────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP
+  serverPort: 8443
+  dashboardPort: 80
+
+# ── Ingress (UDS VirtualService via Istio) ────────────────────────────────────
+ingress:
+  enabled: true
+  # Host accessed via the UDS tenant gateway
+  host: "szl.uds.dev"
+  # UDS uses Istio VirtualService; standard Ingress is provided as a fallback
+  # for non-Istio clusters.
+  gateway: "istio-tenant-gateway/tenant"
+
+# ── Network Policy (UDS Package CRD) ─────────────────────────────────────────
+# uds-core uses Package CRDs to generate Istio AuthorizationPolicies and
+# K8s NetworkPolicies. This exposes the ports uds-core needs to allow.
+networkPolicy:
+  enabled: true
+  # Allow ingress from the Pepr policy webhook (to POST receipts)
+  allowFromPepr: true
+  # Allow egress to the K8s API server (for Pepr to annotate resources)
+  allowToAPIServer: true
+
+# ── UDS Package custom resource ───────────────────────────────────────────────
+# Deployed alongside the chart so uds-core network policies apply correctly.
+udsPackage:
+  enabled: true
+  monitor:
+    - portName: http-metrics
+      selector:
+        app.kubernetes.io/name: szl-receipts-server
+      targetPort: 8443
+      description: "SZL Receipts server metrics endpoint"

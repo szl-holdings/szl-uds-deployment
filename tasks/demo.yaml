@@ -1,0 +1,32 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# Demo task definitions — called via `uds run demo:<task>`
+
+tasks:
+  - name: workload
+    description: "Apply a sample agentic workload that triggers SZL receipt emission"
+    actions:
+      - description: "Apply demo workload manifest"
+        cmd: |
+          kubectl apply -f scripts/demo_workload.yaml
+          echo "Workload applied — watch the receipts dashboard for a new receipt."
+          echo "Receipt will appear within ~5 seconds."
+
+      - description: "Show pod status"
+        cmd: |
+          kubectl get pods -n szl-demo-workload --watch --request-timeout=30s || true
+
+  - name: verify
+    description: "Post-demo: pull and verify the receipt chain from the cluster"
+    actions:
+      - description: "Run receipt verification script"
+        cmd: bash scripts/verify_receipts.sh
+
+  - name: reset
+    description: "Delete the demo workload namespace to reset the receipt feed"
+    actions:
+      - description: "Delete demo workload namespace"
+        cmd: |
+          kubectl delete namespace szl-demo-workload --ignore-not-found
+          echo "Demo workload reset. Run 'uds run demo:workload' to re-apply."
