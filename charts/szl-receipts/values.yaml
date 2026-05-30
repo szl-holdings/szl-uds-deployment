@@ -20,7 +20,7 @@ server:
   # HMAC-SHA-256 key for signing receipts (base64-encoded, 32 bytes minimum)
   # Override via UDS bundle variable RECEIPT_HMAC_KEY or a Kubernetes Secret.
   # In production, inject from a sealed secret or UDS secret store.
-  hmacKey: "c3psLWRldi1kZW1vLWtleS0yMDI2LXdhcmhhY2tlcg=="
+  hmacKey: "szl-dev-demo-key-2026-warhacker"  # raw string; chart template applies b64enc once
 
   logLevel: "info"
 

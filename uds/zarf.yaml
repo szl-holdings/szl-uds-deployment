@@ -76,7 +76,7 @@ variables:
     default: "1"
 
   - name: VESSELS_IMO_SANCTIONS_URL
-    description: "Upstream OFAC/UN sanctions feed URL"
+    description: "Upstream OFAC/UN sanctions feed URL. Set to empty string in airgap: --set VESSELS_IMO_SANCTIONS_URL=. Airgap-safe mode warns and skips if empty. See docs/AIRGAP.md"
     default: "https://sanctionslist.ofac.treas.gov/Home/SdnList"
 
   - name: RECEIPT_HMAC_KEY

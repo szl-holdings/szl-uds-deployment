@@ -2,60 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # UDS uses Istio VirtualService + Gateway for ingress (not standard K8s Ingress).
-# This template emits:
-#   1. A UDS Package CR so uds-core generates the correct AuthorizationPolicy
-#   2. A standard K8s Ingress as a fallback for non-Istio clusters
+# This template emits a standard K8s Ingress as a fallback for non-Istio clusters.
+# The UDS Package CR (expose/allow blocks) has been consolidated into uds-package.yaml.
 #
 # Reference: https://github.com/defenseunicorns/uds-core/blob/main/docs/uds-core-concepts.md
-
-{{- if .Values.ingress.enabled }}
----
-# UDS Package CR — tells uds-core to expose this service via the tenant gateway
-# and generate the appropriate Istio VirtualService + AuthorizationPolicy.
-# See: https://github.com/defenseunicorns/uds-core/tree/main/src/pepr/operator
-apiVersion: uds.dev/v1alpha1
-kind: Package
-metadata:
-  name: szl-receipts
-  namespace: {{ .Release.Namespace }}
-  labels:
-    app.kubernetes.io/name: szl-receipts
-    app.kubernetes.io/instance: {{ .Release.Name }}
-spec:
-  network:
-    expose:
-      # Dashboard UI
-      - service: szl-receipts-server
-        selector:
-          app.kubernetes.io/name: szl-receipts-server
-        host: {{ .Values.ingress.host | quote }}
-        gateway: tenant
-        port: {{ .Values.service.dashboardPort }}
-        targetPort: {{ .Values.dashboard.port }}
-        description: "SZL Receipts Dashboard"
-      # Receipts API (for Pepr policy POST calls within cluster)
-      - service: szl-receipts-server
-        selector:
-          app.kubernetes.io/name: szl-receipts-server
-        host: {{ printf "api.%s" .Values.ingress.host | quote }}
-        gateway: admin
-        port: {{ .Values.service.serverPort }}
-        targetPort: {{ .Values.server.port }}
-        description: "SZL Receipts API"
-    allow:
-      # Allow ingress from pepr-system (the Pepr admission webhook posts receipts)
-      - direction: Ingress
-        remoteNamespace: pepr-system
-        remoteSelector:
-          app.kubernetes.io/name: pepr-admission
-        port: {{ .Values.server.port }}
-        description: "Allow Pepr webhook to POST receipts"
-      # Allow egress to nowhere (receipts server doesn't need external access)
-      - direction: Egress
-        remoteNamespace: monitoring
-        port: 9090
-        description: "Allow Prometheus scrape"
-{{- end }}
 
 {{- if .Values.udsPackage.enabled }}
 ---

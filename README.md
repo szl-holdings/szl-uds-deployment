@@ -114,3 +114,19 @@ See [LICENSE](LICENSE) for full text.
 
 Stephen Paul Lutar JR — stephen@szlholdings.com  
 [SZL Holdings](https://szlholdings.com)
+
+## Optional Components
+
+The following components are marked `required: false` in `zarf.yaml` and are **skipped on default install**:
+
+- **`szl-receipts-pepr-policy`** — requires building the Pepr policy first:
+  ```bash
+  cd pepr && pnpm install && pnpm build
+  # Produces dist/pepr/ which is imported by zarf.yaml
+  ```
+  To deploy with Pepr: `zarf package deploy <pkg> --components=szl-receipts-namespace,szl-receipts-server,szl-receipts-pepr-policy`
+
+- **`szl-ui-dashboard`** — requires the `ui/chart` Helm chart directory (Phase 2 deliverable).
+  To deploy once available: `zarf package deploy <pkg> --components=szl-receipts-namespace,szl-receipts-server,szl-ui-dashboard`
+
+The default deploy (all `required: true` components only) installs namespace + server.

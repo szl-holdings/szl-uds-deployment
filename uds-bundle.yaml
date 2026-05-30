@@ -39,7 +39,7 @@ packages:
   # ── Layer 1: Zarf init — internal registry + agent ──────────────────────────
   - name: init
     repository: ghcr.io/defenseunicorns/packages/init
-    ref: v0.40.0
+    ref: v0.77.0
 
   # ── Layer 2: UDS Core slim-dev — Istio + Pepr + Keycloak lite ───────────────
   # slim-dev includes: istiod, istio-gateway, keycloak (no HA), pepr, prometheus

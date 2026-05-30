@@ -1,0 +1,117 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# Test workflow — szl-uds-deployment
+# Runs helm lint, yamllint, and kubectl dry-run validation on PRs and pushes.
+# When a full cluster is available (test-install / test-upgrade), those are gated here too.
+#
+# References:
+#   UDS Testing Guidelines: https://github.com/defenseunicorns/uds-common/blob/main/docs/uds-packages/guidelines/testing-guidelines.md
+#   Requirement R18: no CI test workflow in v0.3.1
+
+name: Test
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Static validation (always runs — no cluster needed) ──────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yamllint
+        run: pip install yamllint
+
+      - name: yamllint — all YAML
+        run: |
+          yamllint -d '{
+            extends: default,
+            rules: {
+              line-length: {max: 200},
+              document-start: disable,
+              truthy: disable
+            }
+          }' $(find . -name "*.yaml" -o -name "*.yml" \
+            | grep -v "node_modules" \
+            | grep -v ".git") 2>&1
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: helm lint — charts/szl-receipts
+        run: helm lint charts/szl-receipts/ --strict 2>&1
+
+      - name: helm template — dry run render
+        run: helm template test-release charts/szl-receipts/ > /dev/null && echo "helm template OK"
+
+      - name: kubectl dry-run — kustomize manifests
+        run: |
+          # Install kubectl
+          curl -sLO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+          # Dry-run all base manifests
+          kubectl apply --dry-run=client -f kustomize/base/ 2>&1 && echo "kubectl dry-run OK"
+
+  # ── Full install test (requires cluster — manual dispatch or scheduled) ────
+  test-install:
+    name: Test Install
+    runs-on: ubuntu-24.04
+    # Only run on workflow_dispatch to avoid burning runner minutes on every PR
+    # until the full UDS stack is stable. Remove 'if' to enable on all PRs.
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install UDS CLI
+        uses: defenseunicorns/setup-uds@v1
+        with:
+          version: v0.16.0
+
+      - name: Install Zarf
+        run: |
+          curl -sL "https://github.com/zarf-dev/zarf/releases/download/v0.77.0/zarf_v0.77.0_Linux_amd64" \
+            -o /usr/local/bin/zarf && chmod +x /usr/local/bin/zarf
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+      - name: Run test-install
+        run: uds run test-install
+
+  # ── Upgrade test (requires cluster — manual dispatch only) ────────────────
+  test-upgrade:
+    name: Test Upgrade
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install UDS CLI
+        uses: defenseunicorns/setup-uds@v1
+        with:
+          version: v0.16.0
+
+      - name: Install Zarf
+        run: |
+          curl -sL "https://github.com/zarf-dev/zarf/releases/download/v0.77.0/zarf_v0.77.0_Linux_amd64" \
+            -o /usr/local/bin/zarf && chmod +x /usr/local/bin/zarf
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+      - name: Run test-upgrade
+        run: uds run test-upgrade
