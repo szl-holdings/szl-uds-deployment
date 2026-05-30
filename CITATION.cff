@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "szl-uds-deployment"
+abstract: "SZL Governance Receipts — UDS running deployment (Warhacker 2026): k3d + uds-cli + Pepr DSSE receipt policy"
+authors:
+  - family-names: "Lutar"
+    given-names: "Stephen P."
+    orcid: "https://orcid.org/0009-0001-0110-4173"
+repository-code: "https://github.com/szl-holdings/szl-uds-deployment"
+url: "https://github.com/szl-holdings/szl-uds-deployment"
+license: MIT
+version: "0.3.2"
+date-released: "2026-05-30"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.20434276"
+keywords:
+  - "uds"
+  - "kubernetes"
+  - "governance"
+  - "receipts"
+  - "szl-holdings"
+  - "pepr"
+  - "dsse"
