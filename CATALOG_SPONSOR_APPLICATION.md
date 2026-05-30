@@ -20,8 +20,8 @@ air-gapped clusters.
 | Component | What it does | Source |
 |---|---|---|
 | `vessels` (`ghcr.io/szl-holdings/vessels:0.4.0`) | UDS substrate runtime; container that emits COSE_Sign1 receipts | [vessels](https://github.com/szl-holdings/vessels) |
-| `a11oy-policy-gates` | 40 anchor formula gates (G1–G40); rejects calls below 9-axis conjunctive AND | [a11oy](https://github.com/szl-holdings/a11oy) |
-| `lutar-lean-kernel` | Lean 4 proof kernel; 217 declarations, 12 axioms, 5+134 tracked sorries | [lutar-lean](https://github.com/szl-holdings/lutar-lean) |
+| `a11oy-policy-gates` | 44 anchor formula gates; rejects calls below 9-axis conjunctive AND | [a11oy](https://github.com/szl-holdings/a11oy) |
+| `lutar-lean-kernel` | Lean 4 proof kernel; 626 declarations, 15 axioms (14 unique), 189 sorries (138 baseline + 51 Putnam) | [lutar-lean](https://github.com/szl-holdings/lutar-lean) |
 | `mcp-receipts-server` | 17 MCP tools, COSE_Sign1 dual-witness receipts | [HF Space](https://huggingface.co/spaces/SZLHOLDINGS/mcp-receipts-server) |
 | `vsp-otel-emitter` | OpenTelemetry spans with receipt anchoring | [vsp-otel](https://github.com/szl-holdings/vsp-otel) |
 
