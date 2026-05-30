@@ -44,7 +44,7 @@ const HMAC_KEY_B64 = process.env.SZL_HMAC_KEY ?? "";
 /** URL of the in-cluster SZL receipts server. */
 const RECEIPTS_URL =
   process.env.SZL_RECEIPTS_URL ??
-  "http://szl-receipts-server.szl-receipts.svc.cluster.local:8443/receipt";
+  "http://szl-receipts-server.szl-receipts.svc.cluster.local:8080/receipt";
 
 /** Key ID embedded in the DSSE signature block. */
 const KEY_ID = process.env.SZL_KEY_ID ?? "szl-dev-hmac-sha256-2026";

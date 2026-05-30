@@ -58,8 +58,8 @@ spec:
           app: szl-receipts-server
         gateway: tenant
         host: receipts
-        port: 8443
-        targetPort: 8443
+        port: 8080
+        targetPort: 8080
         description: "SZL Receipts server — tenant gateway"
 
     allow:
@@ -90,7 +90,7 @@ spec:
         remoteNamespace: pepr-system
         remoteSelector:
           app: pepr-szl
-        port: 8443
+        port: 8080
         description: "Pepr webhook — POST /receipt"
 
   # ── Monitor — Prometheus scrape config (managed by uds-core) ──────────────
@@ -98,6 +98,6 @@ spec:
     - portName: http
       selector:
         app: szl-receipts-server
-      targetPort: 8443
+      targetPort: 8080
       path: /metrics
       description: "SZL Receipts Prometheus metrics"

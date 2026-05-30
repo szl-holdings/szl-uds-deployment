@@ -1,10 +1,15 @@
 # Copyright 2026 SZL Holdings
 # SPDX-License-Identifier: Apache-2.0
 #
-# ConfigMap carrying the receipts server Python source and the dashboard HTML.
-# This avoids building a custom container image for the demo, which is not
-# practical without a registry in an air-gap environment. In production,
-# build a proper OCI image and reference it in values.yaml.
+# ConfigMap carrying the dashboard HTML.
+#
+# DEPRECATED (v0.3.1): the receipts_server.py block below is NO LONGER MOUNTED.
+# The server now ships as the OCI image built from
+# services/szl-receipts-server/Dockerfile (see charts values.server.image).
+# The inline source is retained for reference/diffing only and will be removed
+# in a follow-up PR. The canonical, maintained source is server.py in that
+# service directory (Ed25519 signing, canonical DSSE PAE, chain rehydration,
+# OTLP spans). Only szl-receipts-dashboard-html is consumed by the Deployment.
 
 ---
 apiVersion: v1
@@ -31,7 +36,7 @@ data:
     from http.server import HTTPServer, BaseHTTPRequestHandler
     from urllib.parse import urlparse
 
-    PORT       = int(os.environ.get("SZL_PORT", 8443))
+    PORT       = int(os.environ.get("SZL_PORT", 8080))
     HMAC_KEY   = base64.b64decode(os.environ.get("SZL_HMAC_KEY", ""))
     STORE_PATH = os.environ.get("SZL_RECEIPT_STORE", "/tmp/receipts")
     LOG_LEVEL  = os.environ.get("SZL_LOG_LEVEL", "info")
@@ -276,7 +281,7 @@ data:
         }
 
         // Connect SSE
-        const apiBase = window.location.origin.replace(/:\d+/, ':8443');
+        const apiBase = window.location.origin.replace(/:\d+/, ':8080');
         const es = new EventSource(apiBase + '/stream');
         es.onmessage = e => { try { addReceipt(JSON.parse(e.data)); } catch(_){} };
         es.onerror   = () => console.warn('SSE disconnected — retrying…');

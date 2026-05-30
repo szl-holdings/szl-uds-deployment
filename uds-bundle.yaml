@@ -57,10 +57,11 @@ packages:
 
   # ── Layer 3: SZL Receipts add-on ────────────────────────────────────────────
   # path: local Zarf package built from this directory.
-  # STAGED FA-001: The szl-receipts-server component image references
-  #   ghcr.io/szl-holdings/vessels:uds-v0.3.0 in production.
-  #   Until founder action FA-001 (image push) completes, the bundle uses
-  #   docker.io/library/python:3.12-slim as the base image.
+  # v0.3.1: szl-receipts-server now uses the built OCI image
+  #   ghcr.io/szl-holdings/szl-receipts-server:uds-v0.3.1
+  #   (built from services/szl-receipts-server/Dockerfile). Pushing that image
+  #   to GHCR + cosign-signing it ships in a follow-up PR; until then the
+  #   bundle references it by tag (imagePullPolicy IfNotPresent).
   - name: szl-receipts
     path: ./packages/szl-receipts
     ref: 0.3.1
@@ -72,10 +73,9 @@ packages:
               description: "Cluster domain (must match UDS Core DOMAIN)"
               path: global.domain
               default: "uds.dev"
-            - name: RECEIPT_HMAC_KEY
-              description: "HMAC-SHA-256 signing key (base64-encoded, 32+ bytes)"
-              path: server.hmacKey
-              sensitive: true
+            # RECEIPT_HMAC_KEY override REMOVED (v0.3.1, PhD Crypto Finding A2).
+            # Signing uses an operator-provisioned Ed25519 Secret
+            # (szl-receipts-ed25519); no signing key flows through the bundle.
             - name: RECEIPTS_REPLICAS
               description: "Receipt server replica count"
               path: server.replicas

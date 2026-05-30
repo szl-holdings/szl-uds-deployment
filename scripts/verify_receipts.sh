@@ -31,8 +31,8 @@ HMAC_KEY_B64="${SZL_HMAC_KEY:-c3psLWRldi1kZW1vLWtleS0yMDI2LXdhcmhhY2tlcg==}"
 
 # ── Step 1: Port-forward ──────────────────────────────────────────────────────
 echo "── SZL Receipt Verification ────────────────────────────────────────"
-echo "Port-forwarding ${SVC}:8443 → localhost:${LOCAL_PORT}…"
-kubectl port-forward "svc/${SVC}" "${LOCAL_PORT}:8443" -n "${NAMESPACE}" &
+echo "Port-forwarding ${SVC}:8080 → localhost:${LOCAL_PORT}…"
+kubectl port-forward "svc/${SVC}" "${LOCAL_PORT}:8080" -n "${NAMESPACE}" &
 PF_PID=$!
 trap 'kill $PF_PID 2>/dev/null; echo "Port-forward stopped."' EXIT
 sleep 2

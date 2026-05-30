@@ -10,22 +10,20 @@ global:
 # ── MCP Receipts Server ───────────────────────────────────────────────────────
 server:
   name: szl-receipts-server
+  # OCI image built from services/szl-receipts-server/Dockerfile (v0.3.1).
+  # Replaces the prior ConfigMap-mounted source on stock python:3.12-slim.
   image:
-    repository: docker.io/library/python
-    tag: "3.12-slim"
+    repository: ghcr.io/szl-holdings/szl-receipts-server
+    tag: "uds-v0.3.1"
     pullPolicy: IfNotPresent
 
   replicas: 1
 
-  # HMAC-SHA-256 key for signing receipts (base64-encoded, 32 bytes minimum)
-  # Override via UDS bundle variable RECEIPT_HMAC_KEY or a Kubernetes Secret.
-  # In production, inject from a sealed secret or UDS secret store.
-  hmacKey: "szl-dev-demo-key-2026-warhacker"  # raw string; chart template applies b64enc once
-
   logLevel: "info"
 
-  # Port the receipts server listens on inside the pod
-  port: 8443
+  # Port the receipts server listens on inside the pod.
+  # The OCI image defaults to 8080; the chart sets it explicitly.
+  port: 8080
 
   resources:
     requests:
@@ -35,38 +33,56 @@ server:
       cpu: "500m"
       memory: "256Mi"
 
-  # Environment variables injected into the server pod
-  env:
-    - name: SZL_LOG_LEVEL
-      value: "info"
-    - name: SZL_RECEIPT_STORE
-      value: "/data/receipts"
-    - name: SZL_HMAC_KEY
-      valueFrom:
-        secretKeyRef:
-          name: szl-receipts-hmac
-          key: hmac-key
-
-  # Volume for persisting receipts across pod restarts (demo: emptyDir)
+  # Volume for persisting receipts across pod restarts.
+  # v0.3.1: PVC-backed by default so the receipt chain survives reschedule.
   persistence:
-    enabled: false
-    size: "1Gi"
+    enabled: true
+    size: "5Gi"
+    # Empty string = use the cluster's default StorageClass.
     storageClass: ""
+    # Mount path; matches the server's SZL_RECEIPT_STORE.
+    mountPath: "/data/receipts"
 
   # Readiness probe
   readinessProbe:
     httpGet:
-      path: /health
-      port: 8443
+      path: /healthz
+      port: 8080
     initialDelaySeconds: 5
     periodSeconds: 10
 
   livenessProbe:
     httpGet:
-      path: /health
-      port: 8443
+      path: /healthz
+      port: 8080
     initialDelaySeconds: 15
     periodSeconds: 30
+
+# ── Receipt signing (Ed25519) ─────────────────────────────────────────────────
+# The HMAC-SHA-256 demo key was REMOVED in v0.3.1 (PhD Crypto Finding A2).
+# Receipts are signed with an Ed25519 key the operator provisions out-of-band.
+# This chart bakes NO key material. See templates/secret-keypair.yaml.
+signing:
+  keypair:
+    # Name of the pre-provisioned Secret holding the PEM key file `ed25519.pem`.
+    # Create it BEFORE helm install:
+    #   kubectl create secret generic szl-receipts-ed25519 \
+    #     --from-file=ed25519.pem=ed25519.pem
+    secretName: szl-receipts-ed25519
+    # File name inside the Secret and the in-pod mount path.
+    keyFile: ed25519.pem
+    mountPath: /run/secrets/szl-receipts
+  # Stable identifier surfaced in DSSE signatures[].keyid.
+  keyId: szl-receipts-ed25519-2026
+
+# ── OpenTelemetry (real OTLP/gRPC exporter) ───────────────────────────────────
+# PhD Systems Scope 9 fix: the server now links the OTel SDK and exports spans.
+# The uds-package.yaml egress allow-rule already permits monitoring/
+# opentelemetry-collector:4317. On by default; set endpoint to "" to disable.
+otel:
+  enabled: true
+  endpoint: "http://opentelemetry-collector.monitoring.svc.cluster.local:4317"
+  serviceName: "szl-receipts-server"
 
 # ── Dashboard UI (NGINX) ──────────────────────────────────────────────────────
 dashboard:
@@ -92,7 +108,7 @@ dashboard:
 # ── Service ───────────────────────────────────────────────────────────────────
 service:
   type: ClusterIP
-  serverPort: 8443
+  serverPort: 8080
   dashboardPort: 80
 
 # ── Ingress (UDS VirtualService via Istio) ────────────────────────────────────
@@ -122,5 +138,5 @@ udsPackage:
     - portName: http-metrics
       selector:
         app.kubernetes.io/name: szl-receipts-server
-      targetPort: 8443
+      targetPort: 8080
       description: "SZL Receipts server metrics endpoint"
