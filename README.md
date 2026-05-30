@@ -1,3 +1,11 @@
+> **STAGED-ADVISORY (2026-05-30 — Doctrine v6):** UDS catalog-grade delivery is BLOCKED pending:
+> 1. **Founder action:** Push `ghcr.io/szl-holdings/vessels:0.3.1` to GHCR (requires org GHCR auth chain — cannot be done by agent)
+> 2. **Signed assets:** Attach `vessels-uds-0.3.1.tar.zst` + `.sig` + `.sha256` + `vessels-uds-dev.pub` to vessels release `uds-v0.3.1`
+> 3. **CI gate:** `scripts/verify_signed_assets.sh` must pass green before any PR may claim catalog-grade
+>
+> Current state: vessels `uds-v0.3.0` has **zero binary release assets**. `uds-v0.3.1` tag does not exist.
+> Catalog readiness scorecard: [SZLHOLDINGS/uds-governance-receipts — UDS_CATALOG_READINESS_2026-05-30.md](https://huggingface.co/datasets/SZLHOLDINGS/uds-governance-receipts/blob/main/UDS_CATALOG_READINESS_2026-05-30.md)
+
 # szl-uds-deployment
 
 **SZL Governance Receipts — UDS Running Deployment**
