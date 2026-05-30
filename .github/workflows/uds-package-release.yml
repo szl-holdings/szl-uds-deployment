@@ -60,7 +60,7 @@ jobs:
     outputs:
       # Passed to the publish job
       package_amd64: ${{ steps.names.outputs.package_amd64 }}
-      package_arm64:  ${{ steps.names.outputs.package_arm64 }}
+      package_arm64: ${{ steps.names.outputs.package_arm64 }}
 
     steps:
       # ── Checkout ──────────────────────────────────────────────────────────
