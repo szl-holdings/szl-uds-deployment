@@ -37,22 +37,7 @@ metadata:
   labels:
     app.kubernetes.io/name: szl-receipts-server
     app.kubernetes.io/instance: {{ .Release.Name }}
----
-# HMAC key secret — in production, inject from sealed secrets or UDS secret store
-# The default key here is a demo key only. Replace for any non-demo deployment.
-apiVersion: v1
-kind: Secret
-metadata:
-  name: szl-receipts-hmac
-  namespace: {{ .Release.Namespace }}
-  labels:
-    app.kubernetes.io/name: szl-receipts-server
-    app.kubernetes.io/instance: {{ .Release.Name }}
-    szl.io/secret-type: hmac-signing-key
-  annotations:
-    szl.io/rotate-before: "2026-12-31"
-    szl.io/key-type: "HMAC-SHA-256 demo key — replace for production"
-type: Opaque
-data:
-  # Base64("szl-dev-demo-key-2026-warhacker") — DEMO ONLY
-  hmac-key: {{ .Values.server.hmacKey | b64enc | quote }}
+# NOTE (v0.3.1): the baked HMAC-SHA-256 demo Secret was REMOVED here
+# (PhD Crypto Finding A2). Signing now uses an Ed25519 key the operator
+# provisions out-of-band as the Secret named in .Values.signing.keypair.secretName.
+# This chart bakes no key material. See templates/secret-keypair.yaml.

@@ -19,7 +19,7 @@
 set -euo pipefail
 
 NAMESPACE="szl-demo-workload"
-SERVER="szl-receipts-server.szl-receipts.svc.cluster.local:8443"
+SERVER="szl-receipts-server.szl-receipts.svc.cluster.local:8080"
 
 echo "──────────────────────────────────────────────────────"
 echo " SZL Warhacker Demo — Applying sample workloads"
@@ -121,7 +121,7 @@ kubectl get deployment szl-demo-agent -n "${NAMESPACE}" \
 echo ""
 echo "── Receipts stored in cluster ──────────────────────────"
 # Port-forward in background, query, kill
-kubectl port-forward svc/szl-receipts-server 9999:8443 -n szl-receipts &
+kubectl port-forward svc/szl-receipts-server 9999:8080 -n szl-receipts &
 PF_PID=$!
 sleep 2
 curl -s http://localhost:9999/receipts | python3 -m json.tool 2>/dev/null | head -40 || \
@@ -129,4 +129,4 @@ curl -s http://localhost:9999/receipts | python3 -m json.tool 2>/dev/null | head
 kill $PF_PID 2>/dev/null || true
 
 echo ""
-echo "Done. Check the dashboard at: http://localhost:8443 (after uds run port-forward)"
+echo "Done. Check the dashboard at: http://localhost:8080 (after uds run port-forward)"

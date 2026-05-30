@@ -33,10 +33,10 @@ variables:
     description: "Cluster domain (must match UDS Core DOMAIN variable)"
     default: "uds.dev"
 
-  - name: RECEIPT_HMAC_KEY
-    description: "HMAC-SHA-256 key for signing receipts (base64-encoded, 32+ bytes)"
-    default: "c3psLWRldi1kZW1vLWtleS0yMDI2LXdhcmhhY2tlcg=="
-    sensitive: true
+  # NOTE (v0.3.1): the RECEIPT_HMAC_KEY variable (and its baked base64 demo key)
+  # was REMOVED per PhD Crypto Finding A2. Receipts are signed with an Ed25519
+  # key the operator provisions as the Secret szl-receipts-ed25519 BEFORE deploy.
+  # See charts/szl-receipts NOTES.txt and templates/secret-keypair.yaml.
 
   - name: RECEIPTS_REPLICAS
     description: "Number of szl-receipts-server replicas"
@@ -69,8 +69,9 @@ components:
         valuesFiles:
           - charts/szl-receipts/values.yaml
     images:
-      # MCP receipts server — uses python:3.12-slim (air-gap bundled)
-      - docker.io/library/python:3.12-slim
+      # v0.3.1: built OCI image (services/szl-receipts-server/Dockerfile),
+      # replacing the prior ConfigMap-on-python:3.12-slim approach.
+      - ghcr.io/szl-holdings/szl-receipts-server:uds-v0.3.1
       # NGINX for the dashboard UI
       - docker.io/library/nginx:1.27-alpine
     actions:
