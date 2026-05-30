@@ -9,6 +9,7 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,24 +21,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install GitHub CLI
-        run: |
-          type -p curl >/dev/null || apt-get install curl -y
-          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-            | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-          chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-            | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-          apt-get update
-          apt-get install gh -y
+      # gh CLI is pre-installed on ubuntu-latest runners; no install step needed.
 
-      - name: Verify signed assets for vessels uds-v0.3.1
+      - name: Verify signed assets for vessels uds-v0.3.0 (current shipped tag)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x scripts/verify_signed_assets.sh
-          REPO=szl-holdings/vessels TAG=uds-v0.3.1 VERSION=0.3.1 \
+          REPO=szl-holdings/vessels TAG=uds-v0.3.0 VERSION=0.3.0 \
             bash scripts/verify_signed_assets.sh
+        # STAGED-ADVISORY: the check verifies signed assets exist on the
+        # vessels uds-v0.3.0 release. If the founder has not yet pushed
+        # ghcr.io/szl-holdings/vessels:0.3.0 + cosigned the 4-asset bundle
+        # (tar.zst + .sig + .sha256 + .pub), this step fails by design — that is
+        # the documented gate keeping catalog-grade claims honest.
         # This step WILL FAIL until:
         # 1. Founder pushes ghcr.io/szl-holdings/vessels:0.3.1 to GHCR
         # 2. Signed 4-asset pattern is uploaded to vessels uds-v0.3.1 release
