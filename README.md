@@ -1,5 +1,9 @@
 # szl-uds-deployment
 
+[![GHAS Code Security](https://img.shields.io/badge/GHAS-Code_Security-2DA44E.svg?style=flat-square&logo=github)](https://github.com/szl-holdings/szl-uds-deployment/security/code-scanning)
+[![Secret Protection](https://img.shields.io/badge/GHAS-Secret_Protection-2DA44E.svg?style=flat-square&logo=github)](https://github.com/szl-holdings/szl-uds-deployment/security/secret-scanning)
+[![SLSA L1 · L2 roadmap](https://img.shields.io/badge/SLSA-L1_%E2%86%92_L2_roadmap-0B1F3A.svg?style=flat-square)](https://slsa.dev/spec/v1.0/levels)
+
 **SZL Governance Receipts — UDS Running Deployment**
 
 DSSE-wrapped audit receipts emitted from live Kubernetes workloads on a UDS infrastructure stack (k3d + uds-cli + Pepr policies).
