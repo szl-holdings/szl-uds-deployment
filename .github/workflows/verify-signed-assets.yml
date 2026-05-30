@@ -19,7 +19,7 @@ jobs:
     name: "Verify UDS Signed Assets (Doctrine v6)"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       # gh CLI is pre-installed on ubuntu-latest runners; no install step needed.
 
