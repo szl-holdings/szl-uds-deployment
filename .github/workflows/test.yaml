@@ -33,15 +33,11 @@ jobs:
         run: pip install yamllint
 
       - name: yamllint — all YAML
+        # Config (incl. Helm template ignores) lives in .yamllint.yml at repo
+        # root. Helm chart templates contain Go templating ({{ ... }}) that is
+        # not valid standalone YAML and is validated by `helm lint` below.
         run: |
-          yamllint -d '{
-            extends: default,
-            rules: {
-              line-length: {max: 200},
-              document-start: disable,
-              truthy: disable
-            }
-          }' $(find . -name "*.yaml" -o -name "*.yml" \
+          yamllint -c .yamllint.yml $(find . -name "*.yaml" -o -name "*.yml" \
             | grep -v "node_modules" \
             | grep -v ".git") 2>&1
 
