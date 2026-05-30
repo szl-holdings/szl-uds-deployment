@@ -33,15 +33,11 @@ jobs:
         run: pip install yamllint
 
       - name: yamllint — all YAML
+        # Config (incl. Helm template ignores) lives in .yamllint.yml at repo
+        # root. Helm chart templates contain Go templating ({{ ... }}) that is
+        # not valid standalone YAML and is validated by `helm lint` below.
         run: |
-          yamllint -d '{
-            extends: default,
-            rules: {
-              line-length: {max: 200},
-              document-start: disable,
-              truthy: disable
-            }
-          }' $(find . -name "*.yaml" -o -name "*.yml" \
+          yamllint -c .yamllint.yml $(find . -name "*.yaml" -o -name "*.yml" \
             | grep -v "node_modules" \
             | grep -v ".git") 2>&1
 
@@ -56,13 +52,24 @@ jobs:
       - name: helm template — dry run render
         run: helm template test-release charts/szl-receipts/ > /dev/null && echo "helm template OK"
 
-      - name: kubectl dry-run — kustomize manifests
+      - name: Validate kustomize manifests (offline schema check)
         run: |
-          # Install kubectl
+          # Install kubectl (for `kubectl kustomize` rendering only)
           curl -sLO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           chmod +x kubectl && sudo mv kubectl /usr/local/bin/
-          # Dry-run all base manifests
-          kubectl apply --dry-run=client -f kustomize/base/ 2>&1 && echo "kubectl dry-run OK"
+          # Install kubeconform for offline manifest schema validation. CI has no
+          # API server, so `kubectl apply --dry-run` (even client-side) cannot
+          # run: it still contacts the cluster for API discovery / OpenAPI.
+          # kubeconform validates the rendered manifests against bundled schemas
+          # entirely offline.
+          KUBECONFORM_VERSION=v0.6.7
+          curl -sL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin kubeconform
+          # Render the kustomization (structural + kustomize-semantic validation)
+          # then schema-validate every rendered resource.
+          kubectl kustomize kustomize/base/ \
+            | kubeconform -strict -summary -verbose - \
+            && echo "kustomize manifests valid"
 
   # ── Full install test (requires cluster — manual dispatch or scheduled) ────
   test-install:
