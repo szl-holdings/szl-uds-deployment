@@ -37,6 +37,8 @@ vessels:
     tag: "0.3.1"
     pullPolicy: IfNotPresent
 
+  # AIRGAP: Set to empty string to disable live feed: --set VESSELS_IMO_SANCTIONS_URL=""
+  # When empty, the application warns and skips sanctions checks (see docs/AIRGAP.md)
   sanctionsUrl: "https://sanctionslist.ofac.treas.gov/Home/SdnList"
 
   service:

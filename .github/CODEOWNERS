@@ -1,0 +1,7 @@
+# SZL Holdings — UDS Package Maintainers
+# Reference: https://github.com/defenseunicorns/uds-common/blob/main/docs/uds-packages/requirements/uds-package-requirements.md#codeowners
+
+* @betterwithage @szl-holdings/maintainers
+
+*.lean @betterwithage
+.github/ @betterwithage
