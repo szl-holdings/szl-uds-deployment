@@ -9,14 +9,14 @@ I'm Stephen Lutar, founder of SZL Holdings. I'm submitting `szl-uds-deployment`
 v0.3.1 for the UDS Catalog at STAGED-ADVISORY tier.
 
 The bundle packages our governed-AI execution stack: every inference call
-passes through a 9-axis conjunctive AND policy gate (40 anchor formulas,
+passes through a 9-axis conjunctive AND policy gate (44 anchor formula gates,
 35 Lean-proved, 5 STAGED-ADVISORY) and produces a COSE_Sign1 receipt with
 dual witnesses. Built on Zarf, Pepr, K3s/EKS-A/RKE2 targets.
 
 What is ready for review today (release tag `v0.3.1` pushed
 2026-05-30T11:00 UTC, https://github.com/szl-holdings/szl-uds-deployment/releases/tag/v0.3.1):
 
-- 40 anchor formula gates instilled — see merged a11oy#140 (G1-G35) +
+- 44 anchor formula gates — see merged a11oy#140 (G1-G35) +
   a11oy#135 (G36-G40)
 - `verify_signed_assets.sh` CI gate live — merged szl-uds-deployment#7
 - STAGED-ADVISORY banner on Kubernetes artifacts
@@ -44,7 +44,7 @@ asking for catalog inclusion so the deployment path becomes legible to
 operators who want to evaluate.
 
 Lean 4 kernel state is documented honestly:
-- 217 declarations / 12 axioms / 139 tracked sorries (5 baseline + 134 Putnam)
+- 626 declarations / 15 axioms (14 unique) / 189 sorries (138 baseline + 51 Putnam)
 - 2/12 Putnam Lean-discharged (P_A1, P_A3) — Numina-Lean-Agent (arXiv:2601.14027)
   has 12/12, we cite as prior art
 
