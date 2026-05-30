@@ -1,0 +1,55 @@
+name: verify-signed-assets
+
+# Doctrine v6 gate: fail if signed UDS release assets are missing.
+# This workflow runs on every PR to main/master and on push to main.
+# ANY PR claiming "catalog-grade" must pass this gate.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-signed-assets:
+    name: "Verify UDS Signed Assets (Doctrine v6)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GitHub CLI
+        run: |
+          type -p curl >/dev/null || apt-get install curl -y
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+            | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+            | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          apt-get update
+          apt-get install gh -y
+
+      - name: Verify signed assets for vessels uds-v0.3.1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x scripts/verify_signed_assets.sh
+          REPO=szl-holdings/vessels TAG=uds-v0.3.1 VERSION=0.3.1 \
+            bash scripts/verify_signed_assets.sh
+        # This step WILL FAIL until:
+        # 1. Founder pushes ghcr.io/szl-holdings/vessels:0.3.1 to GHCR
+        # 2. Signed 4-asset pattern is uploaded to vessels uds-v0.3.1 release
+        # That is the STAGED-ADVISORY gate. The CI failure is intentional and expected
+        # until the founder action is complete.
+
+      - name: STAGED-ADVISORY summary
+        if: failure()
+        run: |
+          echo "::error title=STAGED-ADVISORY::Catalog-grade claim INVALID."
+          echo "::error::Signed assets (tar.zst + .sig + .sha256 + .pub) are missing"
+          echo "::error::from vessels release uds-v0.3.1."
+          echo "::error::Founder action required: push ghcr.io/szl-holdings/vessels:0.3.1"
+          echo "::error::and attach signed assets to GitHub release."
+          echo "::error::See: https://huggingface.co/datasets/SZLHOLDINGS/uds-governance-receipts/blob/main/UDS_CATALOG_READINESS_2026-05-30.md"
