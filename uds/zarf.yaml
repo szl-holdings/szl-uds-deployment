@@ -25,6 +25,7 @@
 #   uds-mesh repo: https://github.com/szl-holdings/uds-mesh
 #   a11oy repo:    https://github.com/szl-holdings/a11oy
 
+# yaml-language-server: $schema=https://raw.githubusercontent.com/zarf-dev/zarf/main/zarf.schema.json
 kind: ZarfPackageConfig
 
 metadata:

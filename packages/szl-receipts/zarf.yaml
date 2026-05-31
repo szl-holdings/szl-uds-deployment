@@ -7,6 +7,7 @@
 # It delegates to the root zarf.yaml by importing the szl-receipts package.
 #
 # Reference: https://docs.zarf.dev/ref/zarf-package/
+# yaml-language-server: $schema=https://raw.githubusercontent.com/zarf-dev/zarf/main/zarf.schema.json
 kind: ZarfPackageConfig
 metadata:
   name: szl-receipts
