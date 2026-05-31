@@ -41,17 +41,22 @@ metadata:
 
 packages:
   # ── Layer 1: Zarf init — internal registry + agent ──────────────────────────
-  # Status: AVAILABLE (upstream Defense Unicorns artifact).
+  # Status: AVAILABLE (upstream artifact). The init package moved to the zarf-dev
+  # org; v0.76.0 is the ref uds-core v1.5.0 ships with.
+  # (defenseunicorns/uds-core@v1.5.0/bundles/k3d-slim-dev/uds-bundle.yaml)
   - name: init
-    repository: ghcr.io/defenseunicorns/packages/init
-    ref: v0.77.0
+    repository: ghcr.io/zarf-dev/packages/init
+    ref: v0.76.0
 
-  # ── Layer 2: UDS Core slim-dev — Istio + Pepr + Keycloak-lite + Prometheus ──
-  # Status: AVAILABLE (upstream Defense Unicorns artifact). Provides uds-k3d-dev
-  # compatible single-node stack. For production, swap to a non-slim core ref.
-  - name: core-slim-dev
-    repository: ghcr.io/defenseunicorns/packages/uds/core
-    ref: 0.34.0-slim-dev
+  # ── Layer 2: UDS Core — Istio + Pepr (UDS Operator) + Keycloak + Prometheus ─
+  # Status: AVAILABLE (upstream Defense Unicorns artifact). For the local k3d demo
+  # the documented path is the slim-dev bundle
+  # oci://ghcr.io/defenseunicorns/bundles/k3d-core-slim-dev:1.5.0; here we pull the
+  # published upstream core package directly. Flavor grammar X.Y.Z-upstream|registry1|unicorn
+  # per defenseunicorns/uds-core@v1.5.0/docs/getting-started/production/build-your-bundle.mdx.
+  - name: core
+    repository: registry.defenseunicorns.com/public/core
+    ref: 1.5.0-upstream
     overrides:
       keycloak:
         keycloak:
@@ -80,10 +85,10 @@ packages:
               description: "Cluster domain (must match UDS Core DOMAIN)"
               path: global.domain
               default: "uds.dev"
-            - name: RECEIPT_HMAC_KEY
-              description: "HMAC-SHA-256 signing key (base64-encoded, 32+ bytes)"
-              path: server.hmacKey
-              sensitive: true
+            # RECEIPT_HMAC_KEY override REMOVED (matches root uds-bundle.yaml,
+            # PhD Crypto Finding A2). Receipts are signed with an operator-
+            # provisioned Ed25519 Secret (szl-receipts-ed25519); no signing key
+            # flows through the bundle. See charts/szl-receipts/templates/secret-keypair.yaml.
             - name: RECEIPTS_REPLICAS
               description: "Receipt server replica count"
               path: server.replicas

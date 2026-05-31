@@ -7,11 +7,19 @@
 # catalog-grade requirements per Andrew Greene's Option A endorsement (2026-05-22).
 #
 # Changes from 0.1.0:
-#   - Updated to init v0.40.0 (was v0.43.0 — corrected to valid upstream ref)
-#   - Updated to core-slim-dev 0.34.0-slim-dev (was 0.27.3-slim-dev)
+#   - init repointed to ghcr.io/zarf-dev/packages/init (the init package moved out
+#     of the defenseunicorns org as of uds-core v1.x; see attribution below)
+#   - core ref modernized to uds-core 1.5.0 (was 0.34.0-slim-dev, four minors behind)
 #   - szl-receipts bumped to 0.3.1
 #   - SSO overrides now wired to Keycloak realm
 #   - Pepr component enabled by default in this bundle
+#
+# Ref attribution (mined 2026-05-30 from live Defense Unicorns repos):
+#   init coordinate: defenseunicorns/uds-core@v1.5.0/bundles/k3d-slim-dev/uds-bundle.yaml
+#                    (init = ghcr.io/zarf-dev/packages/init)
+#   core OCI + flavor grammar (X.Y.Z-upstream|registry1|unicorn):
+#                    defenseunicorns/uds-core@v1.5.0/docs/getting-started/production/build-your-bundle.mdx
+#   slim-dev local-demo bundle: oci://ghcr.io/defenseunicorns/bundles/k3d-core-slim-dev:1.5.0
 #
 # STAGED items:
 #   FA-001: Image ghcr.io/szl-holdings/vessels:uds-v0.3.0 must be pushed by founder
@@ -37,17 +45,23 @@ metadata:
 
 packages:
   # ── Layer 1: Zarf init — internal registry + agent ──────────────────────────
+  # NOTE: the init package moved from ghcr.io/defenseunicorns/packages/init to
+  # ghcr.io/zarf-dev/packages/init. v0.76.0 is the ref uds-core v1.5.0 ships with.
+  # (defenseunicorns/uds-core@v1.5.0/bundles/k3d-slim-dev/uds-bundle.yaml)
   - name: init
-    repository: ghcr.io/defenseunicorns/packages/init
-    ref: v0.77.0
+    repository: ghcr.io/zarf-dev/packages/init
+    ref: v0.76.0
 
-  # ── Layer 2: UDS Core slim-dev — Istio + Pepr + Keycloak lite ───────────────
-  # slim-dev includes: istiod, istio-gateway, keycloak (no HA), pepr, prometheus
-  # For production, swap to ghcr.io/defenseunicorns/packages/uds/core at a
-  # non-slim ref and add HA overrides.
-  - name: core-slim-dev
-    repository: ghcr.io/defenseunicorns/packages/uds/core
-    ref: 0.34.0-slim-dev
+  # ── Layer 2: UDS Core — Istio + Pepr (UDS Operator) + Keycloak + Prometheus ─
+  # For the local k3d demo, the documented path is the slim-dev BUNDLE:
+  #   oci://ghcr.io/defenseunicorns/bundles/k3d-core-slim-dev:1.5.0
+  # For production, reference the published core PACKAGE and pick a flavor:
+  #   registry.defenseunicorns.com/public/core ref 1.5.0-upstream|1.5.0-registry1|1.5.0-unicorn
+  # We use the published upstream core package here (public images, no DoD registry
+  # access required for the hackathon demo).
+  - name: core
+    repository: registry.defenseunicorns.com/public/core
+    ref: 1.5.0-upstream
     overrides:
       keycloak:
         keycloak:
