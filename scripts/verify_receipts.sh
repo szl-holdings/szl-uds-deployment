@@ -34,7 +34,17 @@ echo "── SZL Receipt Verification ──────────────
 echo "Port-forwarding ${SVC}:8080 → localhost:${LOCAL_PORT}…"
 kubectl port-forward "svc/${SVC}" "${LOCAL_PORT}:8080" -n "${NAMESPACE}" &
 PF_PID=$!
-trap 'kill $PF_PID 2>/dev/null; echo "Port-forward stopped."' EXIT
+# Preserve the script's intended exit status across cleanup: capture $? on
+# entry to the trap and re-exit with it, so a failed `kill` (e.g. the
+# port-forward already gone) cannot flip a PASS into a non-zero exit or vice
+# versa.
+cleanup() {
+  rc=$?
+  kill "$PF_PID" 2>/dev/null || true
+  echo "Port-forward stopped."
+  exit "$rc"
+}
+trap cleanup EXIT
 sleep 2
 
 # ── Step 2: Fetch receipts ────────────────────────────────────────────────────
@@ -51,10 +61,17 @@ echo ""
 # ── Step 3: Verify each receipt ───────────────────────────────────────────────
 PASS=0; FAIL=0
 
-echo "${RECEIPTS_JSON}" | python3 - "${HMAC_KEY_B64}" << 'PYEOF'
-import sys, json, base64, hmac, hashlib
+# The receipts JSON is passed via the environment, not stdin: a here-doc-fed
+# `python3 - <<'PYEOF'` already binds stdin to the script body, so piping the
+# receipts into the same process made sys.stdin.read() return the Python source
+# instead of the data. We capture the verifier's exit status, then still run
+# Step 4, and finally exit with the captured status so the documented exit-code
+# contract (1 = a verification failed) is honoured rather than masked.
+VERIFY_RC=0
+RECEIPTS_JSON="${RECEIPTS_JSON}" python3 - "${HMAC_KEY_B64}" << 'PYEOF' || VERIFY_RC=$?
+import os, sys, json, base64, hmac, hashlib
 
-receipts_json = sys.stdin.read()
+receipts_json = os.environ["RECEIPTS_JSON"]
 hmac_key_b64  = sys.argv[1]
 
 try:
@@ -126,4 +143,12 @@ kubectl get job szl-demo-job -n szl-demo-workload \
   grep "szl\." || echo "(szl-demo-workload/szl-demo-job not found — run demo:workload first)"
 
 echo ""
-echo "Verification complete."
+if [ "${VERIFY_RC}" -eq 0 ]; then
+  echo "Verification complete — all receipts verified."
+else
+  echo "Verification complete — one or more receipts did not verify (exit ${VERIFY_RC})."
+fi
+
+# Propagate the verification result so callers and pre-flight scripts see a
+# non-zero exit when a receipt failed, rather than the exit code of Step 4.
+exit "${VERIFY_RC}"
