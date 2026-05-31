@@ -17,6 +17,7 @@
 #   Zarf schema: https://docs.zarf.dev/ref/zarf-package/
 #   UDS add-on pattern: https://github.com/defenseunicorns/uds-core
 
+# yaml-language-server: $schema=https://raw.githubusercontent.com/zarf-dev/zarf/main/zarf.schema.json
 kind: ZarfPackageConfig
 metadata:
   name: szl-receipts
