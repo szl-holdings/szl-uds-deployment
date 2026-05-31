@@ -1,7 +1,7 @@
 # Copyright 2026 SZL Holdings
 # SPDX-License-Identifier: Apache-2.0
 #
-# UDS Package CR — rosie (Jarvis operator console, human-facing TOP of stack)
+# UDS Package CR — rosie (operator console, human-facing TOP of stack)
 #
 # rosie is the only module exposed to humans through the UDS tenant gateway,
 # and the only module that takes interactive human auth (SSO via authservice +
@@ -29,7 +29,7 @@ metadata:
     szl.io/component: uds-package
     szl.io/mesh-version: v0.4.0
   annotations:
-    szl.io/role: "Jarvis operator console (human-facing top of stack)"
+    szl.io/role: "operator console (human-facing top of stack)"
     szl.io/blocked-by: "FA-001 — ghcr.io/szl-holdings/rosie image not yet pushed"
 spec:
   # ── SSO — rosie is human-facing; protect with authservice + Keycloak OIDC ──

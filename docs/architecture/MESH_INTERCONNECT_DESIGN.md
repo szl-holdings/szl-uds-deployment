@@ -15,11 +15,11 @@ This is the v0.4.0 thesis: until the modules actually call each other over the m
 
 ## 1. Hierarchy
 
-Per the founder's Jarvis correction (2026-05-30, 15:31 EDT — *"Rosie is Jarvis"*), the stack is, top to bottom:
+Per the founder's standing rule (2026-05-30 — rosie is the operator console; A11OY_NON_NEGOTIABLES forbids any other name), the stack is, top to bottom:
 
 | Tier | Module | Role | Internal DNS |
 |---|---|---|---|
-| 1 (top, human-facing) | **rosie** | Jarvis operator console (Gradio, 6 tabs). The voice/face/command surface the human principal talks to. Not an organ — sits outside the body like a console wired in. | `rosie.szl-rosie.svc.cluster.local:7860` |
+| 1 (top, human-facing) | **rosie** | operator console (Gradio, 6 tabs). The voice/face/command surface the human principal talks to. Not an organ — sits outside the body like a console wired in. | `rosie.szl-rosie.svc.cluster.local:7860` |
 | 2 (substrate) | **a11oy** | Policy + receipt substrate and the **orchestrator**. Contains 9 of 14 Inca-named organs (YUYAY heart, YAWAR emission, HATUN seal, HATUN-RAID orchestrator, Quantum Mind, R0513 Overwatch, RIMAY proposer, KALLPA substrate, doctrine v7). | `a11oy.szl-a11oy.svc.cluster.local:8080` |
 | 3 (organ) | **amaru** | Memory cortex a11oy queries (YACHAY retrieval + MUSQUY simulation + AMARU shell). | `amaru.szl-amaru.svc.cluster.local:8080` |
 | 3 (organ) | **sentra** | Immune system a11oy delegates security verdicts to (HUKLLA 10 tripwires + SENTRA egress inspector). | `sentra.szl-sentra.svc.cluster.local:8080` |
@@ -28,7 +28,7 @@ Per the founder's Jarvis correction (2026-05-30, 15:31 EDT — *"Rosie is Jarvis
 
 ```
                         ┌──────────────────────────┐
-   human principal ───► │  rosie (Jarvis console)   │  szl-rosie : 7860
+   human principal ───► │  rosie (operator console)   │  szl-rosie : 7860
                         └────────────┬─────────────┘
                           commands   │   ▲ events
                                      ▼   │
