@@ -13,7 +13,7 @@ Keycloak client** for each one — you do not hand-create clients.
 - Human-facing apps (`rosie`, `vessels`, `szl-receipts`) use `redirectUris` +
   `enableAuthserviceSelector`, so the Operator wires the **authservice** sidecar in front
   of the pod. Every request then carries a verified OIDC identity before it reaches the app.
-- Machine-only apps (`a11oy`, `amaru`, `sentra`) use `standardFlowEnabled: false` +
+- Machine-to-machine apps (`a11oy`, `amaru`, `sentra`) use `standardFlowEnabled: false` +
   `serviceAccountsEnabled: true` — a client-credentials (machine-to-machine) client, no
   browser login UI.
 
