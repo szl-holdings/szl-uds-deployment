@@ -29,6 +29,13 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: DSSE receipt scheme regression
+        # Pins the signer (pepr policy) and verifier (verify_receipts.sh) to the
+        # same HMAC-SHA-256-over-RAW-payload scheme (no DSSE PAE). Standard
+        # library, no cluster. Catches a quiet drift to PAE that would break
+        # verification.
+        run: python3 scripts/dsse_scheme_regression_test.py
+
       - name: Install yamllint
         run: pip install yamllint
 
