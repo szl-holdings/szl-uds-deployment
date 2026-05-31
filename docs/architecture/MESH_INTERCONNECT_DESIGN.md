@@ -15,7 +15,7 @@ This is the v0.4.0 thesis: until the modules actually call each other over the m
 
 ## 1. Hierarchy
 
-Per the founder's correction (2026-05-30, 15:31 EDT — *"Rosie is Jarvis"*), the stack is, top to bottom:
+Per the founder's standing rule (2026-05-30 — rosie is the operator console; A11OY_NON_NEGOTIABLES forbids any other name), the stack is, top to bottom:
 
 | Tier | Module | Role | Internal DNS |
 |---|---|---|---|
