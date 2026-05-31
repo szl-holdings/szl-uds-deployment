@@ -41,6 +41,15 @@ spec:
           - "/szl/operators"
 
   network:
+    # serviceMesh.mode: sidecar — our mesh relies on Istio sidecar
+    # AuthorizationPolicies (mesh/authpolicies/*) and strict PeerAuthentication
+    # (mesh/peerauth/peerauthentication-strict.yaml), which require sidecar mode.
+    # The v1alpha1 CRD defaults to ambient; we set it explicitly.
+    # (CRD: defenseunicorns/uds-core@v1.5.0/schemas/package-v1alpha1.schema.json,
+    #  ServiceMesh.mode enum [sidecar, ambient]. Declared-explicitly idiom from
+    #  uds-packages/reference-package/chart/templates/uds-package.yaml.)
+    serviceMesh:
+      mode: sidecar
     expose:
       - service: vessels
         selector:
@@ -50,6 +59,13 @@ spec:
         port: 8080
         targetPort: 8080
         description: "vessels maritime/governance dashboard — tenant gateway (read-only)"
+        # uptime.checks.paths enables blackbox-exporter uptime monitoring.
+        # (pattern: uds-packages/reference-package/chart/templates/uds-package.yaml;
+        #  CRD Uptime.Checks.paths, defenseunicorns/uds-core@v1.5.0 schema)
+        uptime:
+          checks:
+            paths:
+              - /healthz
 
     allow:
       - direction: Egress
