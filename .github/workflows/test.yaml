@@ -91,7 +91,7 @@ jobs:
       - name: Install UDS CLI
         uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1 (v1.0.1)
         with:
-          version: v0.16.0
+          version: v0.31.0
 
       - name: Install Zarf
         run: |
@@ -117,7 +117,7 @@ jobs:
       - name: Install UDS CLI
         uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1 (v1.0.1)
         with:
-          version: v0.16.0
+          version: v0.31.0
 
       - name: Install Zarf
         run: |

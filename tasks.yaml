@@ -5,7 +5,8 @@
 #
 # Usage:
 #   uds run start          # full bootstrap + deploy (90 seconds on a modern laptop)
-#   uds run demo:workload  # apply a sample workload that gets receipt-traced
+#   uds run demo:workload   # apply a sample workload that gets receipt-traced
+#   uds run demo:scenario  # run the Day 3 drone-deny scenario (step 10)
 #   uds run demo:verify    # verify the receipt chain in the cluster
 #   uds run teardown       # destroy the k3d cluster
 #
@@ -20,7 +21,7 @@ variables:
     default: uds.dev
 
   - name: VERSION
-    default: "0.1.0"
+    default: "0.3.1"
 
 includes:
   - test: ./tasks/test.yaml
