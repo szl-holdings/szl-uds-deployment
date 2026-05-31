@@ -25,8 +25,18 @@ variables:
 includes:
   - test: ./tasks/test.yaml
   - demo: ./tasks/demo.yaml
+  - smoke: ./tasks/smoke.yaml
 
 tasks:
+  # ── Cold smoke entry point ────────────────────────────────────────────────
+  # `uds run smoke`: cold k3d -> deploy szl-warhacker bundle -> honest readiness
+  # check of szl-receipts (hard PASS) + the 5 apps (PASS or SKIPPED-on-FA-001).
+  # Implemented in tasks/smoke.yaml; aliased here so `uds run smoke` works.
+  - name: smoke
+    description: "Cold k3d up + deploy + honest readiness of receipts and the 5 apps"
+    actions:
+      - task: smoke:smoke
+
   # ── Primary entry point ───────────────────────────────────────────────────
   - name: start
     description: "Bootstrap k3d cluster and deploy SZL receipts bundle (≈90 seconds)"
