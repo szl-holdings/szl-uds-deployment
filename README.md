@@ -4,7 +4,7 @@
 
 **uds deploy**
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20434276.svg)](https://doi.org/10.5281/zenodo.20434276) [![ORCID](https://img.shields.io/badge/ORCID-0009--0001--0110--4173-a6ce39?style=flat-square&logo=orcid&logoColor=white)](https://orcid.org/0009-0001-0110-4173) [![Doctrine](https://img.shields.io/badge/Doctrine-v7-7c5cff?style=flat-square)](https://github.com/szl-holdings/.github/blob/main/DOCTRINE_V7.md) [![SLSA](https://img.shields.io/badge/SLSA-L1_honest-22c55e?style=flat-square)](https://slsa.dev/spec/v1.0/levels)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20434276.svg)](https://doi.org/10.5281/zenodo.20434276) [![ORCID](https://img.shields.io/badge/ORCID-0009--0001--0110--4173-a6ce39?style=flat-square&logo=orcid&logoColor=white)](https://orcid.org/0009-0001-0110-4173) [![Doctrine v11 LOCKED](https://img.shields.io/badge/Doctrine-v11_LOCKED-d4a444?style=flat-square)](https://github.com/szl-holdings/lutar-lean) [![SLSA](https://img.shields.io/badge/SLSA-L1_honest-22c55e?style=flat-square)](https://slsa.dev/spec/v1.0/levels)
 
 [Hugging Face](https://huggingface.co/SZLHOLDINGS) · [Demo](https://szlholdings-readme.static.hf.space/) · [GitHub Org](https://github.com/szl-holdings)
 
@@ -13,7 +13,7 @@
 </div>
 
 ---
-> **STAGED-ADVISORY (2026-05-30 — Doctrine v6):** UDS catalog-grade delivery is BLOCKED pending:
+> **STAGED-ADVISORY (2026-05-30 — Doctrine v11 LOCKED 749/14/163):** UDS catalog-grade delivery is BLOCKED pending:
 > 1. **Founder action:** Push `ghcr.io/szl-holdings/vessels:0.3.1` to GHCR (requires org GHCR auth chain — cannot be done by agent)
 > 2. **Signed assets:** Attach `vessels-uds-0.3.1.tar.zst` + `.sig` + `.sha256` + `vessels-uds-dev.pub` to vessels release `uds-v0.3.1-vessels` (vessels uses `-vessels` suffix for UDS git tags; no bare `uds-v0.3.1` tag exists on vessels)
 > 3. **CI gate:** `scripts/verify_signed_assets.sh` must pass green before any PR may claim catalog-grade
