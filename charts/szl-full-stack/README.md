@@ -114,7 +114,7 @@ helm get manifest szl-full-stack | grep -E \
 - Not a UDS Catalog submission (see `catalog-submission/README.md`)
 - Not an endorsement by Defense Unicorns as their product
 - Not a trademark non-objection
-- SZL UDS = Unified Decision Span ≠ Defense Unicorns' Unicorn Delivery Service
+- SZL UDS = Unified Decision Span ≠ Defense Unicorns' Unified Defense Stack (formerly Unicorn Delivery Service, rebranded 2026-06-02)
 
 ---
 
