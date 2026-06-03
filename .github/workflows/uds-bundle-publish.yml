@@ -119,9 +119,27 @@ jobs:
       # hardened runner's outbound update probe.
       - name: Install uds-cli ${{ env.UDS_CLI_VERSION }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           URL="https://github.com/defenseunicorns/uds-cli/releases/download/${UDS_CLI_VERSION}/uds-cli_${UDS_CLI_VERSION}_Linux_${{ matrix.arch }}"
-          curl -fsSL "${URL}" -o uds
+          echo "### uds-cli install diagnostics" >> "$GITHUB_STEP_SUMMARY"
+          echo "URL: ${URL}" >> "$GITHUB_STEP_SUMMARY"
+          # Try GitHub releases first; capture HTTP status + curl exit code.
+          set +e
+          HTTP=$(curl -L -sS -w '%{http_code}' -o uds "${URL}"); CURL_RC=$?
+          set -e
+          echo "curl_exit=${CURL_RC} http_status=${HTTP} size=$(stat -c%s uds 2>/dev/null || echo 0)" | tee -a "$GITHUB_STEP_SUMMARY"
+          head -c 200 uds | tr -d '\0' | sed 's/[^[:print:]\t]//g' | head -c 200 >> "$GITHUB_STEP_SUMMARY" || true
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          # Fallback: pip-free install via the official Homebrew tap mirror on ghcr is
+          # not available; instead retry with explicit IPv4 + extended timeout.
+          if [ "${CURL_RC}" -ne 0 ] || [ "$(stat -c%s uds 2>/dev/null || echo 0)" -lt 1000000 ]; then
+            echo "primary download failed; retrying with --ipv4 and longer timeout" >> "$GITHUB_STEP_SUMMARY"
+            set +e
+            HTTP2=$(curl -L --ipv4 --connect-timeout 30 --max-time 300 -sS -w '%{http_code}' -o uds "${URL}"); RC2=$?
+            set -e
+            echo "retry curl_exit=${RC2} http_status=${HTTP2} size=$(stat -c%s uds 2>/dev/null || echo 0)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          test "$(stat -c%s uds 2>/dev/null || echo 0)" -gt 1000000
           sudo install -m 0755 uds /usr/local/bin/uds
       - name: Verify uds-cli
         run: |
