@@ -103,8 +103,7 @@ jobs:
             zarf package create packages/szl-receipts \
               --confirm \
               --no-progress \
-              --output-directory ./dist \
-              --components "szl-key-init,szl-receipts-namespace,szl-receipts-server" 
+              --output-directory ./dist
           fi
 
           # Also build the root zarf.yaml if it exists and differs
