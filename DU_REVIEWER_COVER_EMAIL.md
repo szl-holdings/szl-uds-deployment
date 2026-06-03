@@ -30,7 +30,7 @@ What is still pending and what I'm honest about:
 
 - vessels v0.4.0 GHCR image push + cosign sign — owner-side action,
   workflow merged (vessels#62), targeting this week
-- SLSA L3 build provenance — slsa-github-generator adoption underway,
+- SLSA L1 (honest) build provenance — L2 roadmap via slsa-github-generator adoption,
   v0.4.0-rc.1 target 2026-07-15
 - DU reviewer sign-off — what I'm asking you for
 
