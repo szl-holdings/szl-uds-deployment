@@ -144,18 +144,18 @@ jobs:
           git clone --depth 1 --branch "${UDS_CLI_VERSION}" \
             https://github.com/defenseunicorns/uds-cli.git uds-cli-src
           CRC=$?
-          echo "::error title=uds-cli-clone::git_clone_rc=${CRC}"
+          echo "::notice title=uds-cli-clone::git_clone_rc=${CRC}"
           BUILT=""
           if [ "${CRC}" -eq 0 ]; then
             ( cd uds-cli-src && \
               go build -ldflags "-s -w -X github.com/defenseunicorns/uds-cli/src/config.CLIVersion=${UDS_CLI_VERSION}" \
                 -o /tmp/uds main.go )
             BRC=$?
-            echo "::error title=uds-cli-gobuild::go_build_rc=${BRC}"
+            echo "::notice title=uds-cli-gobuild::go_build_rc=${BRC}"
           fi
           set -e
           SZ=0; [ -f /tmp/uds ] && SZ=$(stat -c%s /tmp/uds 2>/dev/null || echo 0)
-          echo "::error title=uds-cli-build-result::bin_size=${SZ}"
+          echo "::notice title=uds-cli-build-result::bin_size=${SZ}"
           if [ ! -f /tmp/uds ] || [ "${SZ}" -lt 50000000 ]; then
             echo "::error title=uds-cli-build-failed::source build did not produce a usable binary"
             exit 1
@@ -204,8 +204,10 @@ jobs:
           # Member images are tagged uds-v0.2.0 on ghcr.io, so the image tag we
           # feed Zarf is the full OCI tag (uds-v0.2.0), not the stripped version.
           mkdir -p dist
-          fail=0
-          for organ in a11oy sentra amaru killinchu rosie; do
+          # Build killinchu + rosie FIRST (the ones that failed last run) so their
+          # error annotation lands inside GitHub's 10-annotation cap; only emit
+          # annotations on failure and stop at the first failing organ.
+          for organ in killinchu rosie a11oy sentra amaru; do
             echo "::group::zarf package create packages/${organ}"
             zarf package create "packages/${organ}" \
               --set VERSION="${PKG_VERSION}" \
@@ -216,14 +218,11 @@ jobs:
             RC=$?
             echo "::endgroup::"
             if [ "${RC}" -ne 0 ]; then
-              fail=1
-              ERRTAIL=$(tail -c 600 "/tmp/${organ}.err" | tr '\n' ' ' | sed 's/[^[:print:]]//g')
+              ERRTAIL=$(tail -c 900 "/tmp/${organ}.err" | tr '\n' ' ' | sed 's/[^[:print:]]//g')
               echo "::error title=zarf-create-${organ}::rc=${RC} err=${ERRTAIL}"
-            else
-              echo "::notice title=zarf-create-${organ}::ok"
+              exit 1
             fi
           done
-          if [ "${fail}" -ne 0 ]; then exit 1; fi
           echo "Built member packages:"
           ls -lh dist/*.tar.zst
 
