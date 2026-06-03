@@ -42,11 +42,11 @@ metadata:
 packages:
   # ── Layer 1: Zarf init — internal registry + agent ──────────────────────────
   # Status: AVAILABLE (upstream artifact). The init package moved to the zarf-dev
-  # org; v0.76.0 is the ref uds-core v1.5.0 ships with.
+  # org; v0.77.0 is the ref uds-core v1.5.0 ships with.
   # (defenseunicorns/uds-core@v1.5.0/bundles/k3d-slim-dev/uds-bundle.yaml)
   - name: init
     repository: ghcr.io/zarf-dev/packages/init
-    ref: v0.76.0
+    ref: v0.77.0
 
   # ── Layer 2: UDS Core — Istio + Pepr (UDS Operator) + Keycloak + Prometheus ─
   # Status: AVAILABLE (upstream Defense Unicorns artifact). For the local k3d demo
