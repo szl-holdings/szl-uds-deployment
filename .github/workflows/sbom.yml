@@ -1,31 +1,39 @@
-name: SBOM
-
-# CycloneDX + SPDX SBOM generation on every push to main and on tagged releases.
-# Calls the org-level reusable SBOM workflow (Anchore Syft + Trivy).
-# Reusable workflow pinned SHA: 7444587fdddd9e0c3a0cefc5f13da95759fa7e2f (.github main 2026-05-29)
-# Note: updated from c8359e53b405... which pre-dated reusable-sbom.yml being added.
+name: SBOM — CycloneDX via Syft
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    branches: [ main ]
+    tags:
+      - 'v*'
   release:
     types: [published]
   workflow_dispatch:
 
 permissions:
-  contents: read
-
-concurrency:
-  group: sbom-${{ github.ref }}
-  cancel-in-progress: true
+  contents: write
+  packages: read
+  id-token: write
 
 jobs:
   sbom:
-    uses: szl-holdings/.github/.github/workflows/reusable-sbom.yml@7444587fdddd9e0c3a0cefc5f13da95759fa7e2f # v1 (.github main)
-    with:
-      attach-to-release: true
-    permissions:
-      contents: write        # attach SBOM to GitHub Release
-      security-events: write # upload Trivy SARIF to Security tab
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: Generate SBOM with Syft (CycloneDX)
+        uses: anchore/sbom-action@55dc4ee22412511ee8c3e6e5b0e24a5b8151ee6c # v0.17.0
+        with:
+          output-file: sbom.cdx.json
+          format: cyclonedx-json
+          artifact-name: sbom.cdx.json
+          upload-artifact: true
+          upload-release-assets: true
+
+      - name: Upload SBOM as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+          retention-days: 90
