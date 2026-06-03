@@ -120,27 +120,42 @@ jobs:
       - name: Install uds-cli ${{ env.UDS_CLI_VERSION }}
         run: |
           set -uo pipefail
-          URL="https://github.com/defenseunicorns/uds-cli/releases/download/${UDS_CLI_VERSION}/uds-cli_${UDS_CLI_VERSION}_Linux_${{ matrix.arch }}"
-          echo "### uds-cli install diagnostics" >> "$GITHUB_STEP_SUMMARY"
-          echo "URL: ${URL}" >> "$GITHUB_STEP_SUMMARY"
-          # Try GitHub releases first; capture HTTP status + curl exit code.
-          set +e
-          HTTP=$(curl -L -sS -w '%{http_code}' -o uds "${URL}"); CURL_RC=$?
-          set -e
-          echo "curl_exit=${CURL_RC} http_status=${HTTP} size=$(stat -c%s uds 2>/dev/null || echo 0)" | tee -a "$GITHUB_STEP_SUMMARY"
-          head -c 200 uds | tr -d '\0' | sed 's/[^[:print:]\t]//g' | head -c 200 >> "$GITHUB_STEP_SUMMARY" || true
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          # Fallback: pip-free install via the official Homebrew tap mirror on ghcr is
-          # not available; instead retry with explicit IPv4 + extended timeout.
-          if [ "${CURL_RC}" -ne 0 ] || [ "$(stat -c%s uds 2>/dev/null || echo 0)" -lt 1000000 ]; then
-            echo "primary download failed; retrying with --ipv4 and longer timeout" >> "$GITHUB_STEP_SUMMARY"
+          REPO="defenseunicorns/uds-cli"
+          ASSET="uds-cli_${UDS_CLI_VERSION}_Linux_${{ matrix.arch }}"
+          URL="https://github.com/${REPO}/releases/download/${UDS_CLI_VERSION}/${ASSET}"
+          # Diagnostics emitted as workflow-command annotations (readable via the
+          # check-runs API even when the step-summary/raw-log blob host is egress
+          # blocked). Each ::notice:: surfaces as an annotation on the check run.
+          echo "::notice title=uds-cli-url::${URL}"
+          # Pull the expected sha256 from the release checksums so we can verify
+          # integrity AND distinguish a truncated download from a corrupt one.
+          CKURL="https://github.com/${REPO}/releases/download/${UDS_CLI_VERSION}/checksums.txt"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 "${CKURL}" -o checksums.txt || true
+          EXPECT=$(grep "  ${ASSET}\$" checksums.txt 2>/dev/null | awk '{print $1}')
+          echo "::notice title=uds-cli-expected-sha::${EXPECT:-unknown}"
+          ok=0
+          for attempt in 1 2 3 4 5; do
+            echo "::notice title=uds-cli-attempt::attempt=${attempt}"
             set +e
-            HTTP2=$(curl -L --ipv4 --connect-timeout 30 --max-time 300 -sS -w '%{http_code}' -o uds "${URL}"); RC2=$?
+            HTTP=$(curl -L --ipv4 --connect-timeout 30 --max-time 600 \
+                   --retry 3 --retry-all-errors --retry-delay 5 \
+                   -sS -w '%{http_code}' -o uds "${URL}"); RC=$?
             set -e
-            echo "retry curl_exit=${RC2} http_status=${HTTP2} size=$(stat -c%s uds 2>/dev/null || echo 0)" | tee -a "$GITHUB_STEP_SUMMARY"
+            SZ=$(stat -c%s uds 2>/dev/null || echo 0)
+            GOT=$(sha256sum uds 2>/dev/null | awk '{print $1}')
+            echo "::notice title=uds-cli-result::attempt=${attempt} curl_exit=${RC} http=${HTTP} size=${SZ} sha=${GOT}"
+            if [ "${RC}" -eq 0 ] && [ "${SZ}" -gt 100000000 ]; then
+              if [ -z "${EXPECT}" ] || [ "${GOT}" = "${EXPECT}" ]; then ok=1; break; fi
+              echo "::warning title=uds-cli-sha-mismatch::got=${GOT} expect=${EXPECT}"
+            fi
+            sleep 5
+          done
+          if [ "${ok}" -ne 1 ]; then
+            echo "::error title=uds-cli-install-failed::could not download a valid ${ASSET} after 5 attempts (last size=$(stat -c%s uds 2>/dev/null || echo 0))"
+            exit 1
           fi
-          test "$(stat -c%s uds 2>/dev/null || echo 0)" -gt 1000000
           sudo install -m 0755 uds /usr/local/bin/uds
+          echo "::notice title=uds-cli-installed::ok size=$(stat -c%s /usr/local/bin/uds)"
       - name: Verify uds-cli
         run: |
           set -euo pipefail
