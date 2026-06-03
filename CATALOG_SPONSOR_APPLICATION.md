@@ -38,7 +38,7 @@ air-gapped clusters.
 | SLSA L1 honest disclosure | ✅ | Corrected across 13 repos this session — `fix/slsa-truth-l3-to-l1-2026-05-30` |
 | CodeQL / GHAS | ✅ | Code Security + Secret Protection enabled org-wide (17 repos); CodeQL workflow live (#8) |
 | STAGED-ADVISORY banner | ✅ | README banner + `verify_signed_assets.sh` CI gate (merged #7) |
-| Build provenance | ⏳ | SLSA L3 workflow drafted; v0.4.0-rc.1 target 2026-07-15 |
+| Build provenance | ⏳ | SLSA L1 honest; L2 roadmap via slsa-github-generator (v0.4.0-rc.1 target 2026-07-15) |
 | `verify_signed_assets.sh` PR green | ✅ | Merged 2026-05-30T10:56Z (#7) |
 | Doctrine / governance policy | ✅ | [Doctrine v7](https://github.com/szl-holdings/.github/blob/main/DOCTRINE_V7.md) merged #94 — §1-§16 |
 
