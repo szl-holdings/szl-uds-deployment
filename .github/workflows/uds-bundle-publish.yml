@@ -213,23 +213,19 @@ jobs:
               --set VERSION="${PKG_VERSION}" \
               --architecture "${{ matrix.arch }}" \
               --confirm \
-              --no-progress \
-              --log-level debug \
               --output-directory dist > "/tmp/${organ}.log" 2>&1
             RC=$?
             echo "::endgroup::"
             cat "/tmp/${organ}.log" || true
-            if [ "${RC}" -ne 0 ]; then
-              # Emit the last meaningful lines (filter zarf timestamps/ansi) as a
-              # single ::error:: so it lands in the readable annotation cap.
-              ERRTAIL=$(grep -iE 'err|fail|fatal|unable|denied|not found|no such|invalid|cannot' "/tmp/${organ}.log" | tail -n 6 | tr '\n' '|' | sed 's/[^[:print:]|]//g')
-              [ -z "${ERRTAIL}" ] && ERRTAIL=$(tail -n 6 "/tmp/${organ}.log" | tr '\n' '|' | sed 's/[^[:print:]|]//g')
-              echo "::error title=zarf-create-${organ}::rc=${RC} :: ${ERRTAIL}"
-              exit 1
-            fi
+            # Always emit one ::error:: per organ (these reliably surface in the
+            # annotation API) carrying rc + a filtered stderr tail, so the exact
+            # failing organ and cause are visible even with logs egress-blocked.
+            ERRTAIL=$(grep -iE 'err|fail|fatal|unable|denied|not found|no such|invalid|cannot|forbidden|unauthor' "/tmp/${organ}.log" | tail -n 4 | tr '\n' '|' | sed 's/[^[:print:]|]//g')
+            echo "::error title=zarf-${organ}::rc=${RC} tail=${ERRTAIL}"
+            if [ "${RC}" -ne 0 ]; then exit 1; fi
           done
           echo "Built member packages:"
-          ls -lh dist/*.tar.zst
+          ls -lh dist/ || true
 
       # ── Create the UDS bundle ──────────────────────────────────────────────
       # uds create reads bundles/szl-uds-bundle/uds-bundle.yaml; its packages are
