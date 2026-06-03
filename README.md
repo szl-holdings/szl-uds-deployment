@@ -133,69 +133,47 @@ The default deploy (all `required: true` components only) installs namespace + s
 
 ---
 
-## Pre-Deploy: Ed25519 Receipt Signing Key (Required — Founder Action FA-KEY-001)
 
-> **P0 Gap (Warhacker June 9):** Pepr emits unsigned receipts (`UNSIGNED-NO-KEY-CONFIGURED`)
-> until the Ed25519 signing key is provisioned. This MUST be done BEFORE deploying
-> `szl-uds-deployment`.
+## Receipt Key
 
-The Pepr admission module (`pepr/policies/szl-receipt-on-deploy.ts`) signs DSSE receipts
-with an Ed25519 private key. The key is loaded from the `szl-receipts-ed25519` Kubernetes
-Secret in the `pepr-system` namespace.
+On first `uds deploy`, a Helm pre-install hook (Job `szl-key-init`) auto-generates
+an Ed25519 keypair in the `pepr-system` namespace as Secret `szl-receipts-ed25519`.
 
-### Step 1: Generate the Ed25519 keypair
+**Zero founder action required.** The customer's cluster generates the key.
+SZL never sees it. The founder never runs `generate-receipt-key.sh` manually.
 
-```bash
-bash scripts/generate-receipt-key.sh > /tmp/szl-receipt-key.yaml
-```
+### How it works
 
-### Step 2: Apply the Secret (before `uds deploy`)
+1. `uds deploy` runs the `szl-key-init` Helm chart as a pre-install hook (weight: -5)
+2. A Job in the target namespace checks: does `szl-receipts-ed25519` already exist?
+   - **Yes** → exits 0 immediately (BYOK path — your key is preserved)
+   - **No** → generates Ed25519 keypair via `openssl genpkey -algorithm ED25519`,
+     creates the Secret with `key.priv` and `key.pub`, shreds the private key from
+     container tmpfs
+3. `szl-receipts-server` starts and mounts the Secret for signing
 
-```bash
-# Direct apply (cluster must be running)
-kubectl apply -f /tmp/szl-receipt-key.yaml
+### Bring Your Own Key (BYOK)
 
-# Shred after apply — never commit the private key
-shred -u /tmp/szl-receipt-key.yaml  # or: rm -P /tmp/szl-receipt-key.yaml
-```
-
-### Step 3: Mount the key into Pepr pods
-
-After `uds deploy` provisions the Pepr pods, apply the Kustomize patch to mount
-the Secret:
+Pre-create the Secret before `uds deploy`:
 
 ```bash
-kubectl apply -k kustomize/overlays/pepr-key-mount/
+kubectl create secret generic szl-receipts-ed25519 \
+  --namespace pepr-system \
+  --from-file=key.priv=/path/to/your-ed25519-private.pem \
+  --from-file=key.pub=/path/to/your-ed25519-public.pem
 ```
 
-> **Note:** Pepr regenerates its Deployment spec on re-deploy. Re-apply this
-> kustomize overlay after any `npx pepr deploy` or `uds deploy` operation.
+The hook exits 0 without touching the existing Secret.
 
-### Step 4: Verify key is active
+### Honest disclosure
 
-```bash
-kubectl logs -n pepr-system -l app=pepr-admission -f | grep -E "HMAC|Ed25519|UNSIGNED"
-# Expected: "[szl] Ed25519 key loaded from mounted Secret (production mode)"
-# Expected: "[szl] Receipt signed with Ed25519 (production mode)"
-# NOT expected: "UNSIGNED-NO-KEY-CONFIGURED"
-```
-
-### GitOps path (SealedSecret)
-
-For GitOps workflows, use Bitnami sealed-secrets to encrypt and commit the key:
-
-```bash
-bash scripts/generate-receipt-key.sh | \
-  kubeseal --namespace pepr-system \
-  > k8s/secrets/szl-receipts-ed25519.sealedsecret.yaml
-git add k8s/secrets/szl-receipts-ed25519.sealedsecret.yaml
-git commit -m "feat: add sealed Ed25519 receipt signing key"
-```
+If `pepr-system` namespace does not exist at hook time (uncommon — UDS Core creates
+it), the hook fails and the receipts server falls back to `UNSIGNED-NO-ED25519-KEY`
+sentinel mode. Receipts are still persisted but signatures show the sentinel string
+rather than an Ed25519 signature.
 
 **References:**
-- `k8s/secrets/szl-receipts-ed25519.yaml` — placeholder Secret spec with instructions
-- `scripts/generate-receipt-key.sh` — key generation script
-- `kustomize/overlays/pepr-key-mount/` — Kustomize patch to mount key into Pepr pods
-- `docs/CRYPTO_KEY_HANDLING.md` — key custody policy
-- `docs/KEY_CUSTODY_RUNBOOK.md` — operational runbook
-
+- `charts/szl-key-init/` — Helm chart with pre-install hook Job
+- `charts/szl-key-init/templates/keygen-job.yaml` — Job template
+- `charts/szl-key-init/templates/rbac.yaml` — minimal RBAC (get + create secrets only)
+- `packages/szl-receipts/zarf.yaml` — szl-key-init added as required component
