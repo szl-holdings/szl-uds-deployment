@@ -101,11 +101,13 @@ jobs:
       # GitHub Actions does not follow the repo redirect, so we install Zarf via
       # the official release tarball directly to avoid any action-resolution
       # startup failure.
+      # Zarf publishes a bare Linux binary named zarf_<ver>_Linux_<arch>
+      # (NOT a tarball), so download it directly and install onto $PATH.
       - name: Install Zarf ${{ env.ZARF_VERSION }}
         run: |
           set -euo pipefail
-          URL="https://github.com/zarf-dev/zarf/releases/download/${ZARF_VERSION}/zarf_${ZARF_VERSION}_Linux_${{ matrix.arch }}.tar.gz"
-          curl -fsSL "${URL}" | tar -xz zarf
+          URL="https://github.com/zarf-dev/zarf/releases/download/${ZARF_VERSION}/zarf_${ZARF_VERSION}_Linux_${{ matrix.arch }}"
+          curl -fsSL "${URL}" -o zarf
           sudo install -m 0755 zarf /usr/local/bin/zarf
       - name: Verify Zarf
         run: zarf version
