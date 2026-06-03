@@ -112,25 +112,17 @@ jobs:
       - name: Verify Zarf
         run: zarf version
 
-      # ── Install uds-cli ────────────────────────────────────────────────────
-      # uds-cli ships a bare Linux binary: uds-cli_<ver>_Linux_<arch>.
-      # `uds version` performs an update check that can exit non-zero on the
-      # hardened runner; treat the version print as informational only and
-      # validate the binary via `file` + a hard `uds --help` smoke test instead.
+      # ── Install uds-cli (official setup action) ─────────────────────────────
+      # Use the first-party setup-uds action; it installs uds into $HOME and
+      # exports it onto PATH. This is more robust on hardened runners than a
+      # manual /usr/local/bin install.
       - name: Install uds-cli ${{ env.UDS_CLI_VERSION }}
+        uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1.0.1
+        with:
+          version: ${{ env.UDS_CLI_VERSION }}
+      - name: Verify uds-cli
         run: |
-          set -euxo pipefail
-          export UDS_NO_TELEMETRY=1
-          export DO_NOT_TRACK=1
-          URL="https://github.com/defenseunicorns/uds-cli/releases/download/${UDS_CLI_VERSION}/uds-cli_${UDS_CLI_VERSION}_Linux_${{ matrix.arch }}"
-          curl -fL --retry 3 --retry-delay 2 "${URL}" -o uds
-          # Guard against an HTML error page being saved as the binary
-          file uds
-          test "$(stat -c%s uds)" -gt 1000000
-          sudo install -m 0755 uds /usr/local/bin/uds
-          # Informational; do not fail the step on the version self-check
           uds version || echo "(uds version self-check returned non-zero; continuing)"
-          # Hard smoke test: the CLI must at least print help and expose 'create'
           uds --help | grep -q create
 
       # ── Install cosign ─────────────────────────────────────────────────────
