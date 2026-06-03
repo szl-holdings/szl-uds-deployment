@@ -14,6 +14,9 @@
 # Key material NEVER leaves the cluster. The founder never sees the private key.
 # The customer cluster generates it at deploy time.
 #
+# Image: docker.io/library/alpine:3.21 (public, no auth, has apk openssl).
+# cgr.dev/chainguard/openssl requires pull auth in air-gap Zarf package create.
+#
 # Doctrine v11 LOCKED 749/14/163 at kernel commit c7c0ba17
 # SLSA L1 honest — not L3
 # Signed-off-by: Yachay <yachay@szlholdings.ai>
@@ -44,15 +47,12 @@ spec:
       serviceAccountName: szl-key-init
       restartPolicy: OnFailure
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 65534
-        fsGroup: 65534
+        runAsNonRoot: false
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: keygen
-          # chainguard openssl — distroless + reproducible, no shell needed
-          image: cgr.dev/chainguard/openssl:latest
+          image: docker.io/library/alpine:3.21
           command: ["/bin/sh", "-c"]
           args:
             - |
@@ -60,14 +60,21 @@ spec:
               SECRET_NAME="{{ .Values.secretName | default "szl-receipts-ed25519" }}"
               NAMESPACE="{{ .Values.namespace | default .Release.Namespace }}"
 
+              # Install kubectl and openssl
+              apk add --no-cache curl openssl >/dev/null 2>&1
+              # Install kubectl
+              KUBECTL_VERSION="v1.31.0"
+              curl -sLo /usr/local/bin/kubectl \
+                "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+              chmod +x /usr/local/bin/kubectl
+
               # Idempotency check: if Secret already exists, exit clean (BYOK path)
               if kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
-                echo "szl-key-init: Secret $SECRET_NAME already exists in $NAMESPACE — skipping keygen (BYOK mode)"
+                echo "szl-key-init: Secret $SECRET_NAME exists in $NAMESPACE — skipping keygen (BYOK mode)"
                 exit 0
               fi
 
               echo "szl-key-init: Generating Ed25519 keypair..."
-              # Write to /tmp (tmpfs, not pod-ephemeral disk visible outside the pod)
               openssl genpkey -algorithm ED25519 -out /tmp/priv.pem
               openssl pkey -in /tmp/priv.pem -pubout -out /tmp/pub.pem
 
@@ -77,21 +84,19 @@ spec:
                 --from-file=key.priv=/tmp/priv.pem \
                 --from-file=key.pub=/tmp/pub.pem
 
-              # Shred private key from container tmpfs
-              shred -u /tmp/priv.pem 2>/dev/null || rm -f /tmp/priv.pem
-              rm -f /tmp/pub.pem
+              # Remove key files
+              rm -f /tmp/priv.pem /tmp/pub.pem
 
-              echo "szl-key-init: Ed25519 Secret created. Key material shredded from container."
+              echo "szl-key-init: Ed25519 Secret created. Key material removed from container."
               echo "szl-key-init: DONE — founder never sees this key."
           securityContext:
             allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false
             capabilities:
               drop: ["ALL"]
           resources:
             requests:
               cpu: "50m"
-              memory: "32Mi"
+              memory: "64Mi"
             limits:
               cpu: "200m"
-              memory: "64Mi"
+              memory: "128Mi"
