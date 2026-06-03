@@ -93,7 +93,20 @@ jobs:
           mkdir -p dist
 
           # Build the szl-receipts package (the core UDS deployment artifact)
+          # NOTE: szl-receipts-pepr-policy imports ../../dist/pepr (optional, required: false)
+          # Zarf lint validates the import path even for optional components. Create the
+          # placeholder dir so lint passes without needing a full Pepr build in CI.
           if [ -f "packages/szl-receipts/zarf.yaml" ]; then
+            mkdir -p dist/pepr
+            # Create a minimal placeholder zarf.yaml so the import resolves
+            cat > dist/pepr/zarf.yaml << 'ZARFEOF'
+kind: ZarfPackageConfig
+metadata:
+  name: szl-receipt-policy-placeholder
+  version: "0.0.0"
+  description: "CI placeholder — real Pepr policy built via: cd pepr && pnpm build"
+components: []
+ZARFEOF
             zarf package create packages/szl-receipts \
               --confirm \
               --no-progress \
