@@ -200,9 +200,11 @@ jobs:
         env:
           PKG_VERSION: ${{ steps.version.outputs.tag }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           # Member images are tagged uds-v0.2.0 on ghcr.io, so the image tag we
           # feed Zarf is the full OCI tag (uds-v0.2.0), not the stripped version.
+          mkdir -p dist
+          fail=0
           for organ in a11oy sentra amaru killinchu rosie; do
             echo "::group::zarf package create packages/${organ}"
             zarf package create "packages/${organ}" \
@@ -210,9 +212,18 @@ jobs:
               --architecture "${{ matrix.arch }}" \
               --confirm \
               --no-progress \
-              --output-directory dist
+              --output-directory dist 2> "/tmp/${organ}.err"
+            RC=$?
             echo "::endgroup::"
+            if [ "${RC}" -ne 0 ]; then
+              fail=1
+              ERRTAIL=$(tail -c 600 "/tmp/${organ}.err" | tr '\n' ' ' | sed 's/[^[:print:]]//g')
+              echo "::error title=zarf-create-${organ}::rc=${RC} err=${ERRTAIL}"
+            else
+              echo "::notice title=zarf-create-${organ}::ok"
+            fi
           done
+          if [ "${fail}" -ne 0 ]; then exit 1; fi
           echo "Built member packages:"
           ls -lh dist/*.tar.zst
 
