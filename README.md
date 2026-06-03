@@ -130,3 +130,72 @@ The following components are marked `required: false` in `zarf.yaml` and are **s
   To deploy once available: `zarf package deploy <pkg> --components=szl-receipts-namespace,szl-receipts-server,szl-ui-dashboard`
 
 The default deploy (all `required: true` components only) installs namespace + server.
+
+---
+
+## Pre-Deploy: Ed25519 Receipt Signing Key (Required — Founder Action FA-KEY-001)
+
+> **P0 Gap (Warhacker June 9):** Pepr emits unsigned receipts (`UNSIGNED-NO-KEY-CONFIGURED`)
+> until the Ed25519 signing key is provisioned. This MUST be done BEFORE deploying
+> `szl-uds-deployment`.
+
+The Pepr admission module (`pepr/policies/szl-receipt-on-deploy.ts`) signs DSSE receipts
+with an Ed25519 private key. The key is loaded from the `szl-receipts-ed25519` Kubernetes
+Secret in the `pepr-system` namespace.
+
+### Step 1: Generate the Ed25519 keypair
+
+```bash
+bash scripts/generate-receipt-key.sh > /tmp/szl-receipt-key.yaml
+```
+
+### Step 2: Apply the Secret (before `uds deploy`)
+
+```bash
+# Direct apply (cluster must be running)
+kubectl apply -f /tmp/szl-receipt-key.yaml
+
+# Shred after apply — never commit the private key
+shred -u /tmp/szl-receipt-key.yaml  # or: rm -P /tmp/szl-receipt-key.yaml
+```
+
+### Step 3: Mount the key into Pepr pods
+
+After `uds deploy` provisions the Pepr pods, apply the Kustomize patch to mount
+the Secret:
+
+```bash
+kubectl apply -k kustomize/overlays/pepr-key-mount/
+```
+
+> **Note:** Pepr regenerates its Deployment spec on re-deploy. Re-apply this
+> kustomize overlay after any `npx pepr deploy` or `uds deploy` operation.
+
+### Step 4: Verify key is active
+
+```bash
+kubectl logs -n pepr-system -l app=pepr-admission -f | grep -E "HMAC|Ed25519|UNSIGNED"
+# Expected: "[szl] Ed25519 key loaded from mounted Secret (production mode)"
+# Expected: "[szl] Receipt signed with Ed25519 (production mode)"
+# NOT expected: "UNSIGNED-NO-KEY-CONFIGURED"
+```
+
+### GitOps path (SealedSecret)
+
+For GitOps workflows, use Bitnami sealed-secrets to encrypt and commit the key:
+
+```bash
+bash scripts/generate-receipt-key.sh | \
+  kubeseal --namespace pepr-system \
+  > k8s/secrets/szl-receipts-ed25519.sealedsecret.yaml
+git add k8s/secrets/szl-receipts-ed25519.sealedsecret.yaml
+git commit -m "feat: add sealed Ed25519 receipt signing key"
+```
+
+**References:**
+- `k8s/secrets/szl-receipts-ed25519.yaml` — placeholder Secret spec with instructions
+- `scripts/generate-receipt-key.sh` — key generation script
+- `kustomize/overlays/pepr-key-mount/` — Kustomize patch to mount key into Pepr pods
+- `docs/CRYPTO_KEY_HANDLING.md` — key custody policy
+- `docs/KEY_CUSTODY_RUNBOOK.md` — operational runbook
+
