@@ -117,61 +117,50 @@ jobs:
       # plain curl to a bare Linux binary + sudo install to /usr/local/bin.
       # No pipefail-guarded grep and no binary self-checks that could trip the
       # hardened runner's outbound update probe.
-      - name: Install uds-cli ${{ env.UDS_CLI_VERSION }}
+      # The 196MB uds-cli release binary cannot be pulled on this runner: the
+      # egress path returns HTTP 200 but truncates the body to 0 bytes
+      # (curl_exit=23) for that large single object, while the smaller Zarf
+      # binary and the Go module proxy (many small objects) work fine. So we
+      # build uds-cli from source at the pinned tag via `go install`, which
+      # fetches modules through proxy.golang.org rather than one large blob.
+      - name: Set up Go
+        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
+        with:
+          go-version: "1.26.0"
+          cache: false
+      - name: Build uds-cli ${{ env.UDS_CLI_VERSION }} from source
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
         run: |
           set -uo pipefail
-          REPO="defenseunicorns/uds-cli"
-          ASSET="uds-cli_${UDS_CLI_VERSION}_Linux_${{ matrix.arch }}"
-          URL="https://github.com/${REPO}/releases/download/${UDS_CLI_VERSION}/${ASSET}"
-          # Diagnostics emitted as workflow-command annotations (readable via the
-          # check-runs API even when the step-summary/raw-log blob host is egress
-          # blocked). Each ::notice:: surfaces as an annotation on the check run.
-          echo "::notice title=uds-cli-url::${URL}"
-          # Pull the expected sha256 from the release checksums so we can verify
-          # integrity AND distinguish a truncated download from a corrupt one.
-          CKURL="https://github.com/${REPO}/releases/download/${UDS_CLI_VERSION}/checksums.txt"
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 "${CKURL}" -o checksums.txt || true
-          EXPECT=$(grep "  ${ASSET}\$" checksums.txt 2>/dev/null | awk '{print $1}')
-          echo "::notice title=uds-cli-expected-sha::${EXPECT:-unknown}"
-          ASSET_API="https://api.github.com/repos/${REPO}/releases/assets/421085386"
-          echo "::notice title=uds-cli-disk::$(df -B1 --output=avail . | tail -1) bytes avail in workdir"
-          ok=0
-          # Hold set +e across the whole download block: under set -e -o pipefail
-          # a failed sha256sum on a partial file would abort before diagnostics.
+          # Clone the tagged source (git = many small objects, unaffected by the
+          # large-blob egress truncation) and `go build` inside the module so the
+          # go.mod `replace` directives are honored (which `go install m@v` cannot).
+          echo "::notice title=uds-cli-build::clone+build ${UDS_CLI_VERSION}"
+          go version
           set +e
-          # ── Method R: resumable chunked download ──────────────────────────
-          # Diagnosis from prior runs: curl_exit=23 (write/body error) with
-          # http=200 and size=0 on the full 196MB asset, while the 70MB Zarf
-          # binary downloads fine -> the runner egress path truncates large
-          # response bodies. Defeat it by resuming with `curl -C -` in a loop:
-          # each pass appends whatever bytes it manages before the body is cut,
-          # until the file reaches the full asset size.
-          rm -f uds
-          for pass in $(seq 1 40); do
-            CUR=0; [ -f uds ] && CUR=$(stat -c%s uds 2>/dev/null || echo 0)
-            if [ "${CUR}" -ge 196636834 ]; then ok=1; break; fi
-            curl -L --ipv4 -C - --connect-timeout 30 --max-time 120 \
-                 -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-                 -H "Accept: application/octet-stream" \
-                 -sS -o uds "${ASSET_API}" >/dev/null 2>&1 || true
-            NEW=0; [ -f uds ] && NEW=$(stat -c%s uds 2>/dev/null || echo 0)
-            echo "::notice title=uds-cli-resume::pass=${pass} bytes=${NEW}"
-            if [ "${NEW}" -le "${CUR}" ] && [ "${pass}" -gt 1 ]; then
-              # no forward progress this pass; nudge with the public CDN url
-              curl -L --ipv4 -C - --connect-timeout 30 --max-time 120 \
-                   -sS -o uds "${URL}" >/dev/null 2>&1 || true
-            fi
-          done
-          FIN=0; [ -f uds ] && FIN=$(stat -c%s uds 2>/dev/null || echo 0)
-          FGOT="none"; [ -f uds ] && FGOT=$(sha256sum uds 2>/dev/null | awk '{print $1}')
-          echo "::error title=uds-cli-method-R::final_size=${FIN} sha=${FGOT} expect=${EXPECT}"
-          if [ "${FIN}" -ge 196636834 ] && { [ -z "${EXPECT}" ] || [ "${FGOT}" = "${EXPECT}" ]; }; then ok=1; fi
+          git clone --depth 1 --branch "${UDS_CLI_VERSION}" \
+            https://github.com/defenseunicorns/uds-cli.git uds-cli-src
+          CRC=$?
+          echo "::error title=uds-cli-clone::git_clone_rc=${CRC}"
+          BUILT=""
+          if [ "${CRC}" -eq 0 ]; then
+            ( cd uds-cli-src && \
+              go build -ldflags "-s -w -X github.com/defenseunicorns/uds-cli/src/config.CLIVersion=${UDS_CLI_VERSION}" \
+                -o /tmp/uds main.go )
+            BRC=$?
+            echo "::error title=uds-cli-gobuild::go_build_rc=${BRC}"
+          fi
           set -e
-          if [ "${ok}" -ne 1 ]; then
-            echo "::error title=uds-cli-install-failed::no method produced a valid ${ASSET}"
+          SZ=0; [ -f /tmp/uds ] && SZ=$(stat -c%s /tmp/uds 2>/dev/null || echo 0)
+          echo "::error title=uds-cli-build-result::bin_size=${SZ}"
+          if [ ! -f /tmp/uds ] || [ "${SZ}" -lt 50000000 ]; then
+            echo "::error title=uds-cli-build-failed::source build did not produce a usable binary"
             exit 1
           fi
-          sudo install -m 0755 uds /usr/local/bin/uds
+          sudo install -m 0755 /tmp/uds /usr/local/bin/uds
           echo "::notice title=uds-cli-installed::ok size=$(stat -c%s /usr/local/bin/uds)"
       - name: Verify uds-cli
         run: |
