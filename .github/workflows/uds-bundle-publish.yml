@@ -138,30 +138,30 @@ jobs:
           # Clone the tagged source (git = many small objects, unaffected by the
           # large-blob egress truncation) and `go build` inside the module so the
           # go.mod `replace` directives are honored (which `go install m@v` cannot).
-          echo "::notice title=uds-cli-build::clone+build ${UDS_CLI_VERSION}"
+          echo "uds-cli build: clone+build ${UDS_CLI_VERSION}"
           go version
           set +e
           git clone --depth 1 --branch "${UDS_CLI_VERSION}" \
             https://github.com/defenseunicorns/uds-cli.git uds-cli-src
           CRC=$?
-          echo "::notice title=uds-cli-clone::git_clone_rc=${CRC}"
+          echo "uds-cli clone rc=${CRC}"
           BUILT=""
           if [ "${CRC}" -eq 0 ]; then
             ( cd uds-cli-src && \
               go build -ldflags "-s -w -X github.com/defenseunicorns/uds-cli/src/config.CLIVersion=${UDS_CLI_VERSION}" \
                 -o /tmp/uds main.go )
             BRC=$?
-            echo "::notice title=uds-cli-gobuild::go_build_rc=${BRC}"
+            echo "uds-cli go_build rc=${BRC}"
           fi
           set -e
           SZ=0; [ -f /tmp/uds ] && SZ=$(stat -c%s /tmp/uds 2>/dev/null || echo 0)
-          echo "::notice title=uds-cli-build-result::bin_size=${SZ}"
+          echo "uds-cli bin_size=${SZ}"
           if [ ! -f /tmp/uds ] || [ "${SZ}" -lt 50000000 ]; then
             echo "::error title=uds-cli-build-failed::source build did not produce a usable binary"
             exit 1
           fi
           sudo install -m 0755 /tmp/uds /usr/local/bin/uds
-          echo "::notice title=uds-cli-installed::ok size=$(stat -c%s /usr/local/bin/uds)"
+          echo "uds-cli installed size=$(stat -c%s /usr/local/bin/uds)"
       - name: Verify uds-cli
         run: |
           set -euo pipefail
