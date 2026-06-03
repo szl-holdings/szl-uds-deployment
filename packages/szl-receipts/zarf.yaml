@@ -23,9 +23,8 @@ variables:
     default: "uds.dev"
 
   # NOTE (v0.3.1): the RECEIPT_HMAC_KEY variable was REMOVED. Receipts are now
-  # signed with an Ed25519 key the operator provisions as the Secret
-  # szl-receipts-ed25519 BEFORE deploy (see charts/szl-receipts NOTES.txt and
-  # templates/secret-keypair.yaml). No signing key is baked into this package.
+  # signed with an Ed25519 key auto-generated at first deploy (see szl-key-init
+  # component below) or pre-provisioned by the operator (BYOK path).
 
   - name: RECEIPTS_REPLICAS
     description: "Number of szl-receipts-server replicas"
@@ -36,6 +35,27 @@ variables:
     default: "info"
 
 components:
+  # ── Ed25519 key auto-generation (runs before deploy via Helm pre-install hook) ──
+  # On first `uds deploy`, a Helm pre-install hook Job generates an Ed25519 keypair
+  # in the pepr-system namespace as Secret szl-receipts-ed25519. The customer's
+  # cluster generates the key; SZL never sees it. The founder never runs a script.
+  #
+  # BYOK: pre-create the Secret before `uds deploy` to bring your own key.
+  # The hook is idempotent — it skips keygen if the Secret already exists.
+  #
+  # Honest disclosure: if the Helm hook fails (e.g., pepr-system not yet created),
+  # the receipts server falls back to UNSIGNED-NO-ED25519-KEY sentinel mode.
+  - name: szl-key-init
+    required: true
+    description: "Helm pre-install hook: auto-generate Ed25519 signing key on first deploy"
+    charts:
+      - name: szl-key-init
+        namespace: pepr-system
+        version: 0.1.0
+        localPath: ../../charts/szl-key-init
+        valuesFiles:
+          - ../../charts/szl-key-init/values.yaml
+
   - name: szl-receipts-namespace
     required: true
     description: "Create the szl-receipts namespace with required labels"
