@@ -112,3 +112,11 @@ components:
         localPath: ui/chart
     images:
       - docker.io/library/nginx:1.27-alpine
+
+  - name: kyverno-verify-attestations
+    required: true
+    description: "Kyverno ClusterPolicy: enforce GitHub-signed build provenance on all szl-holdings images"
+    manifests:
+      - name: kyverno-policy
+        files:
+          - policies/kyverno-verify-attestations.yaml
