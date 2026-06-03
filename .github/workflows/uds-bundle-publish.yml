@@ -199,7 +199,13 @@ jobs:
       - name: Build member Zarf packages
         env:
           PKG_VERSION: ${{ steps.version.outputs.tag }}
+        shell: bash
         run: |
+          # IMPORTANT: GitHub invokes run-steps as `bash -e`; that default -e was
+          # killing this step the instant `zarf package create` returned non-zero,
+          # BEFORE our per-organ diagnostic echo. Explicitly disable -e so we can
+          # capture rc and surface the real per-organ error.
+          set +e
           set -uo pipefail
           # Member images are tagged uds-v0.2.0 on ghcr.io, so the image tag we
           # feed Zarf is the full OCI tag (uds-v0.2.0), not the stripped version.
