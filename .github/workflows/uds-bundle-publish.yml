@@ -134,38 +134,38 @@ jobs:
           EXPECT=$(grep "  ${ASSET}\$" checksums.txt 2>/dev/null | awk '{print $1}')
           echo "::notice title=uds-cli-expected-sha::${EXPECT:-unknown}"
           ASSET_API="https://api.github.com/repos/${REPO}/releases/assets/421085386"
+          echo "::notice title=uds-cli-disk::$(df -B1 --output=avail . | tail -1) bytes avail in workdir"
           ok=0
-          # Method A: public release CDN (same host that Zarf used successfully).
-          # Method B: authenticated GitHub API octet-stream endpoint (different
-          # routing; works when the large-asset CDN host is egress-restricted).
-          # Each method's exact curl_exit/http/size/sha is emitted as an ::error::
-          # annotation (errors are never deduped/dropped by the annotations API).
-          # NOTE: keep `set +e` for the whole probe block. Under `set -e -o
-          # pipefail`, a failed `sha256sum missingfile | awk` (when the download
-          # produced no file) aborts the step BEFORE the diagnostic echo runs,
-          # which is exactly why earlier runs showed no method annotation.
+          # Hold set +e across the whole download block: under set -e -o pipefail
+          # a failed sha256sum on a partial file would abort before diagnostics.
           set +e
-          for method in A B; do
-            rm -f uds
-            if [ "${method}" = "A" ]; then
-              HTTP=$(curl -L --ipv4 --connect-timeout 30 --max-time 600 \
-                     --retry 3 --retry-all-errors --retry-delay 5 \
-                     -sS -w '%{http_code}' -o uds "${URL}"); RC=$?
-            else
-              HTTP=$(curl -L --ipv4 --connect-timeout 30 --max-time 600 \
-                     --retry 3 --retry-all-errors --retry-delay 5 \
-                     -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-                     -H "Accept: application/octet-stream" \
-                     -sS -w '%{http_code}' -o uds "${ASSET_API}"); RC=$?
-            fi
-            SZ=0; [ -f uds ] && SZ=$(stat -c%s uds 2>/dev/null || echo 0)
-            GOT="none"; [ -f uds ] && GOT=$(sha256sum uds 2>/dev/null | awk '{print $1}')
-            HEAD=""; [ -f uds ] && HEAD=$(head -c 80 uds 2>/dev/null | tr -d '\0' | sed 's/[^[:print:]]//g')
-            echo "::error title=uds-cli-method-${method}::curl_exit=${RC} http=${HTTP} size=${SZ} sha=${GOT} head=${HEAD}"
-            if [ "${RC}" -eq 0 ] && [ "${SZ}" -gt 100000000 ]; then
-              if [ -z "${EXPECT}" ] || [ "${GOT}" = "${EXPECT}" ]; then ok=1; break; fi
+          # ── Method R: resumable chunked download ──────────────────────────
+          # Diagnosis from prior runs: curl_exit=23 (write/body error) with
+          # http=200 and size=0 on the full 196MB asset, while the 70MB Zarf
+          # binary downloads fine -> the runner egress path truncates large
+          # response bodies. Defeat it by resuming with `curl -C -` in a loop:
+          # each pass appends whatever bytes it manages before the body is cut,
+          # until the file reaches the full asset size.
+          rm -f uds
+          for pass in $(seq 1 40); do
+            CUR=0; [ -f uds ] && CUR=$(stat -c%s uds 2>/dev/null || echo 0)
+            if [ "${CUR}" -ge 196636834 ]; then ok=1; break; fi
+            curl -L --ipv4 -C - --connect-timeout 30 --max-time 120 \
+                 -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                 -H "Accept: application/octet-stream" \
+                 -sS -o uds "${ASSET_API}" >/dev/null 2>&1 || true
+            NEW=0; [ -f uds ] && NEW=$(stat -c%s uds 2>/dev/null || echo 0)
+            echo "::notice title=uds-cli-resume::pass=${pass} bytes=${NEW}"
+            if [ "${NEW}" -le "${CUR}" ] && [ "${pass}" -gt 1 ]; then
+              # no forward progress this pass; nudge with the public CDN url
+              curl -L --ipv4 -C - --connect-timeout 30 --max-time 120 \
+                   -sS -o uds "${URL}" >/dev/null 2>&1 || true
             fi
           done
+          FIN=0; [ -f uds ] && FIN=$(stat -c%s uds 2>/dev/null || echo 0)
+          FGOT="none"; [ -f uds ] && FGOT=$(sha256sum uds 2>/dev/null | awk '{print $1}')
+          echo "::error title=uds-cli-method-R::final_size=${FIN} sha=${FGOT} expect=${EXPECT}"
+          if [ "${FIN}" -ge 196636834 ] && { [ -z "${EXPECT}" ] || [ "${FGOT}" = "${EXPECT}" ]; }; then ok=1; fi
           set -e
           if [ "${ok}" -ne 1 ]; then
             echo "::error title=uds-cli-install-failed::no method produced a valid ${ASSET}"
