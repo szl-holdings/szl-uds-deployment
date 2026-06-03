@@ -99,14 +99,7 @@ jobs:
           if [ -f "packages/szl-receipts/zarf.yaml" ]; then
             mkdir -p dist/pepr
             # Create a minimal placeholder zarf.yaml so the import resolves
-            cat > dist/pepr/zarf.yaml << 'ZARFEOF'
-kind: ZarfPackageConfig
-metadata:
-  name: szl-receipt-policy-placeholder
-  version: "0.0.0"
-  description: "CI placeholder — real Pepr policy built via: cd pepr && pnpm build"
-components: []
-ZARFEOF
+            printf 'kind: ZarfPackageConfig\nmetadata:\n  name: szl-receipt-policy-placeholder\n  version: "0.0.0"\n  description: "CI placeholder"\ncomponents: []\n' > dist/pepr/zarf.yaml
             zarf package create packages/szl-receipts \
               --confirm \
               --no-progress \
