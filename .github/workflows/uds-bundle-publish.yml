@@ -214,12 +214,17 @@ jobs:
               --architecture "${{ matrix.arch }}" \
               --confirm \
               --no-progress \
-              --output-directory dist 2> "/tmp/${organ}.err"
+              --log-level debug \
+              --output-directory dist > "/tmp/${organ}.log" 2>&1
             RC=$?
             echo "::endgroup::"
+            cat "/tmp/${organ}.log" || true
             if [ "${RC}" -ne 0 ]; then
-              ERRTAIL=$(tail -c 900 "/tmp/${organ}.err" | tr '\n' ' ' | sed 's/[^[:print:]]//g')
-              echo "::error title=zarf-create-${organ}::rc=${RC} err=${ERRTAIL}"
+              # Emit the last meaningful lines (filter zarf timestamps/ansi) as a
+              # single ::error:: so it lands in the readable annotation cap.
+              ERRTAIL=$(grep -iE 'err|fail|fatal|unable|denied|not found|no such|invalid|cannot' "/tmp/${organ}.log" | tail -n 6 | tr '\n' '|' | sed 's/[^[:print:]|]//g')
+              [ -z "${ERRTAIL}" ] && ERRTAIL=$(tail -n 6 "/tmp/${organ}.log" | tr '\n' '|' | sed 's/[^[:print:]|]//g')
+              echo "::error title=zarf-create-${organ}::rc=${RC} :: ${ERRTAIL}"
               exit 1
             fi
           done
