@@ -96,16 +96,12 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Resolved OCI tag=${TAG}  bundle version=${VERSION}"
 
-      # ── Install Zarf ───────────────────────────────────────────────────────
+      # ── Install Zarf (direct download; no action dependency) ───────────────
+      # NOTE: the setup-zarf action moved from defenseunicorns/* to zarf-dev/*;
+      # GitHub Actions does not follow the repo redirect, so we install Zarf via
+      # the official release tarball directly to avoid any action-resolution
+      # startup failure.
       - name: Install Zarf ${{ env.ZARF_VERSION }}
-        uses: defenseunicorns/setup-zarf@v1
-        with:
-          version: ${{ env.ZARF_VERSION }}
-        continue-on-error: true
-        id: setup_zarf_action
-
-      - name: Install Zarf ${{ env.ZARF_VERSION }} (curl fallback)
-        if: steps.setup_zarf_action.outcome == 'failure'
         run: |
           set -euo pipefail
           URL="https://github.com/zarf-dev/zarf/releases/download/${ZARF_VERSION}/zarf_${ZARF_VERSION}_Linux_${{ matrix.arch }}.tar.gz"
