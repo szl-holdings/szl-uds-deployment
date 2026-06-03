@@ -49,8 +49,8 @@ components:
         valuesFiles:
           - ../../charts/szl-key-init/values.yaml
     images:
-      # cgr.dev/chainguard/openssl used in the keygen Job
-      - cgr.dev/chainguard/openssl:latest
+      # alpine:3.21 used in the keygen Job (replaces cgr.dev/chainguard/openssl — no public auth)
+      - docker.io/library/alpine:3.21
 
   - name: szl-receipts-namespace
     required: true
