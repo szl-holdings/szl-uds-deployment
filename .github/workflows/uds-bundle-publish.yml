@@ -133,25 +133,39 @@ jobs:
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 "${CKURL}" -o checksums.txt || true
           EXPECT=$(grep "  ${ASSET}\$" checksums.txt 2>/dev/null | awk '{print $1}')
           echo "::notice title=uds-cli-expected-sha::${EXPECT:-unknown}"
+          ASSET_API="https://api.github.com/repos/${REPO}/releases/assets/421085386"
           ok=0
-          for attempt in 1 2 3 4 5; do
-            echo "::notice title=uds-cli-attempt::attempt=${attempt}"
-            set +e
-            HTTP=$(curl -L --ipv4 --connect-timeout 30 --max-time 600 \
-                   --retry 3 --retry-all-errors --retry-delay 5 \
-                   -sS -w '%{http_code}' -o uds "${URL}"); RC=$?
-            set -e
+          # Method A: public release CDN (same host that Zarf used successfully).
+          # Method B: authenticated GitHub API octet-stream endpoint (different
+          # routing; works when the large-asset CDN host is egress-restricted).
+          # Each method's exact curl_exit/http/size/sha is emitted as an ::error::
+          # annotation (errors are never deduped/dropped by the annotations API).
+          for method in A B; do
+            if [ "${method}" = "A" ]; then
+              set +e
+              HTTP=$(curl -L --ipv4 --connect-timeout 30 --max-time 600 \
+                     --retry 3 --retry-all-errors --retry-delay 5 \
+                     -sS -w '%{http_code}' -o uds "${URL}"); RC=$?
+              set -e
+            else
+              set +e
+              HTTP=$(curl -L --ipv4 --connect-timeout 30 --max-time 600 \
+                     --retry 3 --retry-all-errors --retry-delay 5 \
+                     -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                     -H "Accept: application/octet-stream" \
+                     -sS -w '%{http_code}' -o uds "${ASSET_API}"); RC=$?
+              set -e
+            fi
             SZ=$(stat -c%s uds 2>/dev/null || echo 0)
             GOT=$(sha256sum uds 2>/dev/null | awk '{print $1}')
-            echo "::notice title=uds-cli-result::attempt=${attempt} curl_exit=${RC} http=${HTTP} size=${SZ} sha=${GOT}"
+            HEAD=$(head -c 80 uds 2>/dev/null | tr -d '\0' | sed 's/[^[:print:]]//g')
+            echo "::error title=uds-cli-method-${method}::curl_exit=${RC} http=${HTTP} size=${SZ} sha=${GOT} head=${HEAD}"
             if [ "${RC}" -eq 0 ] && [ "${SZ}" -gt 100000000 ]; then
               if [ -z "${EXPECT}" ] || [ "${GOT}" = "${EXPECT}" ]; then ok=1; break; fi
-              echo "::warning title=uds-cli-sha-mismatch::got=${GOT} expect=${EXPECT}"
             fi
-            sleep 5
           done
           if [ "${ok}" -ne 1 ]; then
-            echo "::error title=uds-cli-install-failed::could not download a valid ${ASSET} after 5 attempts (last size=$(stat -c%s uds 2>/dev/null || echo 0))"
+            echo "::error title=uds-cli-install-failed::no method produced a valid ${ASSET}"
             exit 1
           fi
           sudo install -m 0755 uds /usr/local/bin/uds
