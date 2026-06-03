@@ -1,65 +1,63 @@
 # Security Policy
 
-## Trust Tier
+## Supported Versions
 
-**Trust Tier 1** — SZL Holdings is committed to coordinated, responsible disclosure for all SZL Holdings repositories.
+| Version | Supported          |
+| ------- | ------------------ |
+| 1.x     | :white_check_mark: |
+| < 1.0   | :x:                |
 
 ## Reporting a Vulnerability
 
-Please report security vulnerabilities to: **security@szlholdings.com**
+**Do NOT open a public GitHub issue for security vulnerabilities.**
 
-**Alternate channel:** [Open a private security advisory](https://github.com/szl-holdings/.github/security/advisories/new) on GitHub.
+Please report security vulnerabilities via email to **security@szlholdings.ai** with:
 
-Please include:
+1. Description of the vulnerability
+2. Steps to reproduce
+3. Potential impact assessment
+4. Any suggested mitigations
 
-- A clear description of the issue and its potential impact.
-- Steps to reproduce, including any proof-of-concept code, requests, or payloads.
-- The affected version, commit SHA, or environment.
-- Your name and contact details for follow-up and credit (optional).
+### Response SLA
 
-## Disclosure Process
+| Severity | Initial Response | Resolution Target |
+|---|---|---|
+| Critical | 24 hours | 7 days |
+| High | 48 hours | 30 days |
+| Medium | 5 business days | 90 days |
+| Low | 10 business days | 180 days |
 
-We commit to:
-- Acknowledging your report within **72 hours**
-- Providing an initial assessment within **7 days**
-- Disclosing the resolution within **90 days** of report (industry-standard coordinated-disclosure window)
+We follow a **90-day responsible disclosure** policy. After 90 days from initial report, details may be published regardless of patch status (with appropriate notice to reporter).
 
-We ask that you give us a reasonable opportunity to investigate and patch before public disclosure. We do not pursue legal action against good-faith security research.
+## Supply-Chain Security
 
-## Supported Versions
+- **SLSA Build Level 1** — build provenance generated per release (honest; not L2/L3)
+- **DCO required** — all commits carry `Signed-off-by:` trailers per [Linux Foundation DCO](https://developercertificate.org/)
+- **Cosign keyless signing** — containers signed via Sigstore OIDC keyless mode; verify with `cosign verify ghcr.io/szl-holdings/<repo>:<tag>`
+- **SBOM** — CycloneDX SBOM attached to each GitHub Release
 
-| Version | Supported |
-|---------|-----------|
-| Current main | ✅ |
-| Tagged releases (last 90 days) | ✅ |
-| Older tagged releases | Best effort |
+## Section 889 Attestation
 
-## Scope
+SZL Holdings attests that no covered telecommunications equipment or services from the following vendors are used in this software:
 
-This policy covers all software published under `szl-holdings/*`. For the upstream Defense Unicorns ecosystem we contribute to (Iron Bank, UDS, Pepr, Zarf), please follow their respective security policies.
+1. Huawei Technologies Company
+2. ZTE Corporation
+3. Hytera Communications Corporation
+4. Hangzhou Hikvision Digital Technology Company
+5. Dahua Technology Company
 
-In scope:
+Per NDAA Section 889, 41 U.S.C. § 4713.
 
-- Source code, container images, and infrastructure-as-code in this repository.
-- Authentication, authorization, data handling, and cryptographic implementations.
-- Supply-chain risks affecting build artifacts produced from this repository.
+## Doctrine
 
-Out of scope:
+- Doctrine v11 LOCKED — kernel commit `c7c0ba17` (749 declarations / 14 axioms / 163 sorries)
+- Λ = Conjecture 1 (never a theorem)
+- No Iron Bank, FedRAMP, CMMC, or SWFT claims
 
-- Third-party dependencies (please report upstream).
-- Social engineering, physical attacks, or denial-of-service against shared infrastructure.
-- Findings that require physical access to a user's device.
+## Contact
 
-## Governance
+- **Security disclosures:** security@szlholdings.ai
+- **General:** hello@szlholdings.ai
+- **Website:** https://szlholdings.ai
 
-Vulnerability disclosures are governed by SZL Doctrine v7:
-
-- No fake security claims; positive status must be verifiable.
-- `STAGED-ADVISORY` label for gates not yet machine-checked.
-- DSSE receipts on every governance decision.
-
-Source: https://github.com/szl-holdings/.github
-
-## Hall of Thanks
-
-Researchers who responsibly disclose vulnerabilities will be acknowledged here.
+*This policy follows [OpenSSF Vulnerability Disclosure Guide](https://github.com/ossf/oss-vulnerability-guide).*
