@@ -23,7 +23,7 @@ jobs:
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
 
       - name: Generate SBOM with Syft (CycloneDX)
-        uses: anchore/sbom-action@55dc4ee22412511ee8c3e6e5b0e24a5b8151ee6c # v0.17.0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.17.0
         with:
           output-file: sbom.cdx.json
           format: cyclonedx-json
