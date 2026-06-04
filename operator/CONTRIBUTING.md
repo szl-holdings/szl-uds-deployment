@@ -44,7 +44,7 @@ Before submitting any change, verify:
 
 - Doctrine v11 LOCKED 749/14/163 — kernel commit `c7c0ba17` — **never** change these values
 - Λ = Conjecture 1 — **never** elevate to theorem in any doc or comment
-- SLSA L1 honest — **never** claim L2 or L3
+- SLSA L1 honest — never claim L2, never claim L3
 - Section 889 = exactly 5 vendors — do not add or remove from the prohibited vendor list
 - No Iron Bank, FedRAMP, CMMC, SWFT, or Mission Owner references anywhere
 
