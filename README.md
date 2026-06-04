@@ -1,3 +1,41 @@
+<!-- szl-investor-header -->
+<div align="center">
+
+# szl-uds-deployment
+
+### A ready-to-run deployment that proves SZL's governance receipts working live on a Kubernetes cluster, signed and verifiable end to end.
+
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square)](LICENSE) [![Build](https://github.com/szl-holdings/szl-uds-deployment/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/szl-holdings/szl-uds-deployment/actions/workflows/release.yml) [![Doctrine v11](https://img.shields.io/badge/Doctrine-v11_LOCKED-3b82f6?style=flat-square)](https://github.com/szl-holdings/.github/tree/main/doctrine) [![SLSA](https://img.shields.io/badge/SLSA-L1_honest-22c55e?style=flat-square)](https://slsa.dev/spec/v1.0/levels)
+
+[Docs](https://docs.szlholdings.com) · [Quickstart](https://docs.szlholdings.com/quickstart) · [SZL Holdings](https://szlholdings.com)
+
+</div>
+
+## 💡 Why it matters
+
+It is the live reference deployment used for the 2026 Warhacker demo — showing policy enforcement and signed audit receipts running on real infrastructure, the way a customer would actually operate it in an air-gapped environment.
+
+## ▶️ Live demo
+
+_Internal / private repository — no public demo surface. See [docs.szlholdings.com](https://docs.szlholdings.com) for the public product walkthrough._
+
+## ⚡ Quick start (30 seconds)
+
+```bash
+git clone https://github.com/szl-holdings/szl-uds-deployment.git
+cd szl-uds-deployment
+make quickstart   # or: see docs.szlholdings.com/quickstart
+```
+
+## 🔍 How it works
+
+In two sentences: this component is part of SZL's governed-AI mesh — it enforces policy and emits signed, replayable audit receipts so every AI action can be verified after the fact. The full mathematical foundation, formal proofs, and protocol details are documented below and in the [technical docs](https://docs.szlholdings.com).
+
+---
+
+<details>
+<summary><strong>📐 Full technical detail, math, and proofs (the proof, not the pitch)</strong></summary>
+
 <div align="center">
 
 # ⚙️ szl-uds-deployment
@@ -179,3 +217,16 @@ rather than an Ed25519 signature.
 - `charts/szl-key-init/templates/keygen-job.yaml` — Job template
 - `charts/szl-key-init/templates/rbac.yaml` — minimal RBAC (get + create secrets only)
 - `packages/szl-receipts/zarf.yaml` — szl-key-init added as required component
+
+
+</details>
+
+<!-- szl-doctrine-footer -->
+
+---
+
+### Citation & doctrine
+
+Cite this work via [`CITATION.cff`](CITATION.cff). Math foundations: [szl-papers](https://github.com/szl-holdings/szl-papers) · [lutar-lean](https://github.com/szl-holdings/lutar-lean) (kernel `c7c0ba17`).
+
+<sub>Λ Conjecture 1 (not a theorem) · 749/14/163 v11 LOCKED (kernel `c7c0ba17`) · SLSA L1 honest · Section 889 = 5 vendors · [SZL Holdings](https://szlholdings.com) · Apache-2.0 code · CC-BY-4.0 papers</sub>
