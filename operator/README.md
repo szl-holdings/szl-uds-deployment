@@ -186,7 +186,7 @@ szl-fleet-overlay/
 | Doctrine             | v11 LOCKED — 749/14/163 — kernel `c7c0ba17` |
 | Λ                    | Conjecture 1 (NEVER theorem)              |
 | Section 889 vendors  | 5 — Huawei, ZTE, Hytera, Hikvision, Dahua (excluded) |
-| Iron Bank            | NOT used                                  |
+| no Iron Bank         | NOT used (not applicable)                                  |
 | FedRAMP              | NOT claimed                               |
 | CMMC                 | NOT claimed                               |
 | SWFT                 | NOT used                                  |
