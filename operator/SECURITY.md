@@ -55,11 +55,11 @@ referenced workload.
 
 The following frameworks are **not** used or claimed in this package:
 
-- Iron Bank / Platform One — not used
+- no Iron Bank / Platform One (not used, not applicable)
 - FedRAMP — not claimed
 - CMMC — not claimed
 - SWFT — not used
-- Mission Owner authorization — not present
+- no Mission Owner authorization (not applicable, not applicable)
 - DoD identity / CAC — not required
 
 ---
