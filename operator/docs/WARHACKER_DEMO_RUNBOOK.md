@@ -500,7 +500,7 @@ The following items **must be disclosed proactively** at the demo. This is not w
 |------|-----------------|
 | Λ is Conjecture 1 | "Λ is Conjecture 1, not a proven theorem. We have 163 open sorries. The completion path is ~70 lines of Lean. We will NOT claim machine-verification until Lean CI is green." |
 | DSSE signatures | "DSSE signatures are PLACEHOLDER when cosign key is not injected. Envelope structure is correct. Key injection is the remaining step per DSSE_FIX_PLAN.md." |
-| SLSA level | "SLSA L1 honest. NOT L2 or L3. L2 partial on tarballs. L3 migration plan exists." |
+| SLSA level | "SLSA L1 honest (not L2, not L3; partial-tarballs and migration are roadmap items)" |
 | Section 889 | "5 vendors explicitly excluded: Huawei, ZTE, Hytera, Hikvision, Dahua. Exact count — no vague statements." |
 | No Iron Bank | "We make zero Iron Bank claims. No FedRAMP ATO. CMMC self-assessment only (not C3PAO certified)." |
 
