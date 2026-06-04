@@ -22,7 +22,7 @@ What is ready for review today (release tag `v0.3.1` pushed
 - STAGED-ADVISORY banner on Kubernetes artifacts
 - SLSA L1 honest disclosure (we found and corrected fake L3 badges on 13
   repos earlier this session — full audit trail at
-  https://github.com/szl-holdings/.github/blob/main/SLSA_L3_TRUTH_CORRECTION.md)
+  https://github.com/szl-holdings/.github/blob/main/SLSA_L3_TRUTH_CORRECTION.md — fake-badge-correction, roadmap)
 - Doctrine v7 merged (8 new clauses §9-§16 including human-on-record
   protection-toggle requirement)
 
