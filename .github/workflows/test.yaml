@@ -46,7 +46,11 @@ jobs:
         run: |
           yamllint -c .yamllint.yml $(find . -name "*.yaml" -o -name "*.yml" \
             | grep -v "node_modules" \
-            | grep -v ".git") 2>&1
+            | grep -v ".git" \
+            | grep -v "charts/.*/templates/") 2>&1
+          # NOTE: charts/*/templates/ are excluded because Go templating ({{ }}) is not valid
+          # standalone YAML. These are validated by 'helm lint' below instead.
+          # yamllint's ignore: config only works with directory args, not explicit file lists.
 
       - name: Install Helm
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
