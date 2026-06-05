@@ -298,23 +298,33 @@ jobs:
           BUNDLE_TAR: ${{ steps.bundle.outputs.tar }}
         run: |
           set -uo pipefail
-          # Primary tag (e.g. uds-v0.2.0)
-          uds publish "${BUNDLE_TAR}" "oci://${REGISTRY}/${ORG}" \
-            --version "${TAG}" \
-            --no-progress > /tmp/uds-publish.log 2>&1
-          RC=$?
-          cat /tmp/uds-publish.log || true
-          if [ "${RC}" -ne 0 ]; then
-            ERRTAIL=$(grep -iE 'err|fail|fatal|unable|denied|not found|no such|invalid|cannot|forbidden|unauthor' /tmp/uds-publish.log | tail -n 4 | tr '\n' '|' | sed 's/[^[:print:]|]//g')
-            echo "::error title=uds-publish::rc=${RC} tail=${ERRTAIL}"
-            exit 1
-          fi
-          # Floating latest tag
-          uds publish "${BUNDLE_TAR}" "oci://${REGISTRY}/${ORG}" \
-            --version "latest" \
-            --no-progress
-          echo "Published: oci://${REGISTRY}/${ORG}/${BUNDLE_NAME}:${TAG}"
-          echo "Published: oci://${REGISTRY}/${ORG}/${BUNDLE_NAME}:latest"
+          # `uds publish` pushes the large bundle tarball through the hardened
+          # runner's egress; that path intermittently severs large-blob uploads
+          # (the same truncation that forces the uds-cli source build). A single
+          # attempt died after ~90s of silence with a bare exit 1 (process killed
+          # mid-push), so retry each tag up to 3x with backoff before failing.
+          publish_tag() {
+            local ver="$1" log="/tmp/uds-publish-${1}.log" attempt
+            for attempt in 1 2 3; do
+              echo "uds publish ${BUNDLE_NAME}:${ver} attempt ${attempt}/3"
+              uds publish "${BUNDLE_TAR}" "oci://${REGISTRY}/${ORG}" \
+                --version "${ver}" --no-progress > "${log}" 2>&1
+              local rc=$?
+              cat "${log}" || true
+              if [ "${rc}" -eq 0 ]; then
+                echo "Published: oci://${REGISTRY}/${ORG}/${BUNDLE_NAME}:${ver}"
+                return 0
+              fi
+              echo "publish ${ver} attempt ${attempt} rc=${rc}; retrying after backoff"
+              sleep $(( attempt * 20 ))
+            done
+            local errtail
+            errtail=$(grep -iE 'err|fail|fatal|unable|denied|not found|no such|invalid|cannot|forbidden|unauthor' "${log}" | tail -n 4 | tr '\n' '|' | sed 's/[^[:print:]|]//g')
+            echo "::error title=uds-publish-${ver}::3 attempts failed tail=${errtail}"
+            return 1
+          }
+          publish_tag "${TAG}"   || exit 1
+          publish_tag "latest"   || exit 1
 
       # ── Resolve the published bundle digest ─────────────────────────────────
       - name: Resolve published bundle digest
