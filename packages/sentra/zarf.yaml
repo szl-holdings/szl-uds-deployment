@@ -31,13 +31,16 @@ metadata:
   url: "https://szlholdings.com"
   authors: "SZL Holdings <eng@szlholdings.com>"
   documentation: "https://github.com/szl-holdings/szl-uds-deployment"
-  image: "ghcr.io/szl-holdings/sentra:###ZARF_PKG_TMPL_VERSION###"
+  image: "ghcr.io/szl-holdings/sentra:###ZARF_PKG_TMPL_IMAGE_TAG###"
   uncompressed: false
 
 variables:
   - name: VERSION
     description: "Image tag / package version (injected from the release tag, 'v'/'uds-' stripped)"
     default: "0.2.0"
+  - name: IMAGE_TAG
+    description: "Live ghcr.io image tag to pull (the published OCI tag, e.g. uds-v0.2.0). Decoupled from package VERSION so metadata.version can match the bundle ref while the image pulls the real tag."
+    default: "uds-v0.2.0"
   - name: DOMAIN
     description: "Cluster domain — must match UDS Core DOMAIN"
     default: "uds.dev"
@@ -70,7 +73,7 @@ components:
       Deploy the sentra workload from the live signed image
       ghcr.io/szl-holdings/sentra:###ZARF_PKG_TMPL_VERSION###.
     images:
-      - ghcr.io/szl-holdings/sentra:###ZARF_PKG_TMPL_VERSION###
+      - ghcr.io/szl-holdings/sentra:###ZARF_PKG_TMPL_IMAGE_TAG###
     manifests:
       - name: szl-sentra-workload
         namespace: szl-sentra

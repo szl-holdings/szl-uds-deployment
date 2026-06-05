@@ -210,12 +210,19 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # ── Build the 5 member Zarf packages from the LIVE ghcr.io images ───────
-      # Each packages/<organ>/zarf.yaml references
-      # ghcr.io/szl-holdings/<organ>:###ZARF_PKG_TMPL_VERSION### which Zarf
-      # resolves to the live, cosign-signed tag passed via --set VERSION.
+      # Each packages/<organ>/zarf.yaml decouples two template vars:
+      #   VERSION   -> metadata.version (must equal the bundle `ref:`, e.g. 0.2.0)
+      #   IMAGE_TAG -> the live ghcr.io image tag to pull (e.g. uds-v0.2.0)
+      # The member IMAGE tags on ghcr.io are uds-v0.2.0 (there is no 0.2.0 image
+      # tag), but uds-bundle.yaml references each member by `ref: "0.2.0"`, which
+      # uds-cli resolves to the tarball name zarf-package-szl-<organ>-<arch>-0.2.0.tar.zst
+      # IN THE PACKAGE DIRECTORY. So we build with VERSION=<stripped> +
+      # IMAGE_TAG=<oci tag> and output each package into packages/<organ>/ (not
+      # dist/) so `uds create` finds it.
       - name: Build member Zarf packages
         env:
-          PKG_VERSION: ${{ steps.version.outputs.tag }}
+          PKG_VERSION: ${{ steps.version.outputs.version }}
+          IMG_TAG: ${{ steps.version.outputs.tag }}
         shell: bash
         run: |
           # IMPORTANT: GitHub invokes run-steps as `bash -e`; that default -e was
@@ -224,19 +231,19 @@ jobs:
           # capture rc and surface the real per-organ error.
           set +e
           set -uo pipefail
-          # Member images are tagged uds-v0.2.0 on ghcr.io, so the image tag we
-          # feed Zarf is the full OCI tag (uds-v0.2.0), not the stripped version.
-          mkdir -p dist
           # Build killinchu + rosie FIRST (the ones that failed last run) so their
           # error annotation lands inside GitHub's 10-annotation cap; only emit
           # annotations on failure and stop at the first failing organ.
           for organ in killinchu rosie a11oy sentra amaru; do
             echo "::group::zarf package create packages/${organ}"
+            # Output INTO the package dir so uds create (which reads bundle `ref`
+            # against packages/<organ>) finds zarf-package-szl-${organ}-${arch}-${PKG_VERSION}.tar.zst.
             zarf package create "packages/${organ}" \
               --set VERSION="${PKG_VERSION}" \
+              --set IMAGE_TAG="${IMG_TAG}" \
               --architecture "${{ matrix.arch }}" \
               --confirm \
-              --output-directory dist > "/tmp/${organ}.log" 2>&1
+              --output-directory "packages/${organ}" > "/tmp/${organ}.log" 2>&1
             RC=$?
             echo "::endgroup::"
             cat "/tmp/${organ}.log" || true
@@ -248,7 +255,7 @@ jobs:
             if [ "${RC}" -ne 0 ]; then exit 1; fi
           done
           echo "Built member packages:"
-          ls -lh dist/ || true
+          ls -lh packages/*/zarf-package-*.tar.zst || true
 
       # ── Create the UDS bundle ──────────────────────────────────────────────
       # uds create reads bundles/szl-uds-bundle/uds-bundle.yaml; its packages are
