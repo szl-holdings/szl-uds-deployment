@@ -370,11 +370,25 @@ jobs:
           COSIGN_EXPERIMENTAL: "1"
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           REF="${REGISTRY}/${ORG}/${BUNDLE_NAME}:${TAG}"
           SBOM="sbom-${BUNDLE_NAME}-${{ matrix.arch }}-${{ steps.version.outputs.version }}.spdx.json"
-          syft "${{ steps.bundle.outputs.tar }}" -o spdx-json --file "${SBOM}"
-          cosign attest --yes --predicate "${SBOM}" --type spdxjson "${REF}"
+          syft "${{ steps.bundle.outputs.tar }}" -o spdx-json --file "${SBOM}" > /tmp/syft.log 2>&1
+          SRC=$?
+          cat /tmp/syft.log || true
+          if [ "${SRC}" -ne 0 ]; then
+            ST=$(tail -n 4 /tmp/syft.log | tr '\n' '|' | sed 's/[^[:print:]|]//g')
+            echo "::error title=syft::rc=${SRC} tail=${ST}"
+            exit 1
+          fi
+          cosign attest --yes --predicate "${SBOM}" --type spdxjson "${REF}" > /tmp/sbom-attest.log 2>&1
+          ARC=$?
+          cat /tmp/sbom-attest.log || true
+          if [ "${ARC}" -ne 0 ]; then
+            AT=$(tail -n 6 /tmp/sbom-attest.log | tr '\n' '|' | sed 's/[^[:print:]|]//g')
+            echo "::error title=sbom-attest::rc=${ARC} tail=${AT}"
+            exit 1
+          fi
           echo "Attested SBOM ${SBOM} to ${REF}"
 
       # ── SLSA L2: cosign-NATIVE provenance attestation on the bundle ─────────
@@ -423,10 +437,19 @@ jobs:
             ]
           }
           EOF
+          set +e
           cosign attest --yes \
             --type slsaprovenance \
             --predicate bundle-predicate.json \
-            "${REF}"
+            "${REF}" > /tmp/slsa-attest.log 2>&1
+          PRC=$?
+          set -e
+          cat /tmp/slsa-attest.log || true
+          if [ "${PRC}" -ne 0 ]; then
+            PT=$(tail -n 6 /tmp/slsa-attest.log | tr '\n' '|' | sed 's/[^[:print:]|]//g')
+            echo "::error title=slsa-attest::rc=${PRC} tail=${PT}"
+            exit 1
+          fi
           echo "Attested SLSA provenance to ${REF}"
 
       - name: cosign verify-attestation bundle (SLSA L2 honesty gate)
