@@ -9,10 +9,14 @@
 - **Public formula count = 5** (the live API truth from a11oy `proved_count`). The Lean
   `lake` build may show more targets green, but the served set is 5 until `serve.py` is
   updated to read the proved set and redeployed.
-- **SLSA Build L2 = verified on 5/5 organ images, NOT on any bundle.** True statement:
+- **SLSA Build L2 = verified on 5/5 organ images.** True statement:
   *"SLSA L2 provenance attestation cryptographically verifies (cosign verify-attestation,
   keyless Fulcio+Rekor, strict per-organ identity) on all 5 organ images: a11oy, sentra,
-  amaru, rosie, killinchu."* The bundle is **not** attested yet (owner action below).
+  amaru, rosie, killinchu."* SLSA L1 holds on all. The **bundle**
+  (`szl-uds-bundle:uds-v0.2.1`) is **signed** (cosign keyless, Fulcio+Rekor) **and carries a
+  build-provenance attestation** produced via `actions/attest-build-provenance` — verify with
+  `gh attestation verify oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.2.1 --owner szl-holdings`
+  (run from a non-GHES host; the sandbox proxy is detected as GHES and `gh attestation` refuses).
 - **No L3 / FedRAMP / Iron Bank / CMMC.** None of these are claimed or held.
 
 ---
@@ -80,18 +84,18 @@ make quickstart          # k3d + uds-cli + Pepr receipt policy, cosign-verified
 
 ## 4. Deploy order — the one-USB UDS command
 
-The **real mesh bundle** is `szl-uds-bundle:uds-v0.2.0` (composes all 5 organ Zarf
-packages). One command for an air-gapped / single-USB deploy:
+The **real mesh bundle** is `szl-uds-bundle:uds-v0.2.1` (composes all 5 organ Zarf
+packages; signed + build-provenance attested). One command for an air-gapped / single-USB deploy:
 
 ```bash
-uds-cli bundle deploy oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.2.0 --confirm
+uds-cli bundle deploy oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.2.1 --confirm
 ```
 
 Underlying layer order on a fresh cluster: **Zarf init → UDS Core (Istio/Pepr/Keycloak)
 → szl-receipts → organs** (amaru → a11oy → sentra → rosie; a11oy up first so the others
 register to it).
 
-> ⚠️ **Do NOT use `szl-warhacker:v0.4.0` as "the mesh."** It stages 4 organs OUT — only
+> ⚠️ **Do NOT use `szl-warhacker` v0.4.0 as "the mesh."** It stages 4 organs OUT — only
 > `szl-receipts` (+ upstream init/core) is deployable in it; the four organ entries are
 > commented out (SBOM-only, no signed package at uds-v0.3.0).
 
@@ -129,9 +133,11 @@ register to it).
 
 ## 7. Honest status
 
-- **Live:** all 5 Spaces UP (core routes). Mesh bundle `szl-uds-bundle:uds-v0.2.0` builds.
-- **L1 cosign signatures:** present on all 6 packages (5 organs + szl-mesh).
-- **L2 attestation:** ✅ 5/5 organs. ❌ bundles (not attested).
+- **Live:** all 5 Spaces UP (core routes). Mesh bundle `szl-uds-bundle:uds-v0.2.1` builds + publishes.
+- **L1 cosign signatures:** present on all 6 packages (5 organs + the bundle).
+- **L2 attestation:** ✅ 5/5 organs (cosign verify-attestation, strict identity). Bundle
+  `uds-v0.2.1` is signed + carries a build-provenance attestation
+  (`actions/attest-build-provenance`); verify with `gh attestation verify` from a non-GHES host.
 - **Supply chain gap:** no `@sha256` digest pins anywhere — tag-only refs.
 - **Front door:** GitHub Pages surfaces (developers/docs-site/szl-trust) return HTTP 000
   — Pages not enabled / no custom domain. Company public front door not live.
@@ -147,7 +153,8 @@ register to it).
 - **June 16–19 Warhacker: NO-GO** until:
   1. one real end-to-end mesh transaction proven on a real cluster,
   2. CodeQL + Grype made **blocking** checks,
-  3. bundle L2 closed (PR #51 + owner GHCR grant),
+  3. bundle attestation independently re-verified (`gh attestation verify` from a non-GHES
+     host — the `uds-v0.2.1` build published it; confirm the verify returns a provenance payload),
   4. HF Space drift resolved (new tabs baked into images).
 
 ---
@@ -155,14 +162,16 @@ register to it).
 ## 9. OWNER-ONLY actions (cannot be done by an agent or non-admin)
 
 1. **`HF_TOKEN` org secret** — set/repair so Space-deploy workflows authenticate.
-2. **Bundle SLSA L2 (PR #51, OPEN, branch `ci/slsa-l2-bundle-cosign-attest`)** — grant
-   `szl-uds-deployment` **Write** under the `szl-uds-bundle` GHCR package ("Manage
-   Actions access"), OR publish the bundle under the repo-linked name
-   `szl-uds-deployment` (changes the customer URL — product decision). The 403
-   `denied: write_package` blocks all 15 historical attestation runs; PR #51 is correct
-   up to that grant.
-3. **Zarf tag reconciliation** — publish `uds-v0.3.1-rc.1` / `v1.0.0-alpha` images, or
-   repoint `sentra|a11oy|rosie deploy/zarf.yaml` to the live `uds-v0.2.0`.
+2. **Bundle attestation re-verify** — the `szl-uds-bundle` GHCR package is linked to the
+   **`uds-bundles`** repo (not this one), so the bundle build/publish/sign/attest runs from
+   `uds-bundles` (`uds-bundle-publish.yml`); the `uds-v0.2.1` run completed SUCCESS (publish,
+   cosign sign, `attest-build-provenance`). Final step is to run
+   `gh attestation verify oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.2.1 --owner szl-holdings`
+   from a non-GHES host (the sandbox proxy is detected as GHES and refuses). Do NOT claim the
+   bundle is L2-attested in public copy until that verify returns a provenance payload.
+3. **Zarf tag reconciliation** — flagship `deploy/zarf.yaml` files were repointed from
+   unpublished `uds-v0.3.1-rc.1` / `v1.0.0-alpha` to the live signed `uds-v0.2.0`; publish the
+   newer tags if/when they are intended to ship.
 4. **GitHub Pages** — enable Pages / custom domain on developers, docs-site, szl-trust.
 
 ---

@@ -59,7 +59,7 @@ The following frameworks are **not** used or claimed in this package:
 - FedRAMP — not claimed
 - CMMC — not claimed
 - SWFT — not used
-- no DoD mission-owner authorization (not applicable, not applicable)
+- no DoD mission-owner authorization (not applicable)
 - DoD identity / CAC — not required
 
 ---
