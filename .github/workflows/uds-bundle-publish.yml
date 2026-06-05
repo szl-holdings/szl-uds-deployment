@@ -335,6 +335,72 @@ jobs:
           cosign attest --yes --predicate "${SBOM}" --type spdxjson "${REF}"
           echo "Attested SBOM ${SBOM} to ${REF}"
 
+      # ── SLSA L2: cosign-NATIVE provenance attestation on the bundle ─────────
+      # The SBOM attestation above is spdxjson; SLSA L2 requires a slsaprovenance
+      # predicate attached as an OCI referrer so `cosign verify-attestation
+      # --type slsaprovenance` returns a slsa.dev/provenance payload for the
+      # bundle artifact itself (mirrors the per-organ ghcr-build-push.yml step).
+      # Attesting on the published tag ref lets cosign resolve tag->digest.
+      - name: cosign attest SLSA provenance on bundle (cosign-verifiable)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          REF="${REGISTRY}/${ORG}/${BUNDLE_NAME}:${TAG}"
+          # SLSA Provenance v0.2 predicate (matches `cosign ... --type slsaprovenance`,
+          # which validates the v0.2 schema with a top-level `builder` field).
+          cat > bundle-predicate.json <<EOF
+          {
+            "builder": {
+              "id": "${{ github.server_url }}/${{ github.repository }}/.github/workflows/uds-bundle-publish.yml@${{ github.ref }}"
+            },
+            "buildType": "https://actions.github.io/buildtypes/workflow/v1",
+            "invocation": {
+              "configSource": {
+                "uri": "git+${{ github.server_url }}/${{ github.repository }}@${{ github.ref }}",
+                "digest": { "sha1": "${{ github.sha }}" },
+                "entryPoint": ".github/workflows/uds-bundle-publish.yml"
+              },
+              "environment": {
+                "event_name": "${{ github.event_name }}",
+                "repository_id": "${{ github.repository_id }}",
+                "runner_environment": "github-hosted"
+              }
+            },
+            "metadata": {
+              "buildInvocationId": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}",
+              "completeness": { "parameters": true, "environment": false, "materials": false },
+              "reproducible": false
+            },
+            "materials": [
+              {
+                "uri": "git+${{ github.server_url }}/${{ github.repository }}@${{ github.ref }}",
+                "digest": { "sha1": "${{ github.sha }}" }
+              }
+            ]
+          }
+          EOF
+          cosign attest --yes \
+            --type slsaprovenance \
+            --predicate bundle-predicate.json \
+            "${REF}"
+          echo "Attested SLSA provenance to ${REF}"
+
+      - name: cosign verify-attestation bundle (SLSA L2 honesty gate)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          REF="${REGISTRY}/${ORG}/${BUNDLE_NAME}:${TAG}"
+          cosign verify-attestation \
+            --type slsaprovenance \
+            --certificate-identity-regexp="https://github.com/${ORG}/szl-uds-deployment/.*" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+            "${REF}" > /dev/null
+          echo "SLSA L2 verified: cosign verify-attestation passed for ${REF}"
+
       # ── Upload local artifacts for traceability ─────────────────────────────
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
