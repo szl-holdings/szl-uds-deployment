@@ -20,7 +20,8 @@ metadata:
   version: "0.1.0"
   description: |
     SZL DoctrineCompleteness Zarf gate (E-04).
-    Verifies doctrine/manifest.json counts match v11 LOCKED: 749/14/163 at c7c0ba17.
+    Verifies doctrine/manifest.json counts match v11 LOCKED: 749 declarations /
+    14 axioms / 163 sorries at c7c0ba17.
     Blocks deploy if drift detected — prevents Doctrine v12 bleed.
     Proof label: POLICY (infrastructure invariant, not a mathematical theorem).
 
@@ -33,7 +34,7 @@ components:
   - name: szl-doctrine-completeness-check
     required: true
     description: |
-      Doctrine v11 completeness gate (749 theorems / 14 axioms / 163 definitions).
+      Doctrine v11 completeness gate (749 declarations / 14 axioms / 163 sorries).
       Proof label: POLICY. Source: UDS_PAYLOAD_UPLIFTS.md E-04.
     files:
       - source: doctrine/manifest.json
@@ -46,9 +47,9 @@ components:
               #!/usr/bin/env bash
               set -euo pipefail
               MANIFEST="${ZARF_VAR_DOCTRINE_MANIFEST:-/doctrine/manifest.json}"
-              REQUIRED_THEOREMS=749
+              REQUIRED_DECLS=749
               REQUIRED_AXIOMS=14
-              REQUIRED_DEFS=163
+              REQUIRED_SORRIES=163
               REQUIRED_VERSION="v11"
               REQUIRED_COMMIT="c7c0ba17"
 
@@ -58,9 +59,9 @@ components:
               fi
 
               VERSION=$(jq -r '.version' "$MANIFEST")
-              THEOREMS=$(jq -r '.theorem_count' "$MANIFEST")
+              DECLS=$(jq -r '.declaration_count' "$MANIFEST")
               AXIOMS=$(jq -r '.axiom_count' "$MANIFEST")
-              DEFS=$(jq -r '.definition_count' "$MANIFEST")
+              SORRIES=$(jq -r '.sorry_count' "$MANIFEST")
               KERNEL=$(jq -r '.kernel_commit' "$MANIFEST")
               LAMBDA=$(jq -r '.lambda_status' "$MANIFEST")
 
@@ -69,16 +70,16 @@ components:
                 echo "FORBIDDEN: Doctrine v12 must never appear in deployed packages."
                 exit 1
               fi
-              if [ "$THEOREMS" -ne "$REQUIRED_THEOREMS" ] || \
+              if [ "$DECLS" -ne "$REQUIRED_DECLS" ] || \
                  [ "$AXIOMS" -ne "$REQUIRED_AXIOMS" ] || \
-                 [ "$DEFS" -ne "$REQUIRED_DEFS" ]; then
-                echo "ERROR: Doctrine count mismatch. Got T=$THEOREMS/A=$AXIOMS/D=$DEFS, expected 749/14/163."
+                 [ "$SORRIES" -ne "$REQUIRED_SORRIES" ]; then
+                echo "ERROR: Doctrine count mismatch. Got decl=$DECLS/axioms=$AXIOMS/sorries=$SORRIES, expected 749/14/163."
                 exit 1
               fi
               if [ "$LAMBDA" != "conjecture" ]; then
                 echo "ERROR: lambda_status='$LAMBDA'. Must be 'conjecture'. Lambda is NEVER a theorem."
                 exit 1
               fi
-              echo "SZL E-04 DoctrineCompleteness PASSED: $VERSION T=$THEOREMS A=$AXIOMS D=$DEFS kernel=$KERNEL lambda=$LAMBDA"
-            description: "Doctrine v11 completeness gate (749 theorems / 14 axioms / 163 definitions). POLICY label."
+              echo "SZL E-04 DoctrineCompleteness PASSED: $VERSION decl=$DECLS axioms=$AXIOMS sorries=$SORRIES kernel=$KERNEL lambda=$LAMBDA"
+            description: "Doctrine v11 completeness gate (749 declarations / 14 axioms / 163 sorries). POLICY label."
             mute: false
