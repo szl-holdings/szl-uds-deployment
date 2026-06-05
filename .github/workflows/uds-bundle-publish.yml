@@ -247,12 +247,16 @@ jobs:
             RC=$?
             echo "::endgroup::"
             cat "/tmp/${organ}.log" || true
-            # Always emit one ::error:: per organ (these reliably surface in the
-            # annotation API) carrying rc + a filtered stderr tail, so the exact
-            # failing organ and cause are visible even with logs egress-blocked.
-            ERRTAIL=$(grep -iE 'err|fail|fatal|unable|denied|not found|no such|invalid|cannot|forbidden|unauthor' "/tmp/${organ}.log" | tail -n 4 | tr '\n' '|' | sed 's/[^[:print:]|]//g')
-            echo "::error title=zarf-${organ}::rc=${RC} tail=${ERRTAIL}"
-            if [ "${RC}" -ne 0 ]; then exit 1; fi
+            # Emit a ::error:: annotation ONLY when an organ actually fails.
+            # Emitting unconditionally consumed all 10 annotation slots and masked
+            # the real downstream failure (e.g. Create/Publish) in the annotation
+            # API, which is our only error channel since run logs are egress-blocked.
+            if [ "${RC}" -ne 0 ]; then
+              ERRTAIL=$(grep -iE 'err|fail|fatal|unable|denied|not found|no such|invalid|cannot|forbidden|unauthor' "/tmp/${organ}.log" | tail -n 4 | tr '\n' '|' | sed 's/[^[:print:]|]//g')
+              echo "::error title=zarf-${organ}::rc=${RC} tail=${ERRTAIL}"
+              exit 1
+            fi
+            echo "zarf-${organ}: rc=0 OK"
           done
           echo "Built member packages:"
           ls -lh packages/*/zarf-package-*.tar.zst || true
@@ -263,11 +267,18 @@ jobs:
       # packages from those directories.
       - name: Create UDS bundle
         run: |
-          set -euo pipefail
+          set -uo pipefail
           uds create bundles/szl-uds-bundle \
             --confirm \
             --no-progress \
-            --output dist
+            --output dist > /tmp/uds-create.log 2>&1
+          RC=$?
+          cat /tmp/uds-create.log || true
+          if [ "${RC}" -ne 0 ]; then
+            ERRTAIL=$(grep -iE 'err|fail|fatal|unable|denied|not found|no such|invalid|cannot|forbidden|unauthor' /tmp/uds-create.log | tail -n 4 | tr '\n' '|' | sed 's/[^[:print:]|]//g')
+            echo "::error title=uds-create::rc=${RC} tail=${ERRTAIL}"
+            exit 1
+          fi
           echo "Bundle tarball:"
           ls -lh dist/uds-bundle-*.tar.zst
 
@@ -286,11 +297,18 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
           BUNDLE_TAR: ${{ steps.bundle.outputs.tar }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           # Primary tag (e.g. uds-v0.2.0)
           uds publish "${BUNDLE_TAR}" "oci://${REGISTRY}/${ORG}" \
             --version "${TAG}" \
-            --no-progress
+            --no-progress > /tmp/uds-publish.log 2>&1
+          RC=$?
+          cat /tmp/uds-publish.log || true
+          if [ "${RC}" -ne 0 ]; then
+            ERRTAIL=$(grep -iE 'err|fail|fatal|unable|denied|not found|no such|invalid|cannot|forbidden|unauthor' /tmp/uds-publish.log | tail -n 4 | tr '\n' '|' | sed 's/[^[:print:]|]//g')
+            echo "::error title=uds-publish::rc=${RC} tail=${ERRTAIL}"
+            exit 1
+          fi
           # Floating latest tag
           uds publish "${BUNDLE_TAR}" "oci://${REGISTRY}/${ORG}" \
             --version "latest" \
