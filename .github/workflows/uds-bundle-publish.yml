@@ -78,6 +78,23 @@ jobs:
         with:
           fetch-depth: 0
 
+      # ── Reclaim runner disk ────────────────────────────────────────────────
+      # "Build member Zarf packages" pulls 5 full member container images into
+      # the runner's local store; on the standard github-hosted runner this
+      # exhausts the disk ("No space left on device"), killing the job before
+      # publish/attest. Drop the large pre-installed toolchains we don't use
+      # (Android SDK, .NET, GHC, CodeQL bundles, Swift) to free ~25-30 GB so the
+      # Zarf image pulls fit.
+      - name: Free disk space
+        run: |
+          set -uo pipefail
+          echo "Before:"; df -h / | tail -1
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/powershell /usr/share/swift || true
+          sudo docker image prune -af || true
+          echo "After:"; df -h / | tail -1
+
       # ── Resolve tag + bundle version ───────────────────────────────────────
       # OCI tag is e.g. uds-v0.2.0; the bundle metadata version is 0.2.0.
       - name: Resolve version
