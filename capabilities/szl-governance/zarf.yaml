@@ -1,0 +1,81 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# zarf.yaml — szl-governance Pepr capability
+# =============================================================================
+# Packages the SZL governance admission module for air-gap-capable UDS deploy.
+# Packaging pattern adopted from zarf-dev/zarf (Apache-2.0). Original SZL work.
+#
+# TWO components:
+#   1. szl-governance-pepr-module — the built Pepr admission module. The Pepr
+#      build pipeline (`npx pepr build`) produces the controller image +
+#      manifests; that image is referenced here. Until the image is published to
+#      GHCR it is labeled 'verify before deploy'.
+#   2. szl-governance-uds-policy — the UDS Package CR (chart/) that grants the
+#      Pepr controller egress + monitor. TARGETS uds-core (AGPL) via its public
+#      CR API; copies no AGPL source.
+#
+# DIGEST HONESTY (re-probed against GHCR 2026-06):
+#   ghcr.io/szl-holdings/szl-pepr-governance:0.5.0  -> HTTP 404 (NOT published).
+#   The Pepr controller image is produced by `pepr build` and pushed by CI; it is
+#   not yet on GHCR. Labeled 'verify before deploy'. The admission module SOURCE
+#   in this directory is REAL and builds today (`npx pepr build`).
+#
+# Build (CI):
+#   npx --yes pepr@latest build               # emits dist/ controller image + manifests
+#   uds zarf package create capabilities/szl-governance --confirm
+#
+# yaml-language-server: $schema=https://raw.githubusercontent.com/zarf-dev/zarf/main/zarf.schema.json
+kind: ZarfPackageConfig
+metadata:
+  name: szl-governance
+  description: "SZL governance Pepr admission module — a11oy/killinchu YUYAY-gate receipt gate. Built to mesh with UDS."
+  version: "0.5.0"
+  url: https://github.com/szl-holdings/szl-uds-deployment
+  authors: SZL Holdings Platform Team
+  documentation: https://github.com/szl-holdings/szl-uds-deployment/blob/main/capabilities/szl-governance/README.md
+
+variables:
+  - name: PEPR_IMAGE
+    description: "The Pepr admission controller image produced by `pepr build`"
+    default: "ghcr.io/szl-holdings/szl-pepr-governance:0.5.0"
+
+components:
+  # ── 1. Pepr admission module ────────────────────────────────────────────────
+  # verify before deploy: szl-pepr-governance:0.5.0 NOT yet published to GHCR (404).
+  # The Pepr build pipeline produces this image + its manifests. Marked not-required
+  # so `zarf package create` does not fail before `pepr build` has been run.
+  - name: szl-governance-pepr-module
+    required: false
+    description: "Pepr admission controller (a11oy + killinchu receipt gates). verify before deploy — image built by `pepr build`."
+    manifests:
+      - name: pepr-module
+        # Emitted by `npx pepr build` into dist/. Path kept relative to this dir.
+        files:
+          - dist/pepr-module-szl-governance-001.yaml
+    images:
+      # verify before deploy — controller image not yet on GHCR (HTTP 404).
+      - ghcr.io/szl-holdings/szl-pepr-governance:0.5.0
+
+  # ── 2. UDS Package CR policy wrapper (egress + monitor) ─────────────────────
+  - name: szl-governance-uds-policy
+    required: true
+    description: "UDS Package CR granting the Pepr controller egress (KubeAPI + ROADMAP szl-receipts) and Prometheus monitor."
+    charts:
+      - name: szl-governance
+        namespace: pepr-system
+        localPath: chart
+        version: "0.5.0"
+        valuesFiles:
+          - chart/values.yaml
+    actions:
+      onDeploy:
+        after:
+          - description: "Wait for the szl-governance UDS Package to reconcile Ready"
+            maxTotalSeconds: 120
+            wait:
+              cluster:
+                kind: Package
+                name: szl-governance
+                namespace: pepr-system
+                condition: "'{.status.phase}'=Ready"

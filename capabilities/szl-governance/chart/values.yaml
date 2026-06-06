@@ -1,0 +1,30 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# Values for the szl-governance UDS interop chart.
+
+# Namespace the Pepr admission controller runs in (Pepr default).
+peprNamespace: pepr-system
+
+# DSSE receipt service the Pepr controller calls during the ROADMAP
+# cryptographic-verify path. The egress allow below is provisioned now so the
+# verify path can be turned on without a policy change. (REAL path today is
+# format-only and makes no network call.)
+receipts:
+  namespace: szl-receipts
+  selector:
+    app.kubernetes.io/name: szl-receipts
+  port: 8443
+
+# Governed application namespaces (informational; the Pepr module's own chart
+# binds the webhooks). Listed so the UDS Package CR can label them.
+governedNamespaces:
+  - a11oy
+  - killinchu
+
+# Telemetry — allow the Pepr controller to be scraped by uds-core Prometheus.
+monitor:
+  enabled: true
+  port: 3000
+  selector:
+    pepr.dev/controller: admission

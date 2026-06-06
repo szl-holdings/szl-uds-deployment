@@ -1,0 +1,62 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# UDS Bundle — killinchu product (MESH-READY)
+# =============================================================================
+# Composes the mesh-ready killinchu Zarf package (+ governance backends) into a
+# single OCI bundle so the field node deploys with ONE command:
+#     uds deploy oci://ghcr.io/szl-holdings/killinchu-bundle:0.5.0 --confirm
+#
+# The UDSBundle kind conforms to the uds-cli API (AGPL-3.0). Original SZL work;
+# we use the uds-cli BINARY and do not embed its source.
+#
+# PACKAGING NOTE: the killinchu member is built from
+# packages/killinchu/zarf-mesh-ready.yaml (two flavors: upstream + unicorn):
+#     uds zarf package create ../../packages/killinchu -f zarf-mesh-ready.yaml \
+#       --set DOMAIN=uds.dev -a amd64 --flavor upstream --confirm
+#
+# HONEST STATUS:
+#   - killinchu-bundle:0.5.0 PUBLISHED on GHCR is CURRENT (re-probed
+#     sha256:e59921332c37408fb5a62b270eeeafb1f1ab44aebb350f18662c37aa2c67426f,
+#     HTTP 200). Unlike a11oy-bundle, killinchu-bundle does NOT need a re-pin.
+#   - killinchu organ image uds-v0.2.0 VERIFIED-LIVE
+#     (sha256:e0fb6c3a...). The edge relay sidecar image (killinchu-relay:0.5.0)
+#     is NOT yet published (404) — verify before deploy.
+#
+# Deploy: uds deploy oci://ghcr.io/szl-holdings/killinchu-bundle:0.5.0 --confirm
+kind: UDSBundle
+metadata:
+  name: killinchu
+  description: >-
+    SZL Killinchu maritime + drone C2 — UDS Package bundle (mesh-ready).
+    Deploys on UDS Core (AGPL-3.0). Not affiliated with Defense Unicorns.
+    Doctrine v11 LOCKED. Lambda=Conjecture 1. SLSA Build L2 on organ images.
+  version: "0.5.0"
+  architecture: amd64
+  authors: "SZL Holdings <eng@szlholdings.com>"
+  url: "https://github.com/szl-holdings/szl-uds-deployment"
+
+packages:
+  # Governance backends (required for the edge receipt gate).
+  - name: szl-sentra
+    path: ../../packages/sentra
+    ref: "0.2.0"
+
+  - name: szl-amaru
+    path: ../../packages/amaru
+    ref: "0.2.0"
+
+  # killinchu mesh-ready field package.
+  - name: szl-killinchu
+    path: ../../packages/killinchu
+    ref: "0.5.0-uds.0"
+    overrides:
+      killinchu:
+        killinchu:
+          variables:
+            - name: DOMAIN
+              description: "Istio VirtualService base domain"
+              path: domain
+            - name: A11OY_API_ENDPOINT
+              description: "A11oy governed-run API for receipt gate"
+              path: a11oyApiEndpoint

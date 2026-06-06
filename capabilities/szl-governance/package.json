@@ -1,0 +1,62 @@
+{
+  "name": "szl-governance",
+  "version": "0.5.0",
+  "description": "SZL Holdings governance Pepr capability — a11oy/killinchu receipt-gate admission control",
+  "keywords": [
+    "pepr",
+    "kubernetes",
+    "admission",
+    "governance",
+    "szl",
+    "uds"
+  ],
+  "license": "Apache-2.0",
+  "author": "SZL Holdings <eng@szlholdings.com>",
+  "homepage": "https://github.com/szl-holdings/szl-uds-deployment",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/szl-holdings/szl-uds-deployment.git"
+  },
+  "main": "pepr.ts",
+  "scripts": {
+    "k3d-setup": "npx --yes pepr@latest -- crd",
+    "build": "npx --yes pepr@latest build",
+    "format": "npx --yes pepr@latest format",
+    "format:check": "npx --yes pepr@latest format --validate-only",
+    "deploy": "npx --yes pepr@latest deploy"
+  },
+  "pepr": {
+    "uuid": "szl-governance-001",
+    "name": "szl-governance",
+    "description": "SZL receipt gate — validates the a11oy YUYAY-gate receipt annotation on a11oy/killinchu workloads",
+    "onError": "reject",
+    "webhookTimeout": 10,
+    "customLabels": {
+      "namespace": {
+        "szl.io/governance": "enabled"
+      }
+    },
+    "alwaysIgnore": {
+      "namespaces": [
+        "kube-system",
+        "kube-public",
+        "pepr-system",
+        "zarf",
+        "istio-system",
+        "keycloak"
+      ]
+    },
+    "env": {
+      "RECEIPTS_SERVICE_URL": "http://szl-receipts.szl-receipts.svc.cluster.local:8443",
+      "RECEIPT_ANNOTATION": "szl.io/receipt",
+      "RECEIPT_FORMAT_VERSION": "v1"
+    }
+  },
+  "dependencies": {
+    "pepr": "0.40.0"
+  },
+  "devDependencies": {
+    "typescript": "5.4.5",
+    "@types/node": "20.14.0"
+  }
+}

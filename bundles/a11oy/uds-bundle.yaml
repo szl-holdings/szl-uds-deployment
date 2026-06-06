@@ -1,0 +1,64 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# UDS Bundle — a11oy product (MESH-READY)
+# =============================================================================
+# Composes the mesh-ready a11oy Zarf package (+ required backends) into a single
+# OCI bundle so the platform deploys with ONE command:
+#     uds deploy oci://ghcr.io/szl-holdings/a11oy-bundle:0.5.0 --confirm
+#
+# The UDSBundle kind conforms to the uds-cli API (AGPL-3.0,
+# github.com/defenseunicorns/uds-cli). This YAML is original SZL Holdings work;
+# we use the uds-cli BINARY and do not embed its source.
+#
+# PACKAGING NOTE: the a11oy member is built from packages/a11oy/zarf-mesh-ready.yaml
+# (two flavors: upstream + unicorn). Build it before `uds create`:
+#     uds zarf package create ../../packages/a11oy -f zarf-mesh-ready.yaml \
+#       --set DOMAIN=uds.dev -a amd64 --flavor upstream --confirm
+#
+# HONEST STATUS:
+#   - a11oy-bundle:0.5.0 currently PUBLISHED on GHCR is STALE
+#     (sha256:d801f8e4...; built against an older a11oy organ image; the organ
+#     image was rebuilt — re-probed digest is now sha256:99e4ded1...).
+#     Re-publish this bundle (uds-canonical-bundles-publish.yml, bundle=a11oy)
+#     and re-verify the new digest (must differ from d801f8e4...) before deploy.
+#   - For a maintained all-in-one today, prefer: szl-mesh:0.4.0
+#     (sha256:7f5fce32...; VERIFIED-LIVE).
+#
+# Deploy: uds deploy oci://ghcr.io/szl-holdings/a11oy-bundle:0.5.0 --confirm
+kind: UDSBundle
+metadata:
+  name: a11oy
+  description: >-
+    SZL A11oy governed-AI decision substrate — UDS Package bundle (mesh-ready).
+    Deploys on UDS Core (AGPL-3.0, defenseunicorns/uds-core). Not affiliated with
+    Defense Unicorns. Doctrine v11 LOCKED. Lambda=Conjecture 1.
+    SLSA Build L2 on organ images; bundle attestation NOT earned (cosign signature
+    is the bundle provenance).
+  version: "0.5.0"
+  architecture: amd64
+  authors: "SZL Holdings <eng@szlholdings.com>"
+  url: "https://github.com/szl-holdings/szl-uds-deployment"
+
+packages:
+  # Core backend dependencies (sentra + amaru precede a11oy frontend).
+  # VERIFIED-LIVE organ images: sentra/amaru uds-v0.2.0 (HTTP 200).
+  - name: szl-sentra
+    path: ../../packages/sentra
+    ref: "0.2.0"
+
+  - name: szl-amaru
+    path: ../../packages/amaru
+    ref: "0.2.0"
+
+  # Primary a11oy mesh-ready platform package.
+  - name: szl-a11oy
+    path: ../../packages/a11oy
+    ref: "0.5.0-uds.0"
+    overrides:
+      a11oy:
+        a11oy:
+          variables:
+            - name: DOMAIN
+              description: "Istio VirtualService base domain"
+              path: domain

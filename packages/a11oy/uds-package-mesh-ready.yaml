@@ -1,0 +1,236 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# UDS Package CR — a11oy (MESH-READY profile)
+# =============================================================================
+# This is the "first-class UDS app" profile of the a11oy Package CR, built from
+# team/UDS_MESH_READY_SPEC.md §3A. It declares the full governed surface:
+#   - network.expose  -> Istio VirtualService (+ uptime checks)
+#   - network.allow    -> UDS-operated NetworkPolicy on top of default-deny
+#                         (Prometheus / Keycloak / DSSE receipts / OTel / Loki / KubeAPI)
+#   - sso              -> Keycloak OIDC client + authservice sidecar injection
+#   - monitor          -> Prometheus ServiceMonitor
+#
+# This manifest TARGETS the UDS Operator (defenseunicorns/uds-core, AGPL-3.0).
+# We write CRs that conform to its published uds.dev/v1alpha1 API; we do NOT copy
+# uds-core source code. This file is original SZL Holdings work (Apache-2.0).
+#
+# RELATION TO packages/a11oy/uds-package.yaml:
+#   The sibling uds-package.yaml is the mesh-INTERNAL orchestrator profile
+#   (sidecar mode, szl-a11oy namespace, service-to-service AuthorizationPolicies).
+#   THIS file is the mesh-READY tenant-facing profile (ambient mode, a11oy
+#   namespace, tenant gateway, human SSO). Pick the profile that matches the
+#   deployment: tenant-facing demo -> mesh-ready; internal organ mesh -> internal.
+#
+# UDS Package CR (v1alpha1) reference:
+#   https://uds.defenseunicorns.com/reference/configuration/custom-resources/packages-v1alpha1-cr/
+#
+# Validate (no cluster needed): yamllint + python yaml.safe_load.
+# Full reconcile happens at `uds deploy` time against a live UDS Core cluster.
+---
+apiVersion: uds.dev/v1alpha1
+kind: Package
+metadata:
+  name: a11oy
+  namespace: a11oy
+  labels:
+    app.kubernetes.io/name: a11oy
+    szl.io/component: uds-package
+    szl.io/profile: mesh-ready
+  annotations:
+    # HONEST: organ-image SLSA Build L2; bundle-level attestation NOT earned.
+    szl.io/slsa-level: "L2-organ-image"
+    szl.io/doctrine-version: "v11"
+    szl.io/formula-lock: "Conjecture-1"
+    szl.io/kernel-commit: "958c09f9"
+    szl.io/made-for-uds: "true (not affiliated with Defense Unicorns)"
+spec:
+  # ── SERVICE MESH ───────────────────────────────────────────────────────────
+  # ambient = UDS Core 1.x default (sidecar-less). The mesh-internal profile
+  # uses sidecar instead because it relies on explicit AuthorizationPolicies.
+  network:
+    serviceMesh:
+      mode: ambient
+
+    # ── EXPOSE — Istio VirtualService entries (+ uptime checks) ──────────────
+    expose:
+      # Primary UI — a11oy command platform
+      - service: a11oy
+        selector:
+          app.kubernetes.io/name: a11oy
+        gateway: tenant
+        host: a11oy
+        port: 8080
+        targetPort: 8080
+        description: A11oy Command Platform UI
+        uptime:
+          checks:
+            paths:
+              - /healthz
+              - /readyz
+
+      # Warhacker API — governed-run REST endpoint
+      - service: a11oy-api
+        selector:
+          app.kubernetes.io/name: a11oy
+          app.kubernetes.io/component: api
+        gateway: tenant
+        host: a11oy-api
+        port: 8081
+        targetPort: 8081
+        description: A11oy Warhacker API
+        uptime:
+          checks:
+            paths:
+              - /health
+
+      # Admin observability endpoint (admin gateway only)
+      - service: a11oy-metrics
+        selector:
+          app.kubernetes.io/name: a11oy
+          app.kubernetes.io/component: metrics
+        gateway: admin
+        host: a11oy-admin
+        port: 9090
+        targetPort: 9090
+        description: A11oy Admin Metrics
+
+    # ── NETWORK ALLOW — NetworkPolicies on top of default-deny ───────────────
+    allow:
+      # Intra-namespace traffic
+      - direction: Ingress
+        remoteGenerated: IntraNamespace
+        description: Intra-namespace pod communication
+
+      - direction: Egress
+        remoteGenerated: IntraNamespace
+        description: Intra-namespace pod communication
+
+      # Prometheus scrape ingress
+      - direction: Ingress
+        remoteNamespace: monitoring
+        remoteSelector:
+          app.kubernetes.io/name: prometheus
+        selector:
+          app.kubernetes.io/name: a11oy
+        port: 9090
+        description: Prometheus metrics scrape
+
+      # Keycloak OIDC egress (authservice token exchange)
+      - direction: Egress
+        remoteNamespace: keycloak
+        remoteSelector:
+          app.kubernetes.io/name: keycloak
+        selector:
+          app.kubernetes.io/name: a11oy
+        port: 8080
+        description: Keycloak OIDC token exchange
+
+      # DSSE receipt service egress (a11oy -> szl-receipts)
+      - direction: Egress
+        remoteNamespace: szl-receipts
+        remoteSelector:
+          app.kubernetes.io/name: szl-receipts
+        selector:
+          app.kubernetes.io/name: a11oy
+        port: 8443
+        description: SZL DSSE receipt verification service
+
+      # Append-only ledger Postgres egress (in-namespace)
+      - direction: Egress
+        remoteNamespace: a11oy
+        remoteSelector:
+          app.kubernetes.io/name: postgresql
+        selector:
+          app.kubernetes.io/name: a11oy
+        port: 5432
+        description: Append-only ledger Postgres
+
+      # OTel Collector egress (gRPC + HTTP OTLP)
+      - direction: Egress
+        remoteNamespace: monitoring
+        remoteSelector:
+          app.kubernetes.io/name: opentelemetry-collector
+        selector:
+          app.kubernetes.io/name: a11oy
+        ports:
+          - 4317
+          - 4318
+        description: OpenTelemetry traces + metrics export
+
+      # Loki log ingestion egress
+      - direction: Egress
+        remoteNamespace: monitoring
+        remoteSelector:
+          app.kubernetes.io/name: loki
+        selector:
+          app.kubernetes.io/name: a11oy
+        port: 3100
+        description: Loki log push
+
+      # KubeAPI access for operator self-inspection (UDS-World tabs)
+      - direction: Egress
+        remoteGenerated: KubeAPI
+        description: Kubernetes API access for self-inspection
+
+  # ── SSO — Keycloak client + authservice ────────────────────────────────────
+  sso:
+    - clientId: uds-szl-a11oy
+      name: A11oy Login
+      protocol: openid-connect
+      standardFlowEnabled: true
+      publicClient: false
+      redirectUris:
+        - https://a11oy.{{ .Values.domain }}/login/callback
+        - https://a11oy.{{ .Values.domain }}/auth/callback
+      webOrigins:
+        - https://a11oy.{{ .Values.domain }}
+      baseUrl: https://a11oy.{{ .Values.domain }}
+      # All pods with this label get OIDC protection automatically.
+      # a11oy does NOT implement its own auth middleware.
+      enableAuthserviceSelector:
+        app.kubernetes.io/name: a11oy
+        app.kubernetes.io/component: frontend
+      groups:
+        anyOf:
+          - /UDS Core/uds-core-admin
+          - /szl/a11oy-operators
+      defaultClientScopes:
+        - openid
+        - profile
+        - email
+        - groups
+      secretConfig:
+        name: a11oy-sso
+        template:
+          OIDC_CLIENT_ID: "{{ .clientId }}"
+          OIDC_CLIENT_SECRET: "{{ .secret }}"
+          OIDC_ISSUER_URL: "https://keycloak.{{ .Values.domain }}/realms/uds"
+
+  # ── MONITOR — Prometheus ServiceMonitor ─────────────────────────────────────
+  monitor:
+    - selector:
+        app.kubernetes.io/name: a11oy
+      portName: metrics
+      targetPort: 9090
+      path: /metrics
+      kind: ServiceMonitor
+      description: A11oy Application Metrics
+
+    - selector:
+        app.kubernetes.io/name: a11oy
+        app.kubernetes.io/component: api
+      portName: api-metrics
+      targetPort: 9091
+      path: /metrics
+      kind: ServiceMonitor
+      description: A11oy Warhacker API Metrics
+
+    - selector:
+        app.kubernetes.io/name: a11oy
+        app.kubernetes.io/component: ledger
+      portName: ledger-metrics
+      targetPort: 9092
+      path: /metrics
+      kind: ServiceMonitor
+      description: A11oy Ledger Metrics

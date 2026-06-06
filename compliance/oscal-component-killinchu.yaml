@@ -1,0 +1,324 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# NOTICE: OSCAL component-definition format from NIST SP 800-53 (public domain).
+# Lula validation engine: defenseunicorns-labs/lula1 (Apache-2.0).
+# Rego policies in back-matter: original SZL Holdings work.
+#
+# Run: lula validate -f oscal-component-killinchu.yaml
+# (lula1 binary, Apache-2.0, https://github.com/defenseunicorns-labs/lula1)
+#
+# HONESTY:
+#   REAL    = Kubernetes resource query + Rego evaluation against live cluster state.
+#   ROADMAP = requires additional infrastructure (marked inline per requirement).
+#   Λ = Conjecture 1 (NOT a mathematical theorem). Doctrine v11 LOCKED.
+#   killinchu vertical = maritime-drone-C2. Built to mesh with UDS — NOT affiliated
+#   with Defense Unicorns.
+#
+# DEPLOY-TIME VERIFICATION ONLY: lula validate must run against a live UDS Core
+# cluster (the K8s resource queries below return nothing offline). The OSCAL
+# document + Rego are validated here for structure/syntax; the control PASS/FAIL
+# verdicts can only be earned on the live Hetzner/tower cluster.
+
+component-definition:
+  uuid: 4ad3cd06-1a32-4174-ab5a-47ddddad405a
+  metadata:
+    title: SZL Killinchu Maritime-Drone-C2 Substrate — Compliance Component
+    last-modified: "2026-06-06T13:55:00Z"
+    version: "0.5.0"
+    oscal-version: "1.1.2"
+    remarks: >-
+      This component definition expresses killinchu's security controls as machine-checkable
+      OSCAL assessments using lula1 (Apache-2.0). Controls map to NIST SP 800-53 Rev 5.
+      Honest status: REAL = Kubernetes resource query + Rego evaluation on live cluster.
+      ROADMAP = requires additional infrastructure (marked inline).
+      Lambda = Conjecture 1 (not a theorem). Doctrine v11 LOCKED. Vertical = maritime-drone-C2.
+    parties:
+      - uuid: bea51b9b-3414-42b9-ac61-d405406f84f2
+        type: organization
+        name: SZL Holdings
+        links:
+          - href: https://github.com/szl-holdings
+            rel: website
+
+  components:
+    # ── Component 1: Pepr Receipt Gate Admission Control ─────────────────────
+    - uuid: b29e0f11-73a1-4fd0-a0eb-97a2e19e5058
+      type: software
+      title: Killinchu Pepr Receipt Gate
+      description: |
+        Pepr ValidatingWebhook (Apache-2.0, szl-holdings/szl-pepr-governance) that
+        enforces SZL receipt annotation presence on all Pods in the killinchu namespace.
+        REAL: annotation format validation. ROADMAP: full DSSE cryptographic verify.
+      purpose: Enforce DSSE receipt annotation gate at Kubernetes admission time
+      responsible-roles:
+        - role-id: provider
+          party-uuids:
+            - bea51b9b-3414-42b9-ac61-d405406f84f2
+      control-implementations:
+        - uuid: 945a0154-bf2f-4e8c-ac22-a2f5c11c2401
+          source: https://raw.githubusercontent.com/usnistgov/oscal-content/master/nist.gov/SP800-53/rev5/json/NIST_SP-800-53_rev5_catalog.json
+          description: >-
+            Controls implemented by the Pepr receipt gate admission webhook.
+          implemented-requirements:
+            # ── SI-7: Software + Information Integrity ──────────────────────
+            - uuid: 4ac17e05-9164-473e-a886-6c13bd4976d2
+              control-id: si-7
+              description: >-
+                REAL: Validates that every Pod admitted to the killinchu namespace
+                carries the szl.io/receipt annotation in the required v1:<sha256>:<sig> format.
+                Denies admission if absent or malformed, preventing unsigned workloads
+                from running in the governed maritime-drone-C2 namespace.
+                ROADMAP: Full DSSE envelope signature verification (P1).
+              links:
+                - href: "#7cad312c-1615-4552-9b26-750dc3700b6f"
+                  rel: lula
+
+            # ── AC-7: Unsuccessful Logon Attempts / Admission Enforcement ───
+            - uuid: b3377942-e452-43e5-9d1a-dc39974cacae
+              control-id: ac-7
+              description: >-
+                REAL: Pepr webhook enforces receipt gate on every Pod admission event.
+                Denials are logged to Pepr controller stdout (Loki-ingested).
+                ROADMAP: Denial counter published as Prometheus metric szl_killinchu_gate_denials_total.
+              links:
+                - href: "#7cad312c-1615-4552-9b26-750dc3700b6f"
+                  rel: lula
+
+    # ── Component 2: Append-Only Receipt Ledger ───────────────────────────────
+    - uuid: e85a2a2a-3721-487b-bb78-f73697a57d4f
+      type: software
+      title: Killinchu Append-Only Receipt Ledger
+      description: |
+        PostgreSQL-backed append-only receipt ledger. Receipts are written on governed-run
+        completion; no update/delete operations are permitted at the application layer.
+        Enforced by application code + DB role grants (INSERT-only role for writer).
+      purpose: Provide tamper-evident audit log of all DSSE receipt events
+      responsible-roles:
+        - role-id: provider
+          party-uuids:
+            - bea51b9b-3414-42b9-ac61-d405406f84f2
+      control-implementations:
+        - uuid: ea5d8f84-3634-49c0-8b81-626c71d59f18
+          source: https://raw.githubusercontent.com/usnistgov/oscal-content/master/nist.gov/SP800-53/rev5/json/NIST_SP-800-53_rev5_catalog.json
+          description: >-
+            Controls implemented by the append-only receipt ledger.
+          implemented-requirements:
+            # ── AU-9: Protection of Audit Information ───────────────────────
+            - uuid: 064406ad-dbdc-415e-bb63-494a0cecc2bf
+              control-id: au-9
+              description: >-
+                REAL: Kubernetes Secret audit-db-credentials exists in killinchu namespace,
+                populated by UDS Operator from SSO client. DB writer role has INSERT-only
+                grant on receipts table (enforced by Postgres GRANT, verifiable via pg_roles).
+                ROADMAP: WAL-based tamper detection + SLSA L3 bundle attestation on ledger.
+              links:
+                - href: "#3837aa30-4610-4153-aa5f-cef631ea7d06"
+                  rel: lula
+
+            # ── AU-3: Audit Record Content ───────────────────────────────────
+            - uuid: 92eba081-b0c5-4442-bd2d-5f88fc58d4b1
+              control-id: au-3
+              description: >-
+                REAL: Every receipt row in the ledger contains: receipt_id (UUID),
+                payload_sha256 (64-char hex), dsse_signature (base64url), created_at
+                (timestamptz, server-set, NOT NULL), pod_name, namespace, governed_by.
+                Schema enforced at DB level (NOT NULL constraints).
+              links:
+                - href: "#38be41c0-03d6-44a0-9e8e-114e59970954"
+                  rel: lula
+
+    # ── Component 3: Conjunctive Gate (Λ-gate) ────────────────────────────────
+    - uuid: 2b0a23e2-5f73-40aa-955a-3e4edd23ab92
+      type: software
+      title: Killinchu Conjunctive Lambda-Gate (Agentic P1-P6)
+      description: |
+        The killinchu conjunctive gate (Lambda) requires ALL of: P1 structure-valid,
+        P2 tone-safe, P3 evidence-present, P4 lineage-traceable, P5 policy-clear,
+        P6 human-confirmed before issuing a signed DSSE receipt. A single failing
+        sub-gate blocks the entire gate. Lambda = Conjecture 1 (empirically CI-green on
+        main @ 958c09f9; not a mathematical theorem).
+      purpose: Ensure all 6 agentic conditions are met before a governed action is signed
+      responsible-roles:
+        - role-id: provider
+          party-uuids:
+            - bea51b9b-3414-42b9-ac61-d405406f84f2
+      control-implementations:
+        - uuid: f561f978-54ad-4a10-a1c3-aa63cd917c42
+          source: https://raw.githubusercontent.com/usnistgov/oscal-content/master/nist.gov/SP800-53/rev5/json/NIST_SP-800-53_rev5_catalog.json
+          description: >-
+            Controls implemented by the conjunctive Lambda-gate.
+          implemented-requirements:
+            # ── SA-17: Developer Security Testing + Evaluation ───────────────
+            - uuid: 3efb3a2a-4682-46dc-8515-9f3fb4ab1337
+              control-id: sa-17
+              description: >-
+                REAL: ConfigMap szl-killinchu-gate-config in killinchu namespace exists and
+                contains all 6 gate keys (p1_enabled=true ... p6_enabled=true).
+                This is machine-checkable evidence that the gate is deployed and configured.
+                REAL: CI pipeline enforces all P1-P6 tests pass before image publish (CI-green
+                on main @ 958c09f9). ROADMAP: Pepr mutation adds gate-score annotation to
+                receipts; OSCAL assessment validates score >= threshold.
+              links:
+                - href: "#d2174b10-d5cf-4b6d-ac06-bb80fdd03fd4"
+                  rel: lula
+
+  back-matter:
+    resources:
+      # ── LULA VALIDATION 1: Pepr gate webhook deployed ─────────────────────
+      - uuid: 7cad312c-1615-4552-9b26-750dc3700b6f
+        title: "Lula: Pepr receipt gate webhook is deployed and active"
+        rlinks:
+          - href: lula.dev
+        description: >-
+          domain:
+            type: kubernetes
+            kubernetes-spec:
+              resources:
+                - name: peprwebhooks
+                  resource-rule:
+                    group: admissionregistration.k8s.io
+                    version: v1
+                    resource: validatingwebhookconfigurations
+                    namespaces: []
+                - name: peprpods
+                  resource-rule:
+                    group: ""
+                    version: v1
+                    resource: pods
+                    namespaces: ["pepr-system"]
+                    field:
+                      jsonpath: .status.phase
+                      type: string
+          provider:
+            type: opa
+            opa-spec:
+              rego: |
+                package validate
+
+                import future.keywords.every
+                import future.keywords.in
+
+                # REAL: Validates that the SZL Pepr governance webhook exists
+                # and the pepr-system pod is Running.
+                validate {
+                  some webhook in input.peprwebhooks
+                  contains(webhook.metadata.name, "szl-pepr-governance")
+                  count(input.peprpods) > 0
+                  every pod in input.peprpods {
+                    pod.status.phase == "Running"
+                  }
+                }
+
+      # ── LULA VALIDATION 2: Ledger DB secret exists ────────────────────────
+      - uuid: 3837aa30-4610-4153-aa5f-cef631ea7d06
+        title: "Lula: Ledger DB credentials secret exists in killinchu namespace"
+        rlinks:
+          - href: lula.dev
+        description: >-
+          domain:
+            type: kubernetes
+            kubernetes-spec:
+              resources:
+                - name: secrets
+                  resource-rule:
+                    group: ""
+                    version: v1
+                    resource: secrets
+                    namespaces: ["killinchu"]
+          provider:
+            type: opa
+            opa-spec:
+              rego: |
+                package validate
+
+                import future.keywords.in
+
+                # REAL: Validates that the audit-db-credentials secret exists.
+                # NOTE: Rego cannot read secret data (base64 values) without explicit
+                # permissions; this validates existence only.
+                validate {
+                  some secret in input.secrets
+                  secret.metadata.name == "audit-db-credentials"
+                  secret.metadata.namespace == "killinchu"
+                }
+
+      # ── LULA VALIDATION 3: Ledger schema ConfigMap exists ─────────────────
+      - uuid: 38be41c0-03d6-44a0-9e8e-114e59970954
+        title: "Lula: Ledger schema ConfigMap exists with required fields declared"
+        rlinks:
+          - href: lula.dev
+        description: >-
+          domain:
+            type: kubernetes
+            kubernetes-spec:
+              resources:
+                - name: configmaps
+                  resource-rule:
+                    group: ""
+                    version: v1
+                    resource: configmaps
+                    namespaces: ["killinchu"]
+          provider:
+            type: opa
+            opa-spec:
+              rego: |
+                package validate
+
+                import future.keywords.in
+
+                required_fields := {
+                  "receipt_id", "payload_sha256", "dsse_signature",
+                  "created_at", "pod_name", "namespace", "governed_by"
+                }
+
+                # REAL: Validates that the ledger-schema ConfigMap documents all
+                # required fields. The ConfigMap acts as a machine-readable schema
+                # declaration shipped with the Helm chart.
+                validate {
+                  some cm in input.configmaps
+                  cm.metadata.name == "killinchu-ledger-schema"
+                  declared_fields := {field | cm.data[field]}
+                  required_fields == declared_fields
+                }
+
+      # ── LULA VALIDATION 4: Lambda gate ConfigMap configured ───────────────
+      - uuid: d2174b10-d5cf-4b6d-ac06-bb80fdd03fd4
+        title: "Lula: Conjunctive Lambda-gate ConfigMap exists with all 6 gates enabled"
+        rlinks:
+          - href: lula.dev
+        description: >-
+          domain:
+            type: kubernetes
+            kubernetes-spec:
+              resources:
+                - name: configmaps
+                  resource-rule:
+                    group: ""
+                    version: v1
+                    resource: configmaps
+                    namespaces: ["killinchu"]
+          provider:
+            type: opa
+            opa-spec:
+              rego: |
+                package validate
+
+                import future.keywords.in
+                import future.keywords.every
+
+                gate_keys := {
+                  "p1_enabled", "p2_enabled", "p3_enabled",
+                  "p4_enabled", "p5_enabled", "p6_enabled"
+                }
+
+                # REAL: Validates the Lambda-gate ConfigMap exists and all 6 gate
+                # keys are present and set to "true".
+                # This is OSCAL-machine-checkable evidence the gate is deployed.
+                validate {
+                  some cm in input.configmaps
+                  cm.metadata.name == "szl-killinchu-gate-config"
+                  every key in gate_keys {
+                    cm.data[key] == "true"
+                  }
+                }

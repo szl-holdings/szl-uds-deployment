@@ -1,0 +1,235 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# UDS Package CR — killinchu (MESH-READY profile)
+# =============================================================================
+# Built from team/UDS_MESH_READY_SPEC.md §3B. Declares the full governed surface
+# for the maritime + drone C2 field node:
+#   - network.expose  -> Istio VirtualService (UI + Fleet API + TLS-passthrough relay)
+#   - network.allow    -> NetworkPolicy (Prometheus/Keycloak/a11oy/DSSE/OTel/Loki/
+#                         edge-relay ingress/KubeAPI) on top of default-deny
+#   - sso              -> Keycloak OIDC client + authservice sidecar injection
+#   - monitor          -> Prometheus ServiceMonitor + PodMonitor (edge relay)
+#
+# TARGETS the UDS Operator (defenseunicorns/uds-core, AGPL-3.0). Original SZL
+# Holdings work (Apache-2.0). We do NOT copy uds-core source.
+#
+# Sibling uds-package.yaml is the mesh-INTERNAL (sidecar, szl-killinchu) profile.
+# THIS file is the tenant-facing mesh-READY (ambient, killinchu) profile.
+#
+# UDS Package CR (v1alpha1) reference:
+#   https://uds.defenseunicorns.com/reference/configuration/custom-resources/packages-v1alpha1-cr/
+---
+apiVersion: uds.dev/v1alpha1
+kind: Package
+metadata:
+  name: killinchu
+  namespace: killinchu
+  labels:
+    app.kubernetes.io/name: killinchu
+    szl.io/component: uds-package
+    szl.io/profile: mesh-ready
+  annotations:
+    szl.io/slsa-level: "L2-organ-image"
+    szl.io/app-domain: "maritime-drone-c2"
+    szl.io/doctrine-version: "v11"
+    szl.io/kernel-commit: "958c09f9"
+    szl.io/made-for-uds: "true (not affiliated with Defense Unicorns)"
+spec:
+  # ── SERVICE MESH ───────────────────────────────────────────────────────────
+  network:
+    serviceMesh:
+      mode: ambient
+
+    # ── EXPOSE — Istio VirtualService entries (+ uptime checks) ──────────────
+    expose:
+      # Primary killinchu UI (vessels + drones command view)
+      - service: killinchu
+        selector:
+          app.kubernetes.io/name: killinchu
+        gateway: tenant
+        host: killinchu
+        port: 7860
+        targetPort: 7860
+        description: Killinchu Maritime + Drone C2 UI
+        uptime:
+          checks:
+            paths:
+              - /healthz
+              - /
+
+      # Fleet status API (vessel/drone state, receipts, interdiction log)
+      - service: killinchu-api
+        selector:
+          app.kubernetes.io/name: killinchu
+          app.kubernetes.io/component: api
+        gateway: tenant
+        host: killinchu-api
+        port: 8082
+        targetPort: 8082
+        description: Killinchu Fleet Status API
+        uptime:
+          checks:
+            paths:
+              - /health
+              - /api/v1/fleet/status
+
+      # Edge relay endpoint — TLS passthrough for raw vessel telemetry
+      - service: killinchu-relay
+        selector:
+          app.kubernetes.io/name: killinchu
+          app.kubernetes.io/component: relay
+        gateway: passthrough
+        host: killinchu-relay
+        port: 9443
+        targetPort: 9443
+        description: Killinchu Edge Telemetry Relay (TLS passthrough)
+
+    # ── NETWORK ALLOW — NetworkPolicies on top of default-deny ───────────────
+    allow:
+      # Intra-namespace traffic
+      - direction: Ingress
+        remoteGenerated: IntraNamespace
+        description: Intra-namespace pod communication
+
+      - direction: Egress
+        remoteGenerated: IntraNamespace
+        description: Intra-namespace pod communication
+
+      # Prometheus metrics scrape
+      - direction: Ingress
+        remoteNamespace: monitoring
+        remoteSelector:
+          app.kubernetes.io/name: prometheus
+        selector:
+          app.kubernetes.io/name: killinchu
+        port: 9093
+        description: Prometheus metrics scrape
+
+      # Keycloak OIDC egress
+      - direction: Egress
+        remoteNamespace: keycloak
+        remoteSelector:
+          app.kubernetes.io/name: keycloak
+        selector:
+          app.kubernetes.io/name: killinchu
+        port: 8080
+        description: Keycloak OIDC token exchange
+
+      # A11oy governance egress (killinchu -> a11oy for receipt gate checks)
+      - direction: Egress
+        remoteNamespace: a11oy
+        remoteSelector:
+          app.kubernetes.io/name: a11oy
+        selector:
+          app.kubernetes.io/name: killinchu
+        port: 8081
+        description: A11oy governed-run API for receipt gate
+
+      # DSSE receipt service egress
+      - direction: Egress
+        remoteNamespace: szl-receipts
+        remoteSelector:
+          app.kubernetes.io/name: szl-receipts
+        selector:
+          app.kubernetes.io/name: killinchu
+        port: 8443
+        description: SZL DSSE receipt verification
+
+      # OTel Collector egress (gRPC + HTTP OTLP)
+      - direction: Egress
+        remoteNamespace: monitoring
+        remoteSelector:
+          app.kubernetes.io/name: opentelemetry-collector
+        selector:
+          app.kubernetes.io/name: killinchu
+        ports:
+          - 4317
+          - 4318
+        description: OpenTelemetry traces + metrics export
+
+      # Loki log ingestion egress
+      - direction: Egress
+        remoteNamespace: monitoring
+        remoteSelector:
+          app.kubernetes.io/name: loki
+        selector:
+          app.kubernetes.io/name: killinchu
+        port: 3100
+        description: Loki log push
+
+      # Edge relay ingress — raw vessel/drone telemetry on port 9443
+      - direction: Ingress
+        remoteGenerated: Anywhere
+        selector:
+          app.kubernetes.io/name: killinchu
+          app.kubernetes.io/component: relay
+        port: 9443
+        remoteProtocol: TLS
+        description: Edge vessel/drone telemetry TLS ingestion
+
+      # KubeAPI access for operator self-inspection
+      - direction: Egress
+        remoteGenerated: KubeAPI
+        description: Kubernetes API access
+
+  # ── SSO — Keycloak client + authservice ────────────────────────────────────
+  sso:
+    - clientId: uds-szl-killinchu
+      name: Killinchu Login
+      protocol: openid-connect
+      standardFlowEnabled: true
+      publicClient: false
+      redirectUris:
+        - https://killinchu.{{ .Values.domain }}/login/callback
+        - https://killinchu.{{ .Values.domain }}/auth/callback
+      webOrigins:
+        - https://killinchu.{{ .Values.domain }}
+      baseUrl: https://killinchu.{{ .Values.domain }}
+      enableAuthserviceSelector:
+        app.kubernetes.io/name: killinchu
+        app.kubernetes.io/component: frontend
+      groups:
+        anyOf:
+          - /UDS Core/uds-core-admin
+          - /szl/killinchu-operators
+          - /szl/warfighter-c2
+      defaultClientScopes:
+        - openid
+        - profile
+        - email
+        - groups
+      secretConfig:
+        name: killinchu-sso
+        template:
+          OIDC_CLIENT_ID: "{{ .clientId }}"
+          OIDC_CLIENT_SECRET: "{{ .secret }}"
+          OIDC_ISSUER_URL: "https://keycloak.{{ .Values.domain }}/realms/uds"
+
+  # ── MONITOR — Prometheus ServiceMonitor / PodMonitor ────────────────────────
+  monitor:
+    - selector:
+        app.kubernetes.io/name: killinchu
+      portName: metrics
+      targetPort: 9093
+      path: /metrics
+      kind: ServiceMonitor
+      description: Killinchu Application Metrics
+
+    - selector:
+        app.kubernetes.io/name: killinchu
+        app.kubernetes.io/component: api
+      portName: api-metrics
+      targetPort: 9094
+      path: /metrics
+      kind: ServiceMonitor
+      description: Killinchu Fleet API Metrics
+
+    - selector:
+        app.kubernetes.io/name: killinchu
+        app.kubernetes.io/component: relay
+      portName: relay-metrics
+      targetPort: 9095
+      path: /metrics
+      kind: PodMonitor
+      description: Killinchu Edge Relay Metrics

@@ -1,0 +1,45 @@
+SZL Governance — Pepr Capability
+Copyright 2026 SZL Holdings
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+================================================================================
+Third-party dependencies (interoperated with at runtime / build time)
+================================================================================
+
+This capability is an ORIGINAL SZL Holdings work. It does not copy or vendor
+any third-party source code. It runs ON TOP OF the following Apache-2.0
+components, which it depends on but does not redistribute the source of:
+
+  - Pepr
+    Copyright Defense Unicorns
+    License: Apache-2.0
+    https://github.com/defenseunicorns/pepr
+    Used via the public `pepr` npm package API (Capability, PeprModule, a, Log).
+
+  - kubernetes-fluent-client
+    Copyright Defense Unicorns
+    License: Apache-2.0
+    https://github.com/defenseunicorns/kubernetes-fluent-client
+    Transitive dependency of Pepr; provides the typed Kubernetes resource API.
+
+================================================================================
+Attribution
+================================================================================
+
+The capability registration pattern (Capability + When(a.Pod).Validate()) was
+informed by the public, documented Pepr API and by the publicly visible
+structure of AustinAbro321/pepr-grafana-capability. NO source code from that
+repository (which asserts no license) has been copied; only the documented
+public Pepr API surface is used. All validation logic, the SZL YUYAY-gate
+receipt format, and the governance gates are original SZL Holdings work.
+
+================================================================================
+License discipline (intentional)
+================================================================================
+
+This capability deliberately does NOT import, vendor, or copy source from any
+AGPL-3.0 component (uds-core, uds-cli, uds-common, maru-runner). It INTEROPERATES
+with UDS Core by emitting/consuming UDS Package custom resources and by running
+as a standard Pepr admission module — it does not link against AGPL source. This
+keeps the SZL governance capability cleanly Apache-2.0.

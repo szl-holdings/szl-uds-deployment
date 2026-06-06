@@ -1,0 +1,39 @@
+SZL Compliance — Lula / OSCAL Component Definitions
+Copyright 2026 SZL Holdings
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+================================================================================
+Third-party formats and tools (interoperated with — no source copied)
+================================================================================
+
+  - OSCAL (Open Security Controls Assessment Language) component-definition model
+    NIST — Public Domain (U.S. Government work)
+    https://pages.nist.gov/OSCAL/
+
+  - NIST SP 800-53 Rev 5 control catalog
+    NIST — Public Domain
+    https://github.com/usnistgov/oscal-content
+
+  - lula1 (validation engine)
+    Copyright Defense Unicorns (defenseunicorns-labs)
+    License: Apache-2.0
+    https://github.com/defenseunicorns-labs/lula1
+    Invoked as an external binary (`lula validate -f ...`); no source copied.
+
+  - Open Policy Agent / Rego (evaluation language used by lula's opa provider)
+    Copyright The OPA Authors
+    License: Apache-2.0
+    https://github.com/open-policy-agent/opa
+
+The OSCAL documents and all Rego policies in the back-matter are original
+SZL Holdings work (Apache-2.0).
+
+================================================================================
+License discipline (intentional)
+================================================================================
+
+These component definitions INTEROPERATE with uds-core (AGPL-3.0) by asserting
+compliance over UDS-deployed Kubernetes resources. They do NOT copy uds-core,
+uds-cli, uds-common, or maru-runner source. lula1 and go-oscal are Apache-2.0
+and are invoked as external tools.

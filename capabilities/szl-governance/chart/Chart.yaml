@@ -1,0 +1,25 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v2
+name: szl-governance
+description: >-
+  UDS network/SSO policy wrapper for the SZL governance Pepr admission module.
+  Ships a UDS Package custom resource that grants the Pepr controller the
+  egress it needs (KubeAPI + the szl-receipts DSSE service for the ROADMAP
+  cryptographic-verify path) and labels the governed namespaces. The Pepr
+  admission module itself is built by `pepr build` (which emits its own chart);
+  this chart only carries the UDS-Core interop policy. Apache-2.0. Built to mesh
+  with UDS — not an official Defense Unicorns product.
+type: application
+version: 0.5.0
+appVersion: "0.5.0"
+keywords:
+  - szl
+  - governance
+  - pepr
+  - admission
+  - uds
+home: https://github.com/szl-holdings/szl-uds-deployment
+maintainers:
+  - name: SZL Holdings Platform Team
+    url: https://github.com/szl-holdings

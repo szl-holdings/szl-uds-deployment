@@ -1,0 +1,58 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# UDS Package CR for the SZL governance Pepr controller.
+# TARGETS the UDS Operator (uds.dev/v1alpha1) — does NOT copy uds-core (AGPL) source.
+# Grants the Pepr admission controller the egress it needs and exposes its metrics
+# to uds-core Prometheus. Original SZL Holdings work (Apache-2.0).
+apiVersion: uds.dev/v1alpha1
+kind: Package
+metadata:
+  name: szl-governance
+  namespace: {{ .Values.peprNamespace }}
+  labels:
+    app.kubernetes.io/name: szl-governance
+    szl.io/component: pepr-capability
+  annotations:
+    szl.io/made-for-uds: "true (not affiliated with Defense Unicorns)"
+    szl.io/capability: "a11oy-receipt-gate, killinchu-receipt-gate"
+spec:
+  network:
+    allow:
+      # Pepr controller -> KubeAPI (admission review round-trips).
+      - direction: Egress
+        remoteGenerated: KubeAPI
+        selector:
+          pepr.dev/controller: admission
+        description: Pepr admission controller to Kubernetes API
+
+      # ROADMAP: Pepr controller -> szl-receipts DSSE verify service.
+      # Provisioned now so the cryptographic-verify path can be enabled without a
+      # policy change. The REAL format-only path makes no network call.
+      - direction: Egress
+        remoteNamespace: {{ .Values.receipts.namespace }}
+        remoteSelector:
+          {{- toYaml .Values.receipts.selector | nindent 10 }}
+        selector:
+          pepr.dev/controller: admission
+        port: {{ .Values.receipts.port }}
+        description: "ROADMAP: Pepr controller to szl-receipts DSSE verification (in-cluster)"
+
+      # Webhook ingress from KubeAPI to the Pepr admission service.
+      - direction: Ingress
+        remoteGenerated: KubeAPI
+        selector:
+          pepr.dev/controller: admission
+        port: 3000
+        description: Kubernetes API server to Pepr admission webhook
+
+{{- if .Values.monitor.enabled }}
+  monitor:
+    - selector:
+        {{- toYaml .Values.monitor.selector | nindent 8 }}
+      portName: metrics
+      targetPort: {{ .Values.monitor.port }}
+      path: /metrics
+      kind: ServiceMonitor
+      description: SZL Governance Pepr controller metrics
+{{- end }}
