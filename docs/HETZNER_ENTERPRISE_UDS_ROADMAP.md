@@ -1,12 +1,8 @@
-<!--
-Copyright 2026 SZL Holdings · SPDX-License-Identifier: Apache-2.0
-Doctrine v11 LOCKED 749/14/163 @ c7c0ba17 · Λ = Conjecture 1 (NEVER a theorem)
-SLSA L1 honest / L2 on organ images — bundle-level attestation NOT earned (cosign signature is the bundle provenance) · NOT L3 · NOT Iron Bank · No FedRAMP/CMMC
-Section 889 = exactly 5 vendors (Huawei, ZTE, Hytera, Hikvision, Dahua)
-Signed-off-by: Stephen P. Lutar Jr. <stephenlutar2@gmail.com>
--->
+# HETZNER ENTERPRISE BUILD ROADMAP — UDS + Zarf, End-to-End
 
-# HETZNER ENTERPRISE BUILD ROADMAP — UDS + Zarf, end-to-end (execute today)
+**SZL Holdings · Execute Today**
+
+> Copyright 2026 SZL Holdings · SPDX-License-Identifier: Apache-2.0 · Doctrine v11 LOCKED 749/14/163 @ c7c0ba17 · Λ = Conjecture 1 (NEVER a theorem) · SLSA L1 honest / L2 on organ images — bundle-level attestation NOT earned (cosign signature is the bundle provenance) · NOT L3 · NOT Iron Bank · No FedRAMP/CMMC · Section 889 = exactly 5 vendors (Huawei, ZTE, Hytera, Hikvision, Dahua) · Signed-off-by: Stephen P. Lutar Jr. <stephenlutar2@gmail.com>
 
 **For:** Stephen P. Lutar Jr. (Founder/CEO), SZL Holdings
 **Goal:** go from **nothing** → **a Hetzner-hosted, governed UDS environment running a11oy + killinchu on UDS Core**, by copy-paste, with an air-gap variant and a GitHub-handoff path.
