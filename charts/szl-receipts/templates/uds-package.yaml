@@ -35,6 +35,10 @@ spec:
   # ── SSO — Keycloak OIDC client registration ────────────────────────────────
   # STAGED: Keycloak must be running from core-slim-dev before this takes effect.
   # auth-service sidecar is injected by Pepr when enableAuthserviceSelector matches.
+  # Gated off by default: the sso block makes the UDS operator emit a
+  # deny-all-except-waypoint authz that is unsatisfiable without a waypoint
+  # gateway. Enable via udsPackage.sso.enabled once Keycloak is wired.
+  {{- if .Values.udsPackage.sso.enabled }}
   sso:
     - name: SZL Receipts
       clientId: szl-receipts
@@ -48,19 +52,23 @@ spec:
       # via the szl-receipts-sso Secret's OIDC claims. Configure group
       # membership in Keycloak realm /szl/receipts after FA-002 is resolved.
 
+  {{- end }}
+
   # ── Network — ingress + egress rules (generate Istio + K8s NetworkPolicy) ──
   network:
     expose:
-      # Expose receipts-server on the UDS tenant gateway (Istio VirtualService)
-      # Accessible at https://receipts.<domain>
+      # Expose receipts-server on a UDS Core Istio gateway (VirtualService).
+      # gateway/host are value-driven (see values.yaml udsPackage.expose):
+      #   admin  -> https://receipts.admin.<domain>  (single-node k3d default)
+      #   tenant -> https://receipts.<domain>         (multi-node / tower)
       - service: szl-receipts-server
         selector:
           app: szl-receipts-server
-        gateway: tenant
-        host: receipts
+        gateway: {{ .Values.udsPackage.expose.gateway }}
+        host: {{ .Values.udsPackage.expose.host }}
         port: 8080
         targetPort: 8080
-        description: "SZL Receipts server — tenant gateway"
+        description: "SZL Receipts server"
 
     allow:
       # Allow egress to OTel collector for traces/metrics

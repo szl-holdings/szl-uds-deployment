@@ -30,6 +30,9 @@ spec:
   template:
     metadata:
       labels:
+        # UDS Package NetworkPolicies + AuthorizationPolicies select `app`.
+        # Required for gateway ingress + pepr webhook to reach this pod.
+        app: szl-receipts-server
         app.kubernetes.io/name: szl-receipts-server
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/version: {{ .Chart.AppVersion }}
