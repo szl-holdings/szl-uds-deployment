@@ -231,4 +231,4 @@ rather than an Ed25519 signature.
 
 Cite this work via [`CITATION.cff`](CITATION.cff). Math foundations: [szl-papers](https://github.com/szl-holdings/szl-papers) · [lutar-lean](https://github.com/szl-holdings/lutar-lean) (kernel `c7c0ba17`).
 
-<sub>Λ Conjecture 1 (not a theorem) · 749/14/163 v11 LOCKED (kernel `c7c0ba17`) · SLSA L1 honest; L2 roadmap (NOT L3) · Section 889 = 5 vendors · [SZL Holdings](https://szlholdings.com) · Apache-2.0 code · CC-BY-4.0 papers</sub>
+<sub>Λ Conjecture 1 (not a theorem) · locked kernel 749/14/163 @ `c7c0ba17` (5 proven) · experimental main 1304/22 @ `7885fd9` (~36 theorems CI-green, never folded into the locked 5) · v11 LOCKED · SLSA L1 honest; L2 roadmap (NOT L3) · Section 889 = 5 vendors · [SZL Holdings](https://szlholdings.com) · Apache-2.0 code · CC-BY-4.0 papers</sub>
