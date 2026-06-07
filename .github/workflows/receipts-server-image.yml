@@ -50,6 +50,10 @@ jobs:
   build-push:
     name: Build + push (+ sign) receipts-server
     runs-on: ubuntu-latest
+    env:
+      # secrets.* cannot be used directly in step-level `if:` expressions, so we
+      # surface presence of the cosign key as a job env flag here.
+      HAS_COSIGN_KEY: ${{ secrets.COSIGN_PRIVATE_KEY != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
@@ -102,7 +106,7 @@ jobs:
       # fall back to keyless OIDC so the image is ALWAYS signed (no founder block).
       - name: Sign image with cosign key-pair (if secret present)
         id: keysign
-        if: ${{ secrets.COSIGN_PRIVATE_KEY != '' }}
+        if: ${{ env.HAS_COSIGN_KEY == 'true' }}
         env:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
@@ -113,10 +117,10 @@ jobs:
           rm -f /tmp/cosign.key
           echo "Signed ${REF} with COSIGN_PRIVATE_KEY (cosign.pub key-pair)"
           # Verify against the committed public key.
-          cosign verify --key cosign.pub "${REF}"
+          cosign verify --key cosign/cosign.pub "${REF}"
 
       - name: Sign image keylessly (OIDC fallback)
-        if: ${{ secrets.COSIGN_PRIVATE_KEY == '' }}
+        if: ${{ env.HAS_COSIGN_KEY != 'true' }}
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
