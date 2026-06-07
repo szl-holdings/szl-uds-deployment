@@ -1,0 +1,151 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# SZL Receipts UI — SSO-gated human surface (task #128).
+#
+# A thin nginx reverse-proxy that the UDS authservice sidecar protects (Keycloak
+# login). It forwards browser requests to szl-receipts-server in-mesh. Splitting
+# the human surface into its own workload is what allows the machine webhook to
+# reach the server unauthenticated while every browser request is gated by
+# Keycloak (UDS authservice protects the whole selected pod, so the server pod
+# itself must stay outside the authservice selector).
+#
+# Rendered ONLY when udsPackage.sso.enabled=true, so on the single-node k3d demo
+# (SSO off) this adds no workload and the proven admin-gateway state is intact.
+{{- if .Values.udsPackage.sso.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: szl-receipts-ui-nginx
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: szl-receipts-ui
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    szl.io/component: receipts-ui
+data:
+  default.conf: |
+    # Reverse-proxy every request to the receipts-server read API.
+    # authservice has already enforced a valid OIDC session before traffic
+    # reaches this container, so anything that arrives here is authenticated.
+    server {
+      listen {{ .Values.ui.port }};
+      server_name _;
+
+      # nginx-unprivileged keeps its writable temp paths under /tmp.
+      client_body_temp_path /tmp/client_body;
+      proxy_temp_path       /tmp/proxy;
+      fastcgi_temp_path     /tmp/fastcgi;
+      uwsgi_temp_path       /tmp/uwsgi;
+      scgi_temp_path        /tmp/scgi;
+
+      location / {
+        proxy_pass http://{{ .Values.server.name }}.{{ .Release.Namespace }}.svc.cluster.local:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # SSE stream (GET /stream) must not be buffered.
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.ui.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: szl-receipts-ui
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/version: {{ .Chart.AppVersion }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    szl.io/component: receipts-ui
+spec:
+  replicas: {{ .Values.ui.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: szl-receipts-ui
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        # UDS authservice + NetworkPolicies select `app`.
+        app: szl-receipts-ui
+        app.kubernetes.io/name: szl-receipts-ui
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/version: {{ .Chart.AppVersion }}
+        szl.io/component: receipts-ui
+      annotations:
+        checksum/config: {{ printf "%s|%s|%v" .Values.server.name .Release.Namespace .Values.ui.port | sha256sum }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ui
+          image: "{{ .Values.ui.image.repository }}:{{ .Values.ui.image.tag }}"
+          imagePullPolicy: {{ .Values.ui.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.ui.port }}
+              protocol: TCP
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            {{- toYaml .Values.ui.resources | nindent 12 }}
+          readinessProbe:
+            tcpSocket:
+              port: {{ .Values.ui.port }}
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: {{ .Values.ui.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: szl-receipts-ui-nginx
+        - name: tmp
+          emptyDir: {}
+      terminationGracePeriodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: szl-receipts-ui
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: szl-receipts-ui
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    szl.io/component: receipts-ui
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: szl-receipts-ui
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: http
+      port: {{ .Values.ui.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

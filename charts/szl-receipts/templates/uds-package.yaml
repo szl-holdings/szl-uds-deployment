@@ -3,21 +3,41 @@
 #
 # UDS Package CR — szl-receipts
 #
-# This Package CR instructs UDS Core (via Pepr) to:
-#   1. Register the szl-receipts Keycloak SSO client with auth-service sidecar
-#   2. Expose the receipts-server via the UDS tenant Istio gateway
-#   3. Allow egress to the OTel collector in the monitoring namespace
+# This Package CR instructs UDS Core (via the Pepr-based UDS Operator) to:
+#   1. (when sso.enabled) Register the szl-receipts Keycloak SSO client and wire
+#      the authservice sidecar in front of the human-facing UI reverse-proxy.
+#   2. Expose the receipts surface via a UDS Core Istio gateway (VirtualService).
+#   3. Allow the in-cluster Pepr admission webhook to POST receipts
+#      machine-to-machine (mesh / mTLS) regardless of SSO state.
+#   4. Allow egress to the OTel collector in the monitoring namespace.
 #
-# Prerequisites:
-#   - uds-core with core-slim-dev (or full core) deployed first
-#   - Keycloak running in the keycloak namespace (provided by core-slim-dev)
-#   - Istio service mesh active (provided by core-slim-dev)
+# ── Public / protected split (task #128) ────────────────────────────────────
+# UDS Core authservice (ambient waypoint) protects the WHOLE selected workload,
+# and intercepts in-mesh east-west traffic too — so putting authservice on the
+# receipts-server pod would also block the Pepr webhook's POST /receipt. The
+# split therefore separates the two surfaces into two workloads:
+#
+#   * szl-receipts-server  — the chain authority. NOT authservice-selected, NOT
+#       gateway-exposed (ClusterIP only). The admission webhook reaches it over
+#       the mesh via the always-on pepr `allow` rule below. Independent of
+#       Keycloak: the audit trail keeps chaining even if SSO is down.
+#   * szl-receipts-ui      — an nginx reverse-proxy that is the human surface.
+#       authservice-selected (via spec.sso.enableAuthserviceSelector) and
+#       gateway-exposed, so a browser hitting the gateway host is redirected to
+#       Keycloak and only reaches the receipt API after a valid OIDC session.
+#
+# When sso.enabled is false (single-node k3d demo, where full Core Keycloak does
+# not fit — see warhacker-deliverables) the UI is not created and the server is
+# exposed on the gateway directly, preserving the proven admin-gateway state.
+#
+# Prerequisites for sso.enabled=true:
+#   - UDS Core with Keycloak + authservice running (multi-core / tower cluster).
+#   - The Istio waypoint for the namespace is provisioned by the operator.
 #
 # References:
 #   UDS Package CRD: https://github.com/defenseunicorns/uds-core
-#   UDS Pattern guide: https://uds.defenseunicorns.com/docs/
-#   Andrew Greene Option A endorsement: 2026-05-22
-
+#   spec.sso schema: defenseunicorns/uds-core@v1.5.0 package-v1alpha1.schema.json
+#   Pattern (human vs machine clients): docs/KEYCLOAK_SSO.md
 apiVersion: uds.dev/v1alpha1
 kind: Package
 metadata:
@@ -29,38 +49,58 @@ metadata:
     app.kubernetes.io/version: {{ .Chart.AppVersion }}
     szl.io/component: uds-package
   annotations:
-    szl.io/staged: "SSO functional only after core-slim-dev is deployed (FA-002)"
-    szl.io/doc: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/docs/ARCHITECTURE.md"
+    szl.io/doc: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/docs/KEYCLOAK_SSO.md"
 spec:
-  # ── SSO — Keycloak OIDC client registration ────────────────────────────────
-  # STAGED: Keycloak must be running from core-slim-dev before this takes effect.
-  # auth-service sidecar is injected by Pepr when enableAuthserviceSelector matches.
-  # Gated off by default: the sso block makes the UDS operator emit a
-  # deny-all-except-waypoint authz that is unsatisfiable without a waypoint
-  # gateway. Enable via udsPackage.sso.enabled once Keycloak is wired.
+  # ── SSO — Keycloak OIDC client registration (human UI only) ─────────────────
+  # The UDS Operator reads this block and auto-creates the matching Keycloak
+  # client + injects the authservice sidecar in front of pods matching
+  # enableAuthserviceSelector. Only the UI reverse-proxy is selected, so the
+  # machine webhook path to szl-receipts-server is never gated.
   {{- if .Values.udsPackage.sso.enabled }}
+  {{- $domain := .Values.global.domain }}
+  {{- $host := .Values.udsPackage.expose.host }}
+  {{- $fqdn := printf "%s.%s" $host $domain }}
+  {{- if eq .Values.udsPackage.expose.gateway "admin" }}{{- $fqdn = printf "%s.admin.%s" $host $domain }}{{- end }}
   sso:
-    - name: SZL Receipts
-      clientId: szl-receipts
+    - name: {{ .Values.udsPackage.sso.name | quote }}
+      clientId: {{ .Values.udsPackage.sso.clientId | quote }}
+      protocol: openid-connect
+      # Browser redirect (authorization-code) flow for human sign-in.
+      standardFlowEnabled: true
       redirectUris:
-        - "https://receipts.{{ .Values.global.domain }}/oauth2/callback"
+        - "https://{{ $fqdn }}/*"
+      webOrigins:
+        - "https://{{ $fqdn }}"
+      # Protect ONLY the human UI reverse-proxy with authservice.
       enableAuthserviceSelector:
-        app: szl-receipts-server
-      # Standard OIDC scopes; profile + email required for authservice
-      secretName: szl-receipts-sso
-      # Group-based authorization is enforced by the authservice sidecar
-      # via the szl-receipts-sso Secret's OIDC claims. Configure group
-      # membership in Keycloak realm /szl/receipts after FA-002 is resolved.
-
+        app: szl-receipts-ui
+      {{- with .Values.udsPackage.sso.groups }}
+      # Gate sign-in on Keycloak group membership (e.g. /szl/operators).
+      groups:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      secretConfig:
+        name: {{ .Values.udsPackage.sso.secretName | quote }}
   {{- end }}
 
   # ── Network — ingress + egress rules (generate Istio + K8s NetworkPolicy) ──
   network:
     expose:
-      # Expose receipts-server on a UDS Core Istio gateway (VirtualService).
-      # gateway/host are value-driven (see values.yaml udsPackage.expose):
-      #   admin  -> https://receipts.admin.<domain>  (single-node k3d default)
-      #   tenant -> https://receipts.<domain>         (multi-node / tower)
+      {{- if .Values.udsPackage.sso.enabled }}
+      # SSO on: the human surface is the authservice-gated UI reverse-proxy.
+      # The receipts-server is intentionally NOT exposed here (ClusterIP only),
+      # so the only browser path to receipt data is through Keycloak.
+      - service: szl-receipts-ui
+        selector:
+          app: szl-receipts-ui
+        gateway: {{ .Values.udsPackage.expose.gateway }}
+        host: {{ .Values.udsPackage.expose.host }}
+        port: {{ .Values.ui.port }}
+        targetPort: {{ .Values.ui.port }}
+        description: "SZL Receipts UI (SSO-gated via Keycloak)"
+      {{- else }}
+      # SSO off (single-node k3d demo): expose the server directly on the admin
+      # gateway, preserving the proven receipts.admin.<domain> state.
       - service: szl-receipts-server
         selector:
           app: szl-receipts-server
@@ -69,6 +109,7 @@ spec:
         port: 8080
         targetPort: 8080
         description: "SZL Receipts server"
+      {{- end }}
 
     allow:
       # Allow egress to OTel collector for traces/metrics
@@ -81,17 +122,10 @@ spec:
         port: 4317
         description: "OTel collector (OTLP/gRPC)"
 
-      # Allow egress to Keycloak for SSO token validation
-      - direction: Egress
-        selector:
-          app: szl-receipts-server
-        remoteNamespace: keycloak
-        remoteSelector:
-          app: keycloak
-        port: 8080
-        description: "Keycloak SSO token validation"
-
-      # Allow ingress from the Pepr admission webhook to POST receipts
+      # Allow ingress from the Pepr admission webhook to POST receipts.
+      # ALWAYS ON — machine-to-machine, independent of SSO. This is the
+      # public/protected split's "protected app, public webhook" half: the
+      # webhook authenticates by mesh identity (pepr-system), no browser session.
       - direction: Ingress
         selector:
           app: szl-receipts-server
@@ -99,7 +133,19 @@ spec:
         remoteSelector:
           app: pepr-szl
         port: 8080
-        description: "Pepr webhook — POST /receipt"
+        description: "Pepr webhook — POST /receipt (machine-to-machine)"
+
+      {{- if .Values.udsPackage.sso.enabled }}
+      # Allow the SSO-gated UI reverse-proxy to read the server's API in-mesh.
+      - direction: Ingress
+        selector:
+          app: szl-receipts-server
+        remoteNamespace: {{ .Release.Namespace }}
+        remoteSelector:
+          app: szl-receipts-ui
+        port: 8080
+        description: "UI reverse-proxy -> receipts-server read API"
+      {{- end }}
 
   # ── Monitor — Prometheus scrape config (managed by uds-core) ──────────────
   monitor:

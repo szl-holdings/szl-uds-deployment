@@ -105,6 +105,32 @@ dashboard:
       cpu: "100m"
       memory: "64Mi"
 
+# ── Human UI reverse-proxy (SSO-gated front, task #128) ───────────────────────
+# Created ONLY when udsPackage.sso.enabled=true. This is a thin nginx
+# reverse-proxy that authservice protects (Keycloak login) and that proxies
+# read requests through to szl-receipts-server in-mesh. Keeping it a separate
+# workload is what lets the machine webhook reach the server unauthenticated
+# while every browser request is gated by Keycloak.
+#
+# Uses the unprivileged nginx image so it satisfies the namespace's restricted
+# Pod Security Standard (non-root, listens on 8080 without CAP_NET_BIND_SERVICE).
+ui:
+  name: szl-receipts-ui
+  image:
+    repository: docker.io/nginxinc/nginx-unprivileged
+    tag: "1.27-alpine"
+    pullPolicy: IfNotPresent
+  replicas: 1
+  # Container + service port. nginx-unprivileged listens on 8080 as non-root.
+  port: 8080
+  resources:
+    requests:
+      cpu: "10m"
+      memory: "32Mi"
+    limits:
+      cpu: "100m"
+      memory: "64Mi"
+
 # ── Service ───────────────────────────────────────────────────────────────────
 service:
   type: ClusterIP
@@ -143,10 +169,25 @@ udsPackage:
   expose:
     gateway: admin
     host: receipts
-  # SSO is gated OFF until UDS Core Keycloak is wired (dedicated downstream task).
-  # Enabling it without a waypoint gateway produces an unsatisfiable deny-all.
+  # ── SSO (Keycloak via UDS Core) ──────────────────────────────────────────
+  # Gated OFF by default. On a single-node k3d demo the full UDS Core Keycloak
+  # + authservice + waypoint do not fit a 2-vCPU node (see
+  # warhacker-deliverables/KEYCLOAK-SSO-* ); enable on the multi-core tower.
+  #
+  # When enabled the UDS Operator auto-creates the Keycloak client and gates the
+  # szl-receipts-ui reverse-proxy behind authservice. The receipts-server and
+  # the Pepr webhook path are unaffected (machine-to-machine stays open).
   sso:
     enabled: false
+    name: "SZL Receipts"
+    clientId: szl-receipts
+    # Name of the operator-generated Secret holding the OIDC client config.
+    secretName: szl-receipts-sso
+    # Optional Keycloak group gate for human sign-in, e.g.:
+    #   groups:
+    #     anyOf:
+    #       - /szl/operators
+    groups: {}
   monitor:
     - portName: http-metrics
       selector:
