@@ -102,6 +102,16 @@ spec:
 
 UDS Core / Istio enforce authorization with `AuthorizationPolicy` (`security.istio.io/v1`). The chosen model is **ALLOW-with-implicit-deny**: per Istio semantics, when at least one `ALLOW` policy selects a workload, any request to that workload that is *not* matched by an ALLOW rule is denied ([Istio AuthorizationPolicy — spec.rules](https://istio.io/latest/docs/reference/config/security/authorization-policy/), [Istio security best practices](https://istio.io/latest/docs/ops/best-practices/security/)). So one `ALLOW` policy per callee, listing the permitted caller SPIFFE principals, fully encodes the matrix without writing explicit `DENY` rules — the deny is the absence of an allow.
 
+> **Naming note (consolidation + rename doctrine).** The `Module` / `ServiceAccount` /
+> namespace identifiers below (`amaru`, `sentra`, `rosie`, `vessels`) are **deploy
+> coordinates** — published GHCR image names and Kubernetes namespace/ServiceAccount
+> identities — retained verbatim so image pulls, SPIFFE principals, and NetworkPolicies
+> keep resolving. Their **user-facing capability names** are Memory (`amaru`),
+> Policy / Safety (`sentra`), and Operator (`rosie`). The former standalone **maritime /
+> vessels** capability is **consolidated into killinchu**; any `vessels` row here reflects
+> the legacy deploy coordinate (founder-gated FA-001), not a separate user-facing product.
+> Product topology = **a11oy + killinchu + mesh** (+ shared governance + receipts).
+
 Caller identity is the SPIFFE principal `cluster.local/ns/<namespace>/sa/<serviceAccount>` ([Istio AuthorizationPolicy — principals](https://istio.io/latest/docs/reference/config/security/authorization-policy/)):
 
 | Module | ServiceAccount | SPIFFE principal |
