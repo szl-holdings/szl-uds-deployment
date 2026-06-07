@@ -79,7 +79,7 @@ Built for [Warhacker 2026](https://warhacker.io), June 16-20, San Diego.
 
 ## What This Is
 
-A UDS add-on that attaches cryptographic governance receipts to every Kubernetes Deployment and Job admitted to the cluster. The Pepr admission controller intercepts each workload API call, generates a DSSE-wrapped HMAC-SHA-256 receipt, posts it to an in-cluster receipt server, and annotates the resource with the receipt ID.
+A UDS add-on that attaches cryptographic governance receipts to every Kubernetes Deployment and Job admitted to the cluster. The Pepr admission controller intercepts each workload API call, generates a DSSE-wrapped, Ed25519-signed receipt, posts it to an in-cluster receipt server, and annotates the resource with the receipt ID.
 
 **This is NOT:**
 - A replacement for uds-core security policies
@@ -102,6 +102,24 @@ uds run demo:verify     # verify receipt chain from cluster
 
 Dashboard: `http://localhost:8443` (after `uds run port-forward`)
 
+### Verifying receipts (authoritative)
+
+Receipts are signed with **Ed25519 over the canonical DSSE Pre-Authentication
+Encoding (PAE)** — the scheme implemented by `services/szl-receipts-server`. The
+**authoritative** verify command is:
+
+```bash
+uds run demo:verify          # → bash scripts/verify_receipts.sh
+```
+
+`scripts/verify_receipts.sh` validates real server output offline using only the
+**public** key (`GET /pubkey`): it re-derives the DSSE PAE, checks each Ed25519
+signature, and walks the SHA-256 hash chain. `scripts/dsse_scheme_regression_test.py`
+pins this scheme in CI and proves that legacy HMAC-SHA-256 (and Ed25519-without-PAE)
+signatures are correctly **rejected**. There is no separate HMAC verify path; any
+older HMAC-based demo verifier has been retired in favour of the Ed25519/DSSE one
+above.
+
 ---
 
 ## Repository Structure
@@ -121,7 +139,7 @@ szl-uds-deployment/
 │       ├── values.yaml
 │       └── templates/
 │           ├── deployment.yaml    # MCP receipts server + nginx sidecar
-│           ├── service.yaml       # ClusterIP + ServiceAccount + HMAC secret
+│           ├── service.yaml       # ClusterIP + ServiceAccount + Ed25519 keypair secret
 │           ├── ingress.yaml       # UDS Package CR + ServiceMonitor
 │           └── configmap.yaml     # Server Python source + dashboard HTML
 ├── pepr/                          # Pepr policy module
