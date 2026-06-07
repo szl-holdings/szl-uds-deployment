@@ -22,9 +22,24 @@
 #   slim-dev local-demo bundle: oci://ghcr.io/defenseunicorns/bundles/k3d-core-slim-dev:1.5.0
 #
 # STAGED items:
-#   FA-001: Image ghcr.io/szl-holdings/vessels:uds-v0.3.0 must be pushed by founder
-#           before `uds create` can air-gap bundle szl-receipts component.
-#           Until then, szl-receipts pulls from docker.io/library/python:3.12-slim.
+#   FA-001: Image ghcr.io/szl-holdings/vessels:uds-v0.3.0 — BUILD FIXED + CI-READY,
+#           NOT YET PUBLISHED (one `gh workflow run` away).
+#           The vessels image now builds end-to-end in GitHub Actions via
+#           szl-holdings/platform/.github/workflows/vessels-image.yml (build +
+#           push + cosign keyless OIDC, modeled on receipts-server-image.yml,
+#           using the built-in GITHUB_TOKEN — no founder secret needed to
+#           publish). The prior artifacts/vessels/Dockerfile could not build at
+#           all (node:22 vs root engines>=24, incomplete workspace manifest
+#           COPYs, wrong pnpm filter, wrong Vite outDir); that is now corrected.
+#           Remaining blocker: the first push of the NEW org package
+#           ghcr.io/szl-holdings/vessels returns 403 Forbidden — the
+#           szl-holdings/platform Actions GITHUB_TOKEN is not yet permitted to
+#           CREATE that package in the org. An org admin with admin:packages must
+#           create + link the `vessels` package to szl-holdings/platform once
+#           (as was already done for szl-receipts-server); then
+#           `gh workflow run vessels-image.yml -R szl-holdings/platform`
+#           publishes + signs it. Until published, `uds deploy` of the
+#           killinchu/vessels bundle stays blocked on this image.
 #   FA-002: cosign signing of this bundle is staged pending org key provisioning (U5).
 #           `uds deploy` will succeed; `cosign verify` on bundle artifact will fail.
 #
