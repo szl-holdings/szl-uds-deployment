@@ -369,6 +369,18 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path in ("/health", "/healthz"):
             self._send(200, "application/json", json.dumps({"status": "ok"}))
+        elif path == "/pubkey":
+            # Publish the Ed25519 PUBLIC key so anyone can verify receipts
+            # offline with the public key only — never the private key. Returns
+            # the base64url raw 32-byte public key plus the stable keyid and alg.
+            body = json.dumps({
+                "alg": "ed25519",
+                "keyid": KEY_ID,
+                "payloadType": PAYLOAD_TYPE,
+                "public_key_b64u": _public_key_b64,
+                "signed": _private_key is not None,
+            })
+            self._send(200, "application/json", body)
         elif path == "/receipts":
             with _receipt_lock:
                 body = json.dumps(_receipts)

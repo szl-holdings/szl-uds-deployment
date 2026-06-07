@@ -3,10 +3,14 @@
 **Founder directive 2026-05-30 16:46 EDT — real demo, no mocks, flex on the fly.**
 Start: `./demo/jack-in.sh` (interactive) or `./demo/jack-in.sh <LETTER> --dry-run`.
 
-> **One honesty line for the room:** "Vessels is deployed live as a signed UDS Zarf
-> package and the Pepr receipts controller is active. Four more modules are real
-> software, staged for the next release — the gap is module Zarf packaging (FA-001)."
-> Never claim five modules boot together.
+> **One honesty line for the room (carry this — it survives a red-team poke):**
+> "What's running and verifiable today is the governance receipt layer: every
+> verdict is an Ed25519/DSSE-signed, hash-chained receipt you can verify offline
+> with the public key only, and tampering is rejected. The vessels module has a
+> signed Zarf package, but its live deploy is gated on a GHCR image push (FA-001);
+> four more modules are staged for the next release."
+> Never claim five modules boot together. Never say "vessels is deployed live" —
+> say "vessels has a signed package; live deploy is gated on FA-001."
 
 | DU gave me… | Run | Time | Config that changes |
 |---|---|---|---|
