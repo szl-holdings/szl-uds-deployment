@@ -19,13 +19,13 @@ packages:
   - name: szl-receipts
     description: >
       SZL governance receipt server and Pepr admission webhook.
-      Emits DSSE envelopes for every Deployment/Job API call cluster-wide.
-      The only fully-deployed package in v0.3.0.
-    repository: ghcr.io/szl-holdings/vessels
-    # NOTE: container tag uds-v0.3.0 NOT YET PUSHED — awaiting FA-001.
-    # When pushed, this ref becomes valid. Until then, use local Zarf package:
-    #   zarf package create packages/szl-receipts/
-    ref: uds-v0.3.1
+      Emits Ed25519/DSSE receipts for every Deployment/Job API call cluster-wide.
+      The only fully-deployed package in v0.3.x.
+    # Receipts server image IS published: ghcr.io/szl-holdings/szl-receipts-server.
+    # (The previous `vessels` repository here was a stale copy-paste; vessels is
+    #  consolidated into killinchu and is not a standalone module.)
+    path: ../../packages/szl-receipts
+    ref: 0.3.1
     # STAGED: change ref from uds-v0.3.1 to published tag once container pushed
     optionalComponents:
       - name: szl-receipts-server
@@ -41,8 +41,9 @@ packages:
             - path: service.port
               value: 8443
             - path: receipts.signingMode
-              # demo: HMAC-SHA256 | production: Ed25519 (requires FA-001 cosign keys)
-              value: demo
+              # Ed25519 over canonical DSSE PAE (keyid szl-receipts-ed25519-2026);
+              # verify offline with the public key only via `uds run demo:verify`.
+              value: ed25519
             - path: receipts.retentionDays
               value: 30
 
