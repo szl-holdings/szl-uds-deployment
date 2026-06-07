@@ -167,11 +167,15 @@ else:
 "
 ```
 
-### Verify receipt HMAC (demo mode)
+### Verify receipts (Ed25519, offline, public-key only)
 
 ```bash
-# The receipt server in demo mode uses HMAC-SHA256
-# Production mode uses Ed25519 (requires cosign keys — pending FA-001)
+# The live server signs every receipt with Ed25519 over the canonical DSSE PAE
+# (keyid szl-receipts-ed25519-2026). Verify offline with the PUBLIC key only —
+# the private key is never needed to verify. One command:
+uds run demo:verify          # -> N VERIFIED, 0 FAILED ; tamper -> a FAILED line
+
+# Or list keyids directly:
 curl -s http://localhost:8443/receipts | python3 -c "
 import sys, json
 receipts = json.load(sys.stdin)
@@ -179,6 +183,8 @@ for r in receipts:
     sigs = r.get('signatures', [])
     print(f'Receipt: {r.get(\"payloadType\",\"?\")} | sigs: {len(sigs)} | keyid: {sigs[0][\"keyid\"] if sigs else \"none\"}')
 "
+# Fetch the public key the verifier uses:
+curl -s http://localhost:8443/pubkey
 ```
 
 ---

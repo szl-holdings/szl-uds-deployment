@@ -33,8 +33,10 @@ tasks:
   #   2. qwen2.5:7b planner (or deterministic stub on fallback) proposes 3 drone cmds.
   #   3. ROSIE evaluates each against the 8 policy gates (G1-G8).
   #   4. Gate G7 (geofence) fires DENY on uav-3 for restricted-airspace-R-2508.
-  #   5. Signed receipt (HMAC-SHA-256 demo mode; Ed25519 upgrade is PR-4) is POSTed.
+  #   5. The raw verdict payload is POSTed to szl-receipts-server, which signs
+  #      it with Ed25519 over the canonical DSSE PAE and chains it (PR-4).
   #   6. Receipt appears in the rosie console dashboard in real time.
+  #   7. Verify offline, public-key only: `uds run demo:verify`.
   #
   # Expected terminal output (matches local_demo/expected_output/):
   #   [SCENARIO B] DRONE-DENY (LLM planner)
@@ -103,23 +105,23 @@ tasks:
             esac
 
             TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-            PAYLOAD_JSON="{\"_type\":\"https://szlholdings.com/receipt/v1\",\"actor_id\":\"${UAV}\",\"action\":\"drone-navigate\",\"zone\":\"${ZONE}\",\"altitude_m\":\"${ALT}\",\"verdict\":\"${VERDICT}\",\"gate_fired\":\"${GATE}\",\"planner\":\"${PLANNER_MODE}\",\"scenario\":\"B\",\"prev_hash\":\"${PREV_HASH}\",\"timestamp\":\"${TIMESTAMP}\"}"
-            PAYLOAD_B64=$(echo -n "${PAYLOAD_JSON}" | base64 -w 0)
-            HMAC_KEY="${SZL_HMAC_KEY:-c3psLWRlbW8ta2V5LTIwMjY=}"
-            SIG=$(echo -n "${PAYLOAD_B64}" | openssl dgst -sha256 -hmac "${HMAC_KEY}" -binary | base64 -w 0 2>/dev/null || echo "sig-unavailable")
-            RECEIPT_HASH=$(echo -n "${PAYLOAD_JSON}${SIG}" | sha256sum | cut -d' ' -f1)
-            SHORT_HASH="${RECEIPT_HASH:0:12}"
-            PREV_HASH="${RECEIPT_HASH}"
+            # POST the RAW verdict payload. The server is the signer: it signs
+            # with Ed25519 over the canonical DSSE PAE and appends to the chain
+            # (prev_hash/hash computed server-side). We do NOT sign client-side.
+            PAYLOAD_JSON="{\"_type\":\"https://szlholdings.com/receipt/v1\",\"actor_id\":\"${UAV}\",\"action\":\"drone-navigate\",\"zone\":\"${ZONE}\",\"altitude_m\":\"${ALT}\",\"verdict\":\"${VERDICT}\",\"gate_fired\":\"${GATE}\",\"planner\":\"${PLANNER_MODE}\",\"scenario\":\"B\",\"timestamp\":\"${TIMESTAMP}\"}"
 
-            printf "  %-5s: %-5s  %-20s  receipt: sha256:%s...\n" "${UAV}" "${VERDICT}" "${GATE}" "${SHORT_HASH}"
+            printf "  %-5s: %-5s  %-20s\n" "${UAV}" "${VERDICT}" "${GATE}"
 
             if curl -sf "${RECEIPTS_URL}/health" >/dev/null 2>&1; then
-              curl -sf -X POST "${RECEIPTS_URL}/receipt" \
+              RESP=$(curl -sf -X POST "${RECEIPTS_URL}/receipt" \
                 -H "Content-Type: application/json" \
-                -d "{\"payload\":\"${PAYLOAD_B64}\",\"payloadType\":\"application/vnd.szl.receipt.v1+json\",\"signatures\":[{\"keyid\":\"szl-dev-hmac-sha256-2026\",\"sig\":\"${SIG}\"}]}" \
-                >/dev/null 2>&1 \
-                && echo "               [cluster] receipt POSTed => szl-receipts-server accepted: ${SHORT_HASH}..." \
-                || echo "               [cluster] WARNING: POST failed — server may still be starting"
+                -d "${PAYLOAD_JSON}" 2>/dev/null || echo "")
+              SHORT_HASH=$(echo "${RESP}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('chain',{}).get('hash','')[:12])" 2>/dev/null || echo "")
+              if [ -n "${SHORT_HASH}" ]; then
+                echo "               [cluster] Ed25519-signed receipt chained: sha256:${SHORT_HASH}..."
+              else
+                echo "               [cluster] WARNING: POST failed — server may still be starting"
+              fi
             fi
           done
 
@@ -203,9 +205,9 @@ tasks:
           fi
 
   - name: verify
-    description: "Post-demo: pull and verify the receipt chain from the cluster"
+    description: "Post-demo: pull and verify the receipt chain OFFLINE (Ed25519 + hash chain, public key only)"
     actions:
-      - description: "Run receipt verification script"
+      - description: "Run offline, public-key-only receipt verification (Ed25519 / DSSE PAE)"
         cmd: bash scripts/verify_receipts.sh
 
   - name: reset

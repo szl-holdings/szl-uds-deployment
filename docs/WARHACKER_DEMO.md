@@ -80,8 +80,14 @@ _Browser is already open at http://localhost:8443._
 _Show the stats panel: Total 0, Verified 0._
 
 > "These receipts are DSSE envelopes — Dead Simple Signing Envelopes.
-> Same format used by sigstore and in-toto. HMAC-SHA-256 in demo mode,
-> Ed25519 in production."
+> Same format used by sigstore and in-toto. The live server signs them with
+> Ed25519 over the canonical DSSE PAE (keyid szl-receipts-ed25519-2026) and
+> you can verify them offline with the public key only."
+
+> NOTE: older copies of this script (and the annotation example below) showed an
+> `hmac-sha256` keyid from the original demo-mode signer. The live server was
+> upgraded to Ed25519 (Finding A2 / PR-4); the docs are catching up to the
+> server. Verify with `uds run demo:verify` (Ed25519, public-key only).
 
 ---
 
@@ -112,7 +118,7 @@ Expected output:
 {
   "szl.receipt.id": "a3f2b1c4d5e6...",
   "szl.receipt.ts": "2026-06-16T14:23:01Z",
-  "szl.receipt.key": "szl-dev-hmac-sha256-2026"
+  "szl.receipt.key": "szl-receipts-ed25519-2026"
 }
 ```
 

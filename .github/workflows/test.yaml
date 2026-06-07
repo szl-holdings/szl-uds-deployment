@@ -29,11 +29,15 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - name: Install cryptography (for Ed25519 scheme test)
+        run: pip install cryptography
+
       - name: DSSE receipt scheme regression
-        # Pins the signer (pepr policy) and verifier (verify_receipts.sh) to the
-        # same HMAC-SHA-256-over-RAW-payload scheme (no DSSE PAE). Standard
-        # library, no cluster. Catches a quiet drift to PAE that would break
-        # verification.
+        # Pins the signer (server.sign_dsse) and verifier (verify_receipts.sh)
+        # to the SAME Ed25519-over-canonical-DSSE-PAE scheme (Finding A2 / PR-4),
+        # and proves the LEGACY HMAC verifier is correctly rejected. No cluster.
+        # Catches a quiet drift back to HMAC, a dropped PAE prefix, or signer↔
+        # verifier divergence that would break offline verification.
         run: python3 scripts/dsse_scheme_regression_test.py
 
       - name: Install yamllint

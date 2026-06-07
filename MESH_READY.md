@@ -131,7 +131,7 @@ queries **live Kubernetes state**:
 | --- | --- | --- | --- |
 | **SI-7** | Pepr Receipt Gate | szl-pepr-governance ValidatingWebhook present + pepr-system pod Running | Full DSSE verify |
 | **AC-7** | Pepr Receipt Gate | gate enforced on every admission (same webhook resource) | Denial Prometheus counter |
-| **AU-9** | Append-Only Ledger | `audit-db-credentials` Secret exists in namespace | WAL tamper detection, SLSA L3 |
+| **AU-9** | Append-Only Ledger | `audit-db-credentials` Secret exists in namespace | WAL tamper detection |
 | **AU-3** | Append-Only Ledger | `<app>-ledger-schema` ConfigMap declares all 7 required fields | — |
 | **SA-17** | Conjunctive Λ-Gate | `szl-<app>-gate-config` ConfigMap has all 6 gate keys = "true" | gate-score annotation |
 
@@ -150,7 +150,7 @@ queries **live Kubernetes state**:
 | Pepr full DSSE cryptographic verify | **ROADMAP (P1)** | egress pre-provisioned; hook commented in `szl-governance-common.ts` |
 | Lula OSCAL controls (5 each, live K8s + Rego) | **REAL (structure) / deploy-time (verdict)** | OSCAL 1.1.2 valid; Rego compiles + evaluates; PASS/FAIL needs live cluster |
 | SLSA Build **L1** | **REAL (honest baseline)** | |
-| SLSA Build **L2** on 5 organ images | **REAL** | cosign `.sig` + `.att` on organ images |
+| SLSA Build **L2** wiring on 5 organ images (roadmap — not yet earned) | **WIRED** | `actions/attest-build-provenance` in ghcr-build-push.yml; attestation not yet verified |
 | Bundle-level attestation | **NOT earned (ROADMAP)** | cosign **signature** = bundle provenance only; not L3, not Iron Bank, no FedRAMP/CMMC |
 | Doctrine v11 | **LOCKED** | 749 theorems / 14 axioms / 163 definitions @ `958c09f9` |
 | Λ (conjunctive gate) | **Conjecture 1** | not a theorem; agentic P1–P6 CI-green on `main @ 958c09f9` |

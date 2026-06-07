@@ -106,7 +106,7 @@ components:
   # ── SBOM attestation component (ships in-bundle) ────────────────────────────
   - name: killinchu-sbom-attest
     required: false
-    description: "SBOM + SLSA Build L2 provenance (organ images only)"
+    description: "SBOM + SLSA Build L2 provenance roadmap (organ images only; not yet earned)"
     files:
       - source: sbom/killinchu.spdx.json
         target: /zarf-sbom/killinchu.spdx.json

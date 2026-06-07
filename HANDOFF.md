@@ -9,15 +9,17 @@
 - **Public formula count = 5** (the live API truth from a11oy `proved_count`). The Lean
   `lake` build may show more targets green, but the served set is 5 until `serve.py` is
   updated to read the proved set and redeployed.
-- **SLSA Build L2 = verified on 5/5 organ images.** True statement:
-  *"SLSA L2 provenance attestation cryptographically verifies (cosign verify-attestation,
-  keyless Fulcio+Rekor, strict per-organ identity) on all 5 organ images: a11oy, sentra,
-  amaru, rosie, killinchu."* SLSA L1 holds on all. The **bundle**
+- **SLSA Build L2 = roadmap (not yet earned) on the 5 organ images.** Honest status:
+  the `actions/attest-build-provenance` step is WIRED in each organ's
+  `ghcr-build-push.yml`, but `cosign verify-attestation --type slsaprovenance` still
+  returns "no matching attestations" on the deployed images (verified 2026-06-04) —
+  so L2 is NOT claimed as earned. **SLSA L1 holds on all.** The **bundle**
   (`szl-uds-bundle:uds-v0.2.1`) is **signed** (cosign keyless, Fulcio+Rekor) **and carries a
   build-provenance attestation** produced via `actions/attest-build-provenance` — verify with
   `gh attestation verify oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.2.1 --owner szl-holdings`
   (run from a non-GHES host; the sandbox proxy is detected as GHES and `gh attestation` refuses).
-- **No L3 / FedRAMP / Iron Bank / CMMC.** None of these are claimed or held.
+- **Not SLSA L3, not FedRAMP-authorized, no Iron Bank acceptance, not CMMC-certified.**
+  None of these are claimed or held; not pursued for this release.
 
 ---
 
