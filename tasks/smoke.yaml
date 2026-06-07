@@ -40,11 +40,23 @@ tasks:
             echo "Cluster ${CLUSTER_NAME} already exists — deleting for a cold start."
             k3d cluster delete "${CLUSTER_NAME}"
           fi
+          # coexist-portguard: only publish host 80/443 to the k3d loadbalancer when
+          # they are free. On a host where nginx (or anything) already owns
+          # 80/443 (e.g. the a11oy.net box) skip them so this cluster never
+          # fights for the public site's ports — not even on a full recreate.
+          # UDS services are reached via kubectl port-forward / the node IP.
+          PORTGUARD=""
+          for P in 80 443; do
+            if ss -ltnH "sport = :$P" 2>/dev/null | grep -q .; then
+              echo "Host port $P already in use — skipping it on the k3d loadbalancer (coexistence mode)."
+            else
+              PORTGUARD="$PORTGUARD --port $P:$P@loadbalancer"
+            fi
+          done
           k3d cluster create "${CLUSTER_NAME}" \
             --k3s-arg "--disable=traefik@server:0" \
-            --port "80:80@loadbalancer" \
-            --port "443:443@loadbalancer" \
             --port "8443:8443@loadbalancer" \
+            $PORTGUARD \
             --wait
 
       - description: "Build + deploy the szl-warhacker bundle"

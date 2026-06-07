@@ -71,12 +71,24 @@ tasks:
             echo "✓ k3d cluster '${CLUSTER_NAME}' already running"
           else
             echo "→ Creating k3d cluster '${CLUSTER_NAME}' …"
+            # coexist-portguard: only publish host 80/443 to the k3d loadbalancer when
+            # they are free. On a host where nginx (or anything) already owns
+            # 80/443 (e.g. the a11oy.net box) skip them so this cluster never
+            # fights for the public site's ports — not even on a full recreate.
+            # UDS services are reached via kubectl port-forward / the node IP.
+            PORTGUARD=""
+            for P in 80 443; do
+              if ss -ltnH "sport = :$P" 2>/dev/null | grep -q .; then
+                echo "Host port $P already in use — skipping it on the k3d loadbalancer (coexistence mode)."
+              else
+                PORTGUARD="$PORTGUARD --port $P:$P@loadbalancer"
+              fi
+            done
             k3d cluster create "${CLUSTER_NAME}" \
               --servers 1 \
               --agents 2 \
-              --port "443:443@loadbalancer" \
-              --port "80:80@loadbalancer" \
               --k3s-arg "--disable=traefik@server:0" \
+              $PORTGUARD \
               --wait
             echo "✓ k3d cluster '${CLUSTER_NAME}' created"
           fi

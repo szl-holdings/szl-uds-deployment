@@ -35,10 +35,12 @@ variables:
 
   # ── receipts-server image (Gap 1) ─────────────────────────────────────────
   # The OCI image tag the chart pulls (charts/szl-receipts/values.yaml).
+  # MUST stay in lockstep with charts/szl-receipts/values.yaml image.tag and the
+  # packages/szl-receipts/zarf.yaml images: list, or the deploy ErrImagePulls.
   - name: RECEIPTS_IMAGE
     default: "ghcr.io/szl-holdings/szl-receipts-server"
   - name: RECEIPTS_IMAGE_TAG
-    default: "uds-v0.3.1"
+    default: "uds-v0.4.0"
 
   # When true (default), the start task builds the receipts-server image locally
   # and imports it into the k3d cluster so deploy never stalls on a GHCR pull —
@@ -47,10 +49,19 @@ variables:
   - name: BUILD_RECEIPTS_LOCAL
     default: "true"
 
-  # When true, build + deploy the szl-governance Pepr capability as part of
-  # `uds run start`. Requires Docker (pepr build emits a controller image).
+  # Rebuild the airgap bundle tarball even if one is already present. The default
+  # (false) reuses an existing uds-bundle-*.tar.zst so re-runs (and offline
+  # deploys) are fast; set to true to force a fresh `uds create`.
+  - name: REBUILD_BUNDLE
+    default: "false"
+
+  # When true, also build + deploy the receipt-on-deploy Pepr admission policy
+  # (the in-cluster webhook). Default OFF so the one-command core path (UDS Core
+  # + receipts server) stays reliable; the webhook is opt-in and its clean-
+  # redeploy survival is tracked separately. Requires Docker + network (pepr
+  # build/deploy pulls the Pepr controller image), so it is NOT airgap-safe.
   - name: WITH_PEPR
-    default: "true"
+    default: "false"
 
 includes:
   - test: ./tasks/test.yaml
@@ -69,7 +80,7 @@ tasks:
 
   # ── Primary entry point ───────────────────────────────────────────────────
   - name: start
-    description: "Provision -> build/publish receipts-server -> uds deploy core -> deploy bundle -> Pepr capability -> verify (clean end-to-end)"
+    description: "One command: k3d up -> build receipts image -> uds create + uds deploy (init + UDS Core + receipts) -> verify (clean end-to-end; airgap-capable)"
     actions:
       - description: "Check required tools"
         cmd: |
@@ -105,11 +116,23 @@ tasks:
           if k3d cluster list | grep -q "${CLUSTER_NAME}"; then
             echo "Cluster ${CLUSTER_NAME} already exists — skipping create."
           else
+            # coexist-portguard: only publish host 80/443 to the k3d loadbalancer when
+            # they are free. On a host where nginx (or anything) already owns
+            # 80/443 (e.g. the a11oy.net box) skip them so this cluster never
+            # fights for the public site's ports — not even on a full recreate.
+            # UDS services are reached via kubectl port-forward / the node IP.
+            PORTGUARD=""
+            for P in 80 443; do
+              if ss -ltnH "sport = :$P" 2>/dev/null | grep -q .; then
+                echo "Host port $P already in use — skipping it on the k3d loadbalancer (coexistence mode)."
+              else
+                PORTGUARD="$PORTGUARD --port $P:$P@loadbalancer"
+              fi
+            done
             k3d cluster create "${CLUSTER_NAME}" \
               --k3s-arg "--disable=traefik@server:0" \
-              --port "80:80@loadbalancer" \
-              --port "443:443@loadbalancer" \
               --port "8443:8443@loadbalancer" \
+              $PORTGUARD \
               --wait
             echo "Cluster ${CLUSTER_NAME} created."
           fi
@@ -136,59 +159,72 @@ tasks:
             echo "  gh workflow run receipts-server-image.yml -f version=${RECEIPTS_IMAGE_TAG}"
           fi
 
-      - description: "Build SZL receipts Zarf package (flavor=${FLAVOR})"
+      # ── Compose + deploy the bundle in ONE step ─────────────────────────────
+      # The bundle (uds-bundle.yaml) composes three layers:
+      #   1. Zarf init        ghcr.io/zarf-dev/packages/init
+      #   2. UDS Core          ghcr.io/defenseunicorns/packages/uds/core:1.5.0-upstream
+      #   3. szl-receipts      ./packages/szl-receipts  (the MODULAR package — it
+      #      deliberately excludes the Pepr policy + the absent ui chart, so the
+      #      bundle assembles without dist/pepr or ui/).
+      # `uds create` runs `zarf package create` on the path: package for us, so we
+      # do NOT build the monolithic root zarf.yaml here (it imports dist/pepr and
+      # would fail). Building it would also produce the wrong artifact — the bundle
+      # is what `uds deploy` consumes.
+      - description: "Build the airgap bundle tarball (uds create) — embeds all images"
         cmd: |
-          zarf package create . \
+          if ls uds-bundle-szl-receipts-bundle-*.tar.zst >/dev/null 2>&1 && [ "${REBUILD_BUNDLE}" != "true" ]; then
+            echo "Bundle tarball already present — reusing it (set REBUILD_BUNDLE=true to force a fresh build)."
+          else
+            echo "Building the bundle (pulls UDS Core + receipts images once, embeds them) ..."
+            uds create . --confirm --no-progress
+          fi
+
+      # One `uds deploy` brings up init + UDS Core + szl-receipts.
+      # --skip-signature-validation: init, Core and the receipts package are
+      # keyless-signed (cosign OIDC) by DIFFERENT identities, so strict validation
+      # rejects the mixed-identity bundle. This is a demo expedient, NOT a security
+      # posture — the receipts package itself is verified by its own cosign/SBOM
+      # flow (see the publish-signed follow-up). The same tarball deploys OFFLINE
+      # (airgap) because every image is embedded in it.
+      - description: "Deploy the bundle (init + UDS Core + szl-receipts) — one uds deploy"
+        cmd: |
+          uds deploy uds-bundle-szl-receipts-bundle-*.tar.zst \
             --set DOMAIN=${DOMAIN} \
-            --flavor ${FLAVOR} \
+            --skip-signature-validation \
             --confirm \
             --no-progress
 
-      - description: "Create UDS bundle"
-        cmd: |
-          uds create . \
-            --confirm \
-            --no-progress
-
-      - description: "Deploy the SZL Warhacker bundle (uds deploy core is layer 2 of the bundle)"
-        cmd: |
-          uds deploy uds-bundle-szl-warhacker-demo-*.tar.zst \
-            --set DOMAIN=${DOMAIN} \
-            --set INSECURE_ADMIN_PASSWORD_GENERATION=true \
-            --confirm \
-            --no-progress
-
-      # ── Gap 3: Pepr capability step (capabilities/szl-governance) ───────────
-      # Builds the szl-governance Pepr admission module (emits the controller
-      # image + manifests), packages it with Zarf, and deploys it so the
-      # a11oy/killinchu receipt-gate is wired into the deploy sequence. Skipped
-      # cleanly when WITH_PEPR=false (e.g. environments without Docker).
-      - description: "Build + deploy the szl-governance Pepr capability"
+      # ── Optional: receipt-on-deploy Pepr admission policy ───────────────────
+      # Builds the szl-receipt-policy Pepr module (npm install needs
+      # --legacy-peer-deps; the module's deps are declared in pepr/package.json)
+      # into dist/pepr, then deploys the admission webhook so every Deployment/Job
+      # apply emits a DSSE receipt. OFF by default (see WITH_PEPR) so the core
+      # one-command path stays reliable and airgap-safe; the webhook's clean-
+      # redeploy survival (chart pod-label fix) is tracked separately.
+      - description: "(optional) Build + deploy the receipt-on-deploy Pepr policy"
         cmd: |
           if [ "${WITH_PEPR}" != "true" ]; then
-            echo "WITH_PEPR=false — skipping Pepr capability (set WITH_PEPR=true to enable)."
+            echo "WITH_PEPR=false — the one-command bundle above brought up UDS Core + the receipts server."
+            echo "To also wire the receipt-on-deploy admission webhook: uds run start -- --set WITH_PEPR=true"
             exit 0
           fi
-          echo "Building szl-governance Pepr module ..."
-          ( cd capabilities/szl-governance && npm ci && npm run build )
-          echo "Packaging the capability with Zarf ..."
-          zarf package create capabilities/szl-governance --confirm --no-progress
-          echo "Deploying the capability ..."
-          zarf package deploy zarf-package-szl-governance-*.tar.zst --confirm --no-progress
-          echo "szl-governance Pepr capability deployed."
+          echo "Building the szl-receipt-policy Pepr module (dist/pepr) ..."
+          ( cd pepr && npm install --legacy-peer-deps && npx pepr build )
+          echo "Deploying the Pepr admission policy into the cluster ..."
+          ( cd pepr && npx pepr deploy --confirm )
+          echo "Pepr receipt-on-deploy policy deployed."
 
-      # ── Gap 3: end-to-end verify ────────────────────────────────────────────
+      # ── End-to-end verify ───────────────────────────────────────────────────
       - description: "Verify deploy: receipts-server Ready + (if enabled) Pepr webhook present"
         cmd: |
           echo "Waiting for szl-receipts-server to be Available ..."
-          kubectl -n szl-receipts rollout status deployment/szl-receipts-server --timeout=120s
+          kubectl -n szl-receipts rollout status deployment/szl-receipts-server --timeout=180s
           echo "receipts-server health:"
           kubectl -n szl-receipts get pods -l app.kubernetes.io/name=szl-receipts -o wide || true
           if [ "${WITH_PEPR}" = "true" ]; then
             echo "Checking Pepr admission webhook ..."
-            kubectl get mutatingwebhookconfigurations -l pepr.dev/uuid=szl-governance-001 2>/dev/null \
-              || kubectl get mutatingwebhookconfigurations 2>/dev/null | grep -i szl-governance \
-              || echo "WARN: szl-governance webhook not yet visible — may take up to 30s"
+            kubectl get mutatingwebhookconfigurations 2>/dev/null | grep -i pepr-szl \
+              || echo "WARN: Pepr webhook not yet visible — may take up to 30s"
           fi
           echo "Verify complete."
 
@@ -205,6 +241,26 @@ tasks:
           echo "╚══════════════════════════════════════════════════════════╝"
           echo ""
 
+  # ── Airgap bundle build ─────────────────────────────────────────────────────
+  # Build the self-contained bundle tarball ONCE on a machine with network. Every
+  # image (init, UDS Core, receipts-server, nginx, alpine) is embedded in the
+  # resulting uds-bundle-szl-receipts-bundle-*.tar.zst, so it can then be copied
+  # to an airgapped box and deployed with no registry access:
+  #   uds deploy uds-bundle-szl-receipts-bundle-*.tar.zst --skip-signature-validation --confirm
+  - name: bundle
+    description: "Build the airgap bundle tarball (uds create) — pulls + embeds all images once, online"
+    actions:
+      - description: "Build receipts-server image locally (so uds create can embed it)"
+        cmd: |
+          if [ "${BUILD_RECEIPTS_LOCAL}" = "true" ]; then
+            docker build -t "${RECEIPTS_IMAGE}:${RECEIPTS_IMAGE_TAG}" services/szl-receipts-server
+          fi
+      - description: "uds create the bundle"
+        cmd: |
+          uds create . --confirm --no-progress
+          echo "Bundle built. Copy the tarball to the airgapped target and run:"
+          echo "  uds deploy uds-bundle-szl-receipts-bundle-*.tar.zst --skip-signature-validation --confirm"
+
   # ── Teardown ──────────────────────────────────────────────────────────────
   - name: teardown
     description: "Destroy the k3d demo cluster"
@@ -214,35 +270,53 @@ tasks:
           k3d cluster delete "${CLUSTER_NAME}" && echo "Cluster deleted."
 
   # ── Dependency installer ──────────────────────────────────────────────────
+  # Versions are PINNED to the set proven to deploy this bundle on the live box
+  # (2026-06-07), not "latest" — `latest` is a reproducibility hazard: a future
+  # uds/zarf can change bundle semantics or flag names out from under the demo.
+  # Each step is a no-op if the tool is already installed (won't downgrade).
   - name: install-deps
-    description: "Install uds, zarf, k3d on macOS/Linux (requires curl)"
+    description: "Install pinned uds, zarf, k3d, cosign on Linux (requires curl)"
     actions:
-      - description: "Install uds CLI"
+      - description: "Install uds CLI (pinned)"
         cmd: |
+          UDS_VERSION="v0.32.0"
           if ! command -v uds >/dev/null 2>&1; then
-            curl -sL https://github.com/defenseunicorns/uds-cli/releases/latest/download/uds-cli_linux_amd64 \
+            curl -sL "https://github.com/defenseunicorns/uds-cli/releases/download/${UDS_VERSION}/uds-cli_${UDS_VERSION}_Linux_amd64" \
               -o /usr/local/bin/uds && chmod +x /usr/local/bin/uds
             echo "uds installed: $(uds version)"
           else
             echo "uds already installed: $(uds version)"
           fi
 
-      - description: "Install zarf CLI"
+      - description: "Install zarf CLI (pinned)"
         cmd: |
+          ZARF_VERSION="v0.51.0"
           if ! command -v zarf >/dev/null 2>&1; then
-            curl -sL https://github.com/zarf-dev/zarf/releases/latest/download/zarf_linux_amd64 \
+            curl -sL "https://github.com/zarf-dev/zarf/releases/download/${ZARF_VERSION}/zarf_${ZARF_VERSION}_Linux_amd64" \
               -o /usr/local/bin/zarf && chmod +x /usr/local/bin/zarf
             echo "zarf installed: $(zarf version)"
           else
             echo "zarf already installed: $(zarf version)"
           fi
 
-      - description: "Install k3d"
+      - description: "Install k3d (pinned)"
         cmd: |
+          K3D_VERSION="v5.9.0"
           if ! command -v k3d >/dev/null 2>&1; then
-            curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+            curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG="${K3D_VERSION}" bash
           else
             echo "k3d already installed: $(k3d version)"
+          fi
+
+      - description: "Install cosign v2.4.1 (pinned — v3.x changes verify flags)"
+        cmd: |
+          COSIGN_VERSION="v2.4.1"
+          if ! command -v cosign >/dev/null 2>&1; then
+            curl -sSL "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64" \
+              -o /usr/local/bin/cosign && chmod +x /usr/local/bin/cosign
+            echo "cosign installed: $(cosign version 2>/dev/null | grep -i gitversion || echo ${COSIGN_VERSION})"
+          else
+            echo "cosign already installed."
           fi
 
   # ── Port-forward convenience ──────────────────────────────────────────────
