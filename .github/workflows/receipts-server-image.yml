@@ -1,0 +1,129 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# Build + push the szl-receipts-server OCI image to GHCR.
+# =============================================================================
+# Fixes UDS deploy stall Gap 1: the receipts-server image was never published,
+# so `uds deploy` stalled pulling ghcr.io/szl-holdings/szl-receipts-server.
+#
+# This is the standard GHCR push from GitHub Actions — it uses the built-in
+# GITHUB_TOKEN with `packages: write`. It does NOT require a founder secret to
+# PUBLISH the image.
+#
+# Two ways to run it:
+#   1. gh workflow run receipts-server-image.yml -f version=uds-v0.3.1
+#   2. push a tag matching  receipts-server-v*   (e.g. receipts-server-v0.3.1)
+#
+# OPTIONAL cosign key-pair signing (Gap 2): if the repo secrets
+# COSIGN_PRIVATE_KEY (+ COSIGN_PASSWORD) are present, the pushed image is signed
+# with the committed cosign.pub keypair. If they are absent the job still
+# publishes the image and signs it KEYLESSLY via OIDC (no founder secret needed),
+# so the image is always verifiable. Nothing is faked when the key is missing.
+#
+# Refs:
+#   GHCR from Actions: https://docs.github.com/en/actions/use-cases-and-examples/publishing-packages/publishing-docker-images
+#   cosign:            https://github.com/sigstore/cosign
+
+name: Build + push szl-receipts-server image
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image tag to publish (e.g. uds-v0.3.1)"
+        required: true
+        default: "uds-v0.3.1"
+  push:
+    tags:
+      - "receipts-server-v*"
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write # keyless cosign fallback
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/szl-receipts-server
+  CONTEXT: services/szl-receipts-server
+
+jobs:
+  build-push:
+    name: Build + push (+ sign) receipts-server
+    runs-on: ubuntu-latest
+    env:
+      # secrets.* cannot be used directly in step-level `if:` expressions, so we
+      # surface presence of the cosign key as a job env flag here.
+      HAS_COSIGN_KEY: ${{ secrets.COSIGN_PRIVATE_KEY != '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: Resolve version tag
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            V="${{ github.event.inputs.version }}"
+          else
+            # tag receipts-server-vX.Y.Z -> uds-vX.Y.Z (matches charts/szl-receipts/values.yaml)
+            RAW="${GITHUB_REF_NAME#receipts-server-}"
+            V="uds-${RAW}"
+          fi
+          echo "version=${V}" >> "$GITHUB_OUTPUT"
+          echo "Publishing ${IMAGE}:${V}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3.6.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push image (by digest)
+        id: build
+        uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85 # v6.7.0
+        with:
+          context: ${{ env.CONTEXT }}
+          file: ${{ env.CONTEXT }}/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.ver.outputs.version }}
+          provenance: true
+          sbom: true
+
+      - name: Show published digest
+        run: |
+          echo "Published ${IMAGE}:${{ steps.ver.outputs.version }}"
+          echo "digest=${{ steps.build.outputs.digest }}"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20 # v3.5.0
+
+      # Gap 2 wiring: prefer the committed cosign.pub key-pair if the founder has
+      # provisioned COSIGN_PRIVATE_KEY (+ COSIGN_PASSWORD) repo secrets; otherwise
+      # fall back to keyless OIDC so the image is ALWAYS signed (no founder block).
+      - name: Sign image with cosign key-pair (if secret present)
+        id: keysign
+        if: ${{ env.HAS_COSIGN_KEY == 'true' }}
+        env:
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+        run: |
+          printf '%s' "$COSIGN_PRIVATE_KEY" > /tmp/cosign.key
+          REF="${IMAGE}@${{ steps.build.outputs.digest }}"
+          cosign sign --yes --key /tmp/cosign.key "${REF}"
+          rm -f /tmp/cosign.key
+          echo "Signed ${REF} with COSIGN_PRIVATE_KEY (cosign.pub key-pair)"
+          # Verify against the committed public key.
+          cosign verify --key cosign/cosign.pub "${REF}"
+
+      - name: Sign image keylessly (OIDC fallback)
+        if: ${{ env.HAS_COSIGN_KEY != 'true' }}
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          REF="${IMAGE}@${{ steps.build.outputs.digest }}"
+          cosign sign --yes "${REF}"
+          echo "Signed ${REF} keylessly via OIDC (no founder secret required)"
