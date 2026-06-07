@@ -113,6 +113,8 @@ jobs:
             PKG_VERSION="${PKG_VERSION:-0.3.1}"
             zarf package create uds \
               --set VERSION="${PKG_VERSION}" \
+              --set UDSMESH_IMAGE_TAG="latest" \
+              --set A11OY_IMAGE_TAG="latest" \
               --confirm \
               --no-progress \
               --output-directory ./dist
