@@ -1,0 +1,5 @@
+# NEVER commit private signing material. Only cosign.pub is tracked.
+cosign.key
+*.key
+*.pem
+*.private

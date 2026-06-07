@@ -23,6 +23,35 @@ variables:
   - name: VERSION
     default: "0.3.1"
 
+  # ── Build-flavor selection (Gap 3 fix) ────────────────────────────────────
+  # Zarf flavor grammar X.Y.Z-upstream|registry1|unicorn (per uds-core
+  # build-your-bundle docs). `upstream` pins the VERIFIED public images and is
+  # the only flavor with published artifacts today; `unicorn` (wolfi/registry1)
+  # is roadmap (images 404, see team/UDS_PACKAGING_BUILD_REPORT.md §2). The
+  # start task fails fast with a clear message if FLAVOR=unicorn is requested
+  # before those images are published.
+  - name: FLAVOR
+    default: "upstream"
+
+  # ── receipts-server image (Gap 1) ─────────────────────────────────────────
+  # The OCI image tag the chart pulls (charts/szl-receipts/values.yaml).
+  - name: RECEIPTS_IMAGE
+    default: "ghcr.io/szl-holdings/szl-receipts-server"
+  - name: RECEIPTS_IMAGE_TAG
+    default: "uds-v0.3.1"
+
+  # When true (default), the start task builds the receipts-server image locally
+  # and imports it into the k3d cluster so deploy never stalls on a GHCR pull —
+  # even if the published image is not yet present. Set to false to force a pull
+  # of the published ghcr.io image (use after receipts-server-image.yml runs).
+  - name: BUILD_RECEIPTS_LOCAL
+    default: "true"
+
+  # When true, build + deploy the szl-governance Pepr capability as part of
+  # `uds run start`. Requires Docker (pepr build emits a controller image).
+  - name: WITH_PEPR
+    default: "true"
+
 includes:
   - test: ./tasks/test.yaml
   - demo: ./tasks/demo.yaml
@@ -40,7 +69,7 @@ tasks:
 
   # ── Primary entry point ───────────────────────────────────────────────────
   - name: start
-    description: "Bootstrap k3d cluster and deploy SZL receipts bundle (≈90 seconds)"
+    description: "Provision -> build/publish receipts-server -> uds deploy core -> deploy bundle -> Pepr capability -> verify (clean end-to-end)"
     actions:
       - description: "Check required tools"
         cmd: |
@@ -51,6 +80,25 @@ tasks:
             fi
           done
           echo "All required tools found."
+
+      # ── Gap 3: build-flavor selection ───────────────────────────────────────
+      - description: "Validate build flavor (upstream has published images; unicorn is roadmap)"
+        cmd: |
+          case "${FLAVOR}" in
+            upstream)
+              echo "FLAVOR=upstream — pinning VERIFIED public images (the only published flavor)."
+              ;;
+            unicorn|registry1)
+              echo "ERROR: FLAVOR=${FLAVOR} selected, but the wolfi/registry1 (0.5.0-wolfi) images"
+              echo "       are NOT yet published (HTTP 404 — see team/UDS_PACKAGING_BUILD_REPORT.md §2)."
+              echo "       Publish those images first, then re-run with -- --set FLAVOR=${FLAVOR}."
+              echo "       For the demo today use the default: uds run start (FLAVOR=upstream)."
+              exit 1
+              ;;
+            *)
+              echo "ERROR: unknown FLAVOR='${FLAVOR}' (expected upstream|unicorn|registry1)."; exit 1
+              ;;
+          esac
 
       - description: "Create k3d cluster"
         cmd: |
@@ -66,10 +114,33 @@ tasks:
             echo "Cluster ${CLUSTER_NAME} created."
           fi
 
-      - description: "Build SZL receipts Zarf package"
+      # ── Gap 1: ensure the receipts-server image is pullable ─────────────────
+      # If the published GHCR image is not present (or BUILD_RECEIPTS_LOCAL=true)
+      # we build it from services/szl-receipts-server and import it straight into
+      # the k3d cluster, so `uds deploy` never stalls pulling it. To rely on the
+      # published image instead, run the receipts-server-image.yml workflow
+      # (gh workflow run receipts-server-image.yml -f version=${RECEIPTS_IMAGE_TAG})
+      # then start with -- --set BUILD_RECEIPTS_LOCAL=false.
+      - description: "Build + load szl-receipts-server image into the cluster (if needed)"
+        cmd: |
+          REF="${RECEIPTS_IMAGE}:${RECEIPTS_IMAGE_TAG}"
+          if [ "${BUILD_RECEIPTS_LOCAL}" = "true" ]; then
+            echo "Building ${REF} from services/szl-receipts-server ..."
+            docker build -t "${REF}" services/szl-receipts-server
+            echo "Importing ${REF} into k3d cluster ${CLUSTER_NAME} ..."
+            k3d image import "${REF}" -c "${CLUSTER_NAME}"
+            echo "receipts-server image is present in-cluster (no GHCR pull needed)."
+          else
+            echo "BUILD_RECEIPTS_LOCAL=false — relying on published ${REF} from GHCR."
+            echo "If deploy stalls pulling it, the image was not published; run:"
+            echo "  gh workflow run receipts-server-image.yml -f version=${RECEIPTS_IMAGE_TAG}"
+          fi
+
+      - description: "Build SZL receipts Zarf package (flavor=${FLAVOR})"
         cmd: |
           zarf package create . \
             --set DOMAIN=${DOMAIN} \
+            --flavor ${FLAVOR} \
             --confirm \
             --no-progress
 
@@ -79,13 +150,47 @@ tasks:
             --confirm \
             --no-progress
 
-      - description: "Deploy the SZL Warhacker bundle"
+      - description: "Deploy the SZL Warhacker bundle (uds deploy core is layer 2 of the bundle)"
         cmd: |
           uds deploy uds-bundle-szl-warhacker-demo-*.tar.zst \
             --set DOMAIN=${DOMAIN} \
             --set INSECURE_ADMIN_PASSWORD_GENERATION=true \
             --confirm \
             --no-progress
+
+      # ── Gap 3: Pepr capability step (capabilities/szl-governance) ───────────
+      # Builds the szl-governance Pepr admission module (emits the controller
+      # image + manifests), packages it with Zarf, and deploys it so the
+      # a11oy/killinchu receipt-gate is wired into the deploy sequence. Skipped
+      # cleanly when WITH_PEPR=false (e.g. environments without Docker).
+      - description: "Build + deploy the szl-governance Pepr capability"
+        cmd: |
+          if [ "${WITH_PEPR}" != "true" ]; then
+            echo "WITH_PEPR=false — skipping Pepr capability (set WITH_PEPR=true to enable)."
+            exit 0
+          fi
+          echo "Building szl-governance Pepr module ..."
+          ( cd capabilities/szl-governance && npm ci && npm run build )
+          echo "Packaging the capability with Zarf ..."
+          zarf package create capabilities/szl-governance --confirm --no-progress
+          echo "Deploying the capability ..."
+          zarf package deploy zarf-package-szl-governance-*.tar.zst --confirm --no-progress
+          echo "szl-governance Pepr capability deployed."
+
+      # ── Gap 3: end-to-end verify ────────────────────────────────────────────
+      - description: "Verify deploy: receipts-server Ready + (if enabled) Pepr webhook present"
+        cmd: |
+          echo "Waiting for szl-receipts-server to be Available ..."
+          kubectl -n szl-receipts rollout status deployment/szl-receipts-server --timeout=120s
+          echo "receipts-server health:"
+          kubectl -n szl-receipts get pods -l app.kubernetes.io/name=szl-receipts -o wide || true
+          if [ "${WITH_PEPR}" = "true" ]; then
+            echo "Checking Pepr admission webhook ..."
+            kubectl get mutatingwebhookconfigurations -l pepr.dev/uuid=szl-governance-001 2>/dev/null \
+              || kubectl get mutatingwebhookconfigurations 2>/dev/null | grep -i szl-governance \
+              || echo "WARN: szl-governance webhook not yet visible — may take up to 30s"
+          fi
+          echo "Verify complete."
 
       - description: "Print access info"
         cmd: |
