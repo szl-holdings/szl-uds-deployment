@@ -1,0 +1,162 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "links": [],
+  "liveNow": true,
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["szl", "receipts", "governance", "dsse"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Data source",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-30m", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "SZL Governance Receipts",
+  "uid": "szl-receipts",
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Chain Integrity",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "TAMPERED", "color": "red" } } },
+            { "type": "value", "options": { "1": { "text": "INTACT", "color": "green" } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] }
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "max(szl_chain_valid)", "legendFormat": "chain_valid", "instant": true }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Chain Length (receipts)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "blue", "value": null } ] } }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "max(szl_chain_length)", "legendFormat": "chain_length", "instant": true }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Total Receipts",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "purple", "value": null } ] } }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "max(szl_receipts_total)", "legendFormat": "total", "instant": true }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Tamper Events Detected",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } },
+        "overrides": []
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "max(szl_receipts_tamper_total)", "legendFormat": "tamper_total", "instant": true }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Chain Growth Over Time",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 6 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "fillOpacity": 10 }, "color": { "mode": "palette-classic" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "max(szl_chain_length)", "legendFormat": "chain length" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "max(szl_chain_index)", "legendFormat": "chain index (head)" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Governance Verdicts (ALLOW vs DENY)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 6 },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "fillOpacity": 15 }, "color": { "mode": "palette-classic" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "DENY" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] },
+          { "matcher": { "id": "byName", "options": "ALLOW" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "max(szl_receipts_allow_total)", "legendFormat": "ALLOW" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "max(szl_receipts_deny_total)", "legendFormat": "DENY" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Chain Valid (0/1) Over Time",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "fillOpacity": 20 }, "color": { "mode": "thresholds" }, "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "single" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "min(szl_chain_valid)", "legendFormat": "chain_valid" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Tamper Events Over Time",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "fillOpacity": 60 }, "color": { "mode": "fixed", "fixedColor": "red" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "single" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "max(szl_receipts_tamper_total)", "legendFormat": "tamper_total" }
+      ]
+    }
+  ]
+}

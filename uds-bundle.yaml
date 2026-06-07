@@ -1,7 +1,7 @@
 # Copyright 2026 SZL Holdings
 # SPDX-License-Identifier: Apache-2.0
 #
-# SZL UDS Bundle — catalog-grade 0.3.1
+# SZL UDS Bundle — catalog-grade 0.4.0
 #
 # This bundle supersedes the v0.1.0 Warhacker demo bundle and targets
 # catalog-grade requirements per Andrew Greene's Option A endorsement (2026-05-22).
@@ -10,7 +10,7 @@
 #   - init repointed to ghcr.io/zarf-dev/packages/init (the init package moved out
 #     of the defenseunicorns org as of uds-core v1.x; see attribution below)
 #   - core ref modernized to uds-core 1.5.0 (was 0.34.0-slim-dev, four minors behind)
-#   - szl-receipts bumped to 0.3.1
+#   - szl-receipts bumped to 0.4.0
 #   - SSO overrides now wired to Keycloak realm
 #   - Pepr component enabled by default in this bundle
 #
@@ -45,7 +45,7 @@
 #
 # Deploy:
 #   uds run demo:start          # full bootstrap
-#   uds deploy uds-bundle-szl-receipts-bundle-amd64-0.3.1.tar.zst --confirm
+#   uds deploy uds-bundle-szl-receipts-bundle-amd64-0.4.0.tar.zst --confirm
 #
 # References:
 #   UDS Bundle schema: https://github.com/defenseunicorns/uds-cli
@@ -55,7 +55,7 @@
 kind: UDSBundle
 metadata:
   name: szl-receipts-bundle
-  version: 0.3.1
+  version: 0.4.0
   description: SZL governance receipt mesh for UDS environments
 
 packages:
@@ -86,14 +86,14 @@ packages:
 
   # ── Layer 3: SZL Receipts add-on ────────────────────────────────────────────
   # path: local Zarf package built from this directory.
-  # v0.3.1: szl-receipts-server now uses the built OCI image
-  #   ghcr.io/szl-holdings/szl-receipts-server:uds-v0.3.1
+  # v0.4.0: szl-receipts-server now uses the built OCI image
+  #   ghcr.io/szl-holdings/szl-receipts-server:uds-v0.4.0
   #   (built from services/szl-receipts-server/Dockerfile). Pushing that image
   #   to GHCR + cosign-signing it ships in a follow-up PR; until then the
   #   bundle references it by tag (imagePullPolicy IfNotPresent).
   - name: szl-receipts
     path: ./packages/szl-receipts
-    ref: 0.3.1
+    ref: 0.4.0
     overrides:
       szl-receipts-server:
         szl-receipts:

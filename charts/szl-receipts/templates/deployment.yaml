@@ -71,6 +71,45 @@ spec:
               value: "{{ .Values.signing.keypair.mountPath }}/{{ .Values.signing.keypair.keyFile }}"
             - name: SZL_KEY_ID
               value: "{{ .Values.signing.keyId }}"
+            # ── Key-custody backend (file | vault) — see KEY_CUSTODY_RUNBOOK ──
+            - name: SZL_SIGNING_BACKEND
+              value: "{{ .Values.signing.backend }}"
+            {{- if eq .Values.signing.backend "vault" }}
+            # Tier 2 (managed-KMS): sign via HashiCorp Vault Transit. The
+            # private key never enters this pod — only a Vault token does.
+            - name: VAULT_ADDR
+              value: "{{ required "signing.vault.address is required when signing.backend=vault" .Values.signing.vault.address }}"
+            - name: SZL_VAULT_TRANSIT_MOUNT
+              value: "{{ .Values.signing.vault.transitMount }}"
+            - name: SZL_VAULT_TRANSIT_KEY
+              value: "{{ .Values.signing.vault.transitKey }}"
+            - name: SZL_VAULT_AUTH_METHOD
+              value: "{{ .Values.signing.vault.auth.method }}"
+            {{- if .Values.signing.vault.namespace }}
+            - name: VAULT_NAMESPACE
+              value: "{{ .Values.signing.vault.namespace }}"
+            {{- end }}
+            {{- if eq .Values.signing.vault.auth.method "kubernetes" }}
+            - name: SZL_VAULT_K8S_ROLE
+              value: "{{ .Values.signing.vault.auth.role }}"
+            - name: SZL_VAULT_K8S_AUTH_MOUNT
+              value: "{{ .Values.signing.vault.auth.mount }}"
+            {{- else if eq .Values.signing.vault.auth.method "token" }}
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ required "signing.vault.auth.tokenSecret.name is required for token auth" .Values.signing.vault.auth.tokenSecret.name }}"
+                  key: "{{ .Values.signing.vault.auth.tokenSecret.key }}"
+            {{- end }}
+            {{- if .Values.signing.vault.tlsSkipVerify }}
+            - name: VAULT_SKIP_VERIFY
+              value: "true"
+            {{- end }}
+            {{- if .Values.signing.vault.caCertSecret.name }}
+            - name: VAULT_CACERT
+              value: "/run/secrets/vault-ca/{{ .Values.signing.vault.caCertSecret.key }}"
+            {{- end }}
+            {{- end }}
             # ── OpenTelemetry (PhD Systems Scope 9) ──────────────────────────
             # On by default; egress to monitoring/opentelemetry-collector:4317
             # is already permitted by uds-package.yaml. Set otel.endpoint to ""
@@ -84,10 +123,18 @@ spec:
           volumeMounts:
             - name: receipt-store
               mountPath: "{{ .Values.server.persistence.mountPath }}"
-            # Ed25519 private key, mounted read-only from the operator-provisioned Secret.
+            # Ed25519 private key, mounted read-only from the operator-provisioned
+            # Secret. Used by the "file" backend; harmless (optional) when
+            # signing.backend=vault (the key then lives in Vault, not here).
             - name: ed25519-key
               mountPath: "{{ .Values.signing.keypair.mountPath }}"
               readOnly: true
+            {{- if and (eq .Values.signing.backend "vault") .Values.signing.vault.caCertSecret.name }}
+            # CA cert for verifying TLS to a Vault with a private CA.
+            - name: vault-ca
+              mountPath: /run/secrets/vault-ca
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.server.resources | nindent 12 }}
           readinessProbe:
@@ -143,6 +190,14 @@ spec:
             secretName: {{ .Values.signing.keypair.secretName }}
             optional: true
             defaultMode: 0400
+        {{- if and (eq .Values.signing.backend "vault") .Values.signing.vault.caCertSecret.name }}
+        # CA cert Secret for TLS verification of a private-CA Vault.
+        - name: vault-ca
+          secret:
+            secretName: {{ .Values.signing.vault.caCertSecret.name }}
+            optional: false
+            defaultMode: 0444
+        {{- end }}
         {{- if .Values.dashboard.enabled }}
         - name: dashboard-html
           configMap:

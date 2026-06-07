@@ -119,6 +119,44 @@ spec:
         - protocol: TCP
           port: 4317
 
+{{- if eq .Values.signing.backend "vault" }}
+---
+# ── Allow: egress to HashiCorp Vault (Transit signing, Tier 2 KMS) ──────────
+# Only rendered when signing.backend=vault. In-cluster Vault uses a
+# namespace+pod selector; external Vault uses an ipBlock CIDR.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: szl-receipts-allow-egress-vault
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: szl-receipts
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    szl.io/component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: szl-receipts-server
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        {{- if .Values.signing.vault.egress.cidr }}
+        - ipBlock:
+            cidr: {{ .Values.signing.vault.egress.cidr }}
+        {{- else }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.signing.vault.egress.remoteNamespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.signing.vault.egress.remoteSelector | nindent 14 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.signing.vault.egress.port }}
+{{- end }}
+
 ---
 # ── Allow: egress to Keycloak SSO on port 8080 ──────────────────────────────
 # STAGED: Requires Keycloak running from core-slim-dev (see FA-002).

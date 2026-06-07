@@ -1,0 +1,28 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# UDS Exemption for the szl-key-init keygen hook.
+#
+# The keygen Job (charts/szl-key-init) runs an ephemeral, single-shot Helm
+# pre-install hook that must run as root (uid 0) in order to `apk add openssl`
+# and install kubectl before generating the Ed25519 signing key. It self-deletes
+# after one successful run (hook-delete-policy: hook-succeeded). Every other
+# UDS Core security policy is already satisfied by its securityContext
+# (allowPrivilegeEscalation:false, capabilities drop ALL, seccomp RuntimeDefault),
+# so this exemption is scoped to RequireNonRootUser only and matched tightly to
+# the keygen pod name in the szl-receipts namespace.
+apiVersion: uds.dev/v1alpha1
+kind: Exemption
+metadata:
+  name: szl-key-init
+  namespace: uds-policy-exemptions
+spec:
+  exemptions:
+    - title: szl-key-init keygen
+      description: "Ephemeral Ed25519 keygen hook needs root to apk add openssl/kubectl; self-deletes after one run."
+      matcher:
+        kind: pod
+        namespace: szl-receipts
+        name: "^szl-key-init.*"
+      policies:
+        - RequireNonRootUser

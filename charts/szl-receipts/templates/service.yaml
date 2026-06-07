@@ -7,6 +7,10 @@ metadata:
   name: szl-receipts-server
   namespace: {{ .Release.Namespace }}
   labels:
+    # Bare `app` label so the UDS-operator-generated ServiceMonitor
+    # (Package spec.monitor selector: app=szl-receipts-server) matches this
+    # Service and Core's Prometheus discovers the /metrics target. (#129)
+    app: szl-receipts-server
     app.kubernetes.io/name: szl-receipts-server
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/managed-by: {{ .Release.Service }}

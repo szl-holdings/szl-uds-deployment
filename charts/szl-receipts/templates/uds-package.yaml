@@ -10,6 +10,8 @@
 #   3. Allow the in-cluster Pepr admission webhook to POST receipts
 #      machine-to-machine (mesh / mTLS) regardless of SSO state.
 #   4. Allow egress to the OTel collector in the monitoring namespace.
+#   5. (when signing.backend=vault) Allow egress to HashiCorp Vault for Transit
+#      signing (Tier 2 KMS key custody — see docs/KEY_CUSTODY_RUNBOOK.md).
 #
 # ── Public / protected split (task #128) ────────────────────────────────────
 # UDS Core authservice (ambient waypoint) protects the WHOLE selected workload,
@@ -121,6 +123,24 @@ spec:
           app: opentelemetry-collector
         port: 4317
         description: "OTel collector (OTLP/gRPC)"
+
+      {{- if eq .Values.signing.backend "vault" }}
+      # Allow egress to HashiCorp Vault for Transit signing (Tier 2 KMS custody).
+      # Only rendered when signing.backend=vault. In-cluster Vault uses a
+      # namespace+pod selector; external Vault uses a remoteCidr.
+      - direction: Egress
+        selector:
+          app: szl-receipts-server
+        {{- if .Values.signing.vault.egress.cidr }}
+        remoteCidr: {{ .Values.signing.vault.egress.cidr }}
+        {{- else }}
+        remoteNamespace: {{ .Values.signing.vault.egress.remoteNamespace }}
+        remoteSelector:
+          {{- toYaml .Values.signing.vault.egress.remoteSelector | nindent 10 }}
+        {{- end }}
+        port: {{ .Values.signing.vault.egress.port }}
+        description: "Vault Transit (Ed25519 signing, Tier 2 KMS custody)"
+      {{- end }}
 
       # Allow ingress from the Pepr admission webhook to POST receipts.
       # ALWAYS ON — machine-to-machine, independent of SSO. This is the

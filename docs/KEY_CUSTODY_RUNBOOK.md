@@ -32,6 +32,69 @@ HSM/KMS is the remaining gap to DoD-deployable.
 
 ---
 
+## 0.1 What is now IMPLEMENTED (chart v0.4.0 / appVersion 0.2.0)
+
+> **Status change (2026-06-07):** Tiers 1 and 2 are no longer documentation-only.
+> The chart now ships a pluggable signer selected by `signing.backend`, plus the
+> templates and scripts to operate each tier. **No private key is committed to
+> the repo in any tier.** The default stays `backend: file` so the live receipts
+> pod does not regress.
+
+| Tier | What | How to enable | Where the private key lives | Status |
+|---|---|---|---|---|
+| 0 | Ed25519 PEM in a plaintext k8s Secret | `signing.backend: file` (default) + `kubectl create secret` | etcd + pod memory | **shipped (default)** |
+| 1 | **SealedSecret** — only an *encrypted* key in git | `signing.sealedSecret.enabled: true` + `encryptedKey` from `scripts/seal-signing-key.sh` | etcd + pod memory (git holds only ciphertext) | **IMPLEMENTED** |
+| 2 | **Vault Transit** — sign-as-a-service | `signing.backend: vault` + `scripts/setup-vault-transit.sh` | **inside Vault only — never in etcd or the pod** | **IMPLEMENTED** |
+
+**Wire compatibility (the key moved, the proof did not):** every backend emits a
+raw 64-byte Ed25519 signature, base64url-encoded, over the canonical DSSEv1 PAE.
+So the offline verifier `scripts/verify_receipts_ed25519.py` — which rebuilds the
+PAE and checks the signature against the **published** public key
+(`GET /pubkey`) — passes identically whether the receipt was signed by the file
+or the vault backend. Receipts still chain (`prev_hash`/`hash`) and the server
+still self-verifies each receipt on POST. If no key/Vault is available the server
+runs **UNSIGNED** with an explicit sentinel — it never fabricates a signature.
+
+### Tier 1 — SealedSecret (interim, closes the git-leak hole)
+```bash
+openssl genpkey -algorithm ed25519 -out ed25519.pem
+scripts/seal-signing-key.sh --key ed25519.pem \
+  --namespace szl-receipts --secret-name szl-receipts-ed25519 --scope strict
+# paste the printed ciphertext into values.yaml: signing.sealedSecret.encryptedKey
+shred -u ed25519.pem
+```
+The chart's `templates/sealedsecret.yaml` renders the `SealedSecret` CR and
+**refuses to render** if `encryptedKey` is empty (no accidental empty/plaintext
+Secret). The in-cluster sealed-secrets controller decrypts it into the SAME
+Secret the `file` backend mounts — so the server code is unchanged. *Caveat:* the
+decrypted key still lives in-cluster; Tier 1 protects the key **at rest in git**,
+not from a `get secret` RBAC holder. For that, use Tier 2.
+
+### Tier 2 — Vault Transit (managed-KMS custody)
+```bash
+export VAULT_ADDR=https://vault.vault.svc:8200 VAULT_TOKEN=<bootstrap>
+scripts/setup-vault-transit.sh --k8s-auth \
+  --k8s-namespace szl-receipts --k8s-sa szl-receipts
+# then values.yaml: signing.backend: vault, signing.vault.address/auth.*
+```
+`setup-vault-transit.sh` creates a **non-exportable** Ed25519 key in Vault
+(`exportable=false`, `allow_plaintext_backup=false`) and a least-privilege policy
+granting only `transit/sign` + read of the **public** key. The pod authenticates
+with its ServiceAccount JWT (Kubernetes auth) or a token Secret, fetches the
+public key for local verification, and sends the DSSE PAE to `transit/sign`. The
+private key **never leaves Vault** — reading a Kubernetes Secret no longer yields
+it. The chart opens least-privilege egress to Vault (UDS Package allow-rule +
+`NetworkPolicy`, port `signing.vault.egress.port`, default 8200) only when
+`backend: vault`.
+
+> **Honest ceiling:** Tier 2 gives *managed-KMS* custody. HSM-grade hardware
+> assurance depends on how Vault itself is sealed (e.g. an HSM/KMS auto-unseal,
+> or Vault Enterprise with a PKCS#11 seal). Vault-on-software-seal is still a
+> large improvement over a key in a k8s Secret, but it is not a FIPS-140 HSM by
+> itself. Pick the Vault seal that matches your assurance requirement.
+
+---
+
 ## 1. Threat model
 
 ### 1.1 Assets
