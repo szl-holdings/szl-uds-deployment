@@ -75,7 +75,7 @@ packages:
   # We use the published upstream core package here (public images, no DoD registry
   # access required for the hackathon demo).
   - name: core
-    repository: registry.defenseunicorns.com/public/core
+    repository: ghcr.io/defenseunicorns/packages/uds/core
     ref: 1.5.0-upstream
     overrides:
       keycloak:
@@ -95,7 +95,7 @@ packages:
     path: ./packages/szl-receipts
     ref: 0.3.1
     overrides:
-      szl-receipts:
+      szl-receipts-server:
         szl-receipts:
           variables:
             - name: DOMAIN
@@ -109,6 +109,19 @@ packages:
               description: "Receipt server replica count"
               path: server.replicas
               default: "1"
+            # Istio gateway the receipts VirtualService is bound to.
+            # admin  -> https://receipts.admin.<domain>  (single-node k3d: only the
+            #           admin gateway gets a LoadBalancer IP; the tenant gateway
+            #           namespace is never provisioned, so admin is the safe default).
+            # tenant -> https://receipts.<domain>        (multi-node / tower cluster
+            #           where the tenant gateway IS provisioned — the production home
+            #           for a tenant app). Override per-environment without editing the
+            #           chart, e.g.  uds deploy ... --set RECEIPTS_GATEWAY=tenant
+            #           or via uds-config.tenant.yaml (variables.szl-receipts.receipts_gateway).
+            - name: RECEIPTS_GATEWAY
+              description: "Istio gateway to expose receipts on (admin=single-node k3d, tenant=multi-node/tower)"
+              path: udsPackage.expose.gateway
+              default: "admin"
           values:
             - path: server.logLevel
               value: "info"

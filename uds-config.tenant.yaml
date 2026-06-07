@@ -1,0 +1,19 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# Production / multi-server (tower) deploy config for the szl-receipts bundle.
+#
+# On a single-node k3d cluster only the UDS Core *admin* Istio gateway gets a
+# LoadBalancer IP, so the bundle defaults RECEIPTS_GATEWAY=admin
+# (-> https://receipts.admin.<domain>). On a real multi-node / tower cluster the
+# *tenant* gateway is provisioned and is the correct production home for a tenant
+# app, giving it its own clean hostname https://receipts.<domain>.
+#
+# Use it:
+#   uds deploy uds-bundle-szl-receipts-bundle-amd64-0.3.1.tar.zst \
+#     --config uds-config.tenant.yaml --confirm
+#
+# (equivalent one-off: uds deploy ... --set RECEIPTS_GATEWAY=tenant)
+variables:
+  szl-receipts:
+    receipts_gateway: tenant
