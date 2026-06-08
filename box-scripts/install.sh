@@ -11,6 +11,8 @@
 #        a11oy-uptime-check   — probe a11oy.net uptime, alert on the outage edge
 #        a11oy-uptime-notify  — shared push notifier (ntfy/Telegram/webhook)
 #        dns-drift-check      — alert if a11oy.net DNS stops pointing at the box
+#   4. szl-ns-scratch — scratch-namespace cleanup-safety tool (no systemd unit;
+#        on-demand operator helper, see docs/SCRATCH_NAMESPACE_CONVENTION.md)
 #
 # Run as root from this directory:  sudo ./install.sh
 set -euo pipefail
@@ -26,6 +28,7 @@ install -m 0755 "$here/sbin/a11oy-port-guard"          /usr/local/sbin/a11oy-por
 install -m 0755 "$here/sbin/szl-core-rightsize"        /usr/local/sbin/szl-core-rightsize
 install -m 0755 "$here/sbin/istiod-fit-strategy"       /usr/local/sbin/istiod-fit-strategy
 install -m 0755 "$here/sbin/receipt-chain-watch"       /usr/local/sbin/receipt-chain-watch
+install -m 0755 "$here/sbin/szl-ns-scratch"            /usr/local/sbin/szl-ns-scratch
 install -m 0755 "$here/sbin/a11oy-uptime-check"        /usr/local/sbin/a11oy-uptime-check
 install -m 0755 "$here/sbin/a11oy-uptime-notify"       /usr/local/sbin/a11oy-uptime-notify
 install -m 0755 "$here/sbin/dns-drift-check"           /usr/local/sbin/dns-drift-check

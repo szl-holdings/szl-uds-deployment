@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+#
+# szl-ns-scratch — make hand-deployed scratch namespaces on the uds-szl-demo
+# k3d cluster (box 167.233.50.75) safe to clean up.
+#
+# WHY: people/agents hand-deploy ad-hoc copies of the receipts server (and other
+# experiments) into namespaces like `szl-receipts-demo`. These are NOT tracked
+# by zarf, Helm, or a UDS Package, so a later "remove the duplicate" cleanup has
+# no reliable way to tell genuine stale cruft apart from a teammate's live,
+# in-progress dev scratch. That exact ambiguity made an earlier cleanup unsafe:
+# a namespace described as a stale 0.3.1 leftover had since been rebuilt into a
+# same-day 0.4.0 dev scratch, so deleting it would have destroyed active work.
+#
+# THE CONVENTION (full doc: docs/SCRATCH_NAMESPACE_CONVENTION.md):
+#   Every ad-hoc / scratch namespace MUST carry these labels at creation time:
+#     szl.io/ephemeral=true          # "this is disposable scratch, not managed"
+#     szl.io/owner=<who>             # a person/agent a cleanup can ask first
+#     szl.io/created=<YYYY-MM-DD>    # when it was made (for age-based GC)
+#   Optional:
+#     szl.io/ttl-days=<N>            # intended lifetime; audit flags it expired
+#
+#   A cleanup rule: only ever delete a namespace that is EITHER
+#     (a) labeled szl.io/ephemeral=true AND past its TTL/age, OR
+#     (b) explicitly confirmed with its owner.
+#   NEVER auto-delete an UNKNOWN (unlabeled, unmanaged) namespace — verify first.
+#
+# This script is the operator entry point for that convention:
+#   szl-ns-scratch audit                 # default: classify every namespace
+#   szl-ns-scratch list-unlabeled        # unmanaged ns missing the ephemeral label
+#   szl-ns-scratch list-stale [N]        # ephemeral ns older than N days (TTL-aware)
+#   szl-ns-scratch label <ns> [opts]     # stamp the convention labels onto <ns>
+#       --owner <who>     (default: $USER@$(hostname) or "unknown")
+#       --created <date>  (default: today, UTC YYYY-MM-DD)
+#       --ttl-days <N>    (optional)
+#
+# It is read-only except for `label`. Mirrors the kubeconfig-resolution and
+# cluster-absent no-op pattern of the other box guards (szl-core-rightsize etc).
+set -uo pipefail
+
+CLUSTER="${SZL_NS_CLUSTER:-uds-szl-demo}"
+DEFAULT_STALE_DAYS="${SZL_NS_STALE_DAYS:-14}"
+
+# Namespaces that are part of the platform itself and must never be treated as
+# scratch (k8s built-ins + UDS Core / istio / zarf / vault / observability).
+SYSTEM_NS_RE='^(default|kube-system|kube-public|kube-node-lease|istio-system|istio-.*-gateway|istio-egress-ambient|authservice|keycloak|monitoring|pepr-system|uds-crds|uds-policy-exemptions|vault|zarf)$'
+
+die() { echo "szl-ns-scratch: $*" >&2; exit 1; }
+
+resolve_kube() {
+  # Resolve the cluster kubeconfig; if k3d/cluster is absent (cluster stopped
+  # after a reboot — k3d nodes are --restart no), do nothing (no-op exit 0).
+  local kc
+  kc="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" || {
+    echo "[szl-ns-scratch] cluster '$CLUSTER' not present; nothing to do." >&2
+    exit 0
+  }
+  export KUBECONFIG="$kc"
+  kubectl --request-timeout=20s get --raw='/readyz' >/dev/null 2>&1 || {
+    echo "[szl-ns-scratch] cluster '$CLUSTER' unreachable; nothing to do." >&2
+    exit 0
+  }
+}
+
+# Build the set of namespaces that have a REAL managed owner. We deliberately do
+# NOT trust the app.kubernetes.io/managed-by=Helm *label* alone: a hand-applied
+# scratch can carry that label with no actual Helm release behind it (this is
+# exactly how szl-receipts-demo masqueraded). So we cross-check live ownership:
+#   - an actual Helm release lives in the namespace (`helm list`)
+#   - a UDS Package CR lives in the namespace (`kubectl get packages`)
+#   - the namespace carries zarf's management label (zarf-created components)
+managed_namespaces() {
+  {
+    if command -v helm >/dev/null 2>&1; then
+      helm list -A -q --no-headers 2>/dev/null \
+        | xargs -r -I{} sh -c 'true' >/dev/null 2>&1
+      # need the namespace per release, not the release name:
+      helm list -A -o json 2>/dev/null \
+        | { command -v jq >/dev/null 2>&1 && jq -r '.[].namespace' || sed -n 's/.*"namespace":"\([^"]*\)".*/\1/p'; }
+    fi
+    # UDS Packages (CRD may be absent on a non-UDS cluster -> ignore errors)
+    kubectl get packages.uds.dev -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' 2>/dev/null
+    # zarf-managed namespaces
+    kubectl get ns -l app.kubernetes.io/managed-by=zarf -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null
+  } | grep -v '^$' | sort -u
+}
+
+# Days between an ISO date (YYYY-MM-DD) and today (UTC). Echoes "" if unparseable.
+age_days() {
+  local d="$1" then now
+  then="$(date -u -d "$d" +%s 2>/dev/null)" || { echo ""; return; }
+  now="$(date -u +%s)"
+  echo $(( (now - then) / 86400 ))
+}
+
+label_get() { # <ns> <label-key>
+  kubectl get ns "$1" -o jsonpath="{.metadata.labels.$(echo "$2" | sed 's/\./\\./g')}" 2>/dev/null
+}
+
+cmd_audit() {
+  resolve_kube
+  local managed; managed="$(managed_namespaces)"
+  printf '%-26s %-10s %-12s %-18s %-12s %s\n' NAMESPACE CLASS AGE OWNER CREATED NOTE
+  printf '%-26s %-10s %-12s %-18s %-12s %s\n' "-------------------------" "--------" "----------" "----------------" "----------" "----"
+  local ns
+  while read -r ns; do
+    [ -n "$ns" ] || continue
+    local nsAge created
+    created="$(label_get "$ns" szl.io/created)"
+    nsAge="$(kubectl get ns "$ns" -o jsonpath='{.metadata.creationTimestamp}' 2>/dev/null)"
+    if echo "$ns" | grep -Eq "$SYSTEM_NS_RE"; then
+      printf '%-26s %-10s %-12s %-18s %-12s %s\n' "$ns" SYSTEM - - - "platform; protected"
+    elif echo "$managed" | grep -qx "$ns"; then
+      printf '%-26s %-10s %-12s %-18s %-12s %s\n' "$ns" MANAGED - - - "helm/zarf/uds owner; protected"
+    elif [ "$(label_get "$ns" szl.io/ephemeral)" = "true" ]; then
+      local owner ttl ad note
+      owner="$(label_get "$ns" szl.io/owner)"; [ -n "$owner" ] || owner="(unset)"
+      ttl="$(label_get "$ns" szl.io/ttl-days)"
+      ad="$(age_days "${created:-}")"
+      note="scratch; GC when expired"
+      if [ -n "$ttl" ] && [ -n "$ad" ] && [ "$ad" -ge "$ttl" ] 2>/dev/null; then
+        note="EXPIRED (age ${ad}d >= ttl ${ttl}d) -> safe to delete"
+      fi
+      printf '%-26s %-10s %-12s %-18s %-12s %s\n' "$ns" EPHEMERAL "${ad:-?}d" "$owner" "${created:-?}" "$note"
+    else
+      printf '%-26s %-10s %-12s %-18s %-12s %s\n' "$ns" UNKNOWN - - - "UNLABELED+UNMANAGED -> verify owner, do NOT auto-delete"
+    fi
+  done < <(kubectl get ns -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null)
+}
+
+cmd_list_unlabeled() {
+  resolve_kube
+  local managed; managed="$(managed_namespaces)"
+  local ns
+  while read -r ns; do
+    [ -n "$ns" ] || continue
+    echo "$ns" | grep -Eq "$SYSTEM_NS_RE" && continue
+    echo "$managed" | grep -qx "$ns" && continue
+    [ "$(label_get "$ns" szl.io/ephemeral)" = "true" ] && continue
+    echo "$ns"
+  done < <(kubectl get ns -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null)
+}
+
+cmd_list_stale() {
+  resolve_kube
+  local days="${1:-$DEFAULT_STALE_DAYS}"
+  local ns
+  while read -r ns; do
+    [ -n "$ns" ] || continue
+    [ "$(label_get "$ns" szl.io/ephemeral)" = "true" ] || continue
+    local created ttl ad threshold
+    created="$(label_get "$ns" szl.io/created)"
+    ttl="$(label_get "$ns" szl.io/ttl-days)"
+    ad="$(age_days "${created:-}")"
+    [ -n "$ad" ] || { echo "$ns  (created label missing/unparseable -> review)"; continue; }
+    threshold="$days"; [ -n "$ttl" ] && threshold="$ttl"
+    if [ "$ad" -ge "$threshold" ] 2>/dev/null; then
+      echo "$ns  age=${ad}d threshold=${threshold}d owner=$(label_get "$ns" szl.io/owner)"
+    fi
+  done < <(kubectl get ns -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null)
+}
+
+cmd_label() {
+  local ns="" owner="" created="" ttl=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --owner)    owner="$2"; shift 2 ;;
+      --created)  created="$2"; shift 2 ;;
+      --ttl-days) ttl="$2"; shift 2 ;;
+      -*)         die "unknown flag: $1" ;;
+      *)          [ -z "$ns" ] && ns="$1" && shift || die "unexpected arg: $1" ;;
+    esac
+  done
+  [ -n "$ns" ] || die "usage: szl-ns-scratch label <namespace> [--owner who] [--created YYYY-MM-DD] [--ttl-days N]"
+  [ -n "$owner" ]   || owner="${USER:-unknown}@$(hostname 2>/dev/null || echo box)"
+  [ -n "$created" ] || created="$(date -u +%F)"
+  resolve_kube
+  kubectl get ns "$ns" >/dev/null 2>&1 || die "namespace '$ns' not found"
+  local args=(szl.io/ephemeral=true "szl.io/owner=$owner" "szl.io/created=$created")
+  [ -n "$ttl" ] && args+=("szl.io/ttl-days=$ttl")
+  echo "[szl-ns-scratch] labeling ns/$ns: ${args[*]}"
+  kubectl label ns "$ns" --overwrite "${args[@]}"
+}
+
+usage() {
+  sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+  exit "${1:-0}"
+}
+
+case "${1:-audit}" in
+  audit)          shift || true; cmd_audit ;;
+  list-unlabeled) shift; cmd_list_unlabeled ;;
+  list-stale)     shift; cmd_list_stale "$@" ;;
+  label)          shift; cmd_label "$@" ;;
+  -h|--help|help) usage 0 ;;
+  *)              echo "unknown subcommand: $1" >&2; usage 1 ;;
+esac

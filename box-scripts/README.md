@@ -348,3 +348,76 @@ rm -f /var/lib/dns-drift/problem.sig    # clear the test edge afterwards
   `a11oy-uptime.env.example`).
 - SMS/email is intentionally NOT used on this box: it has no Gmail/nodemailer
   transport and outbound TCP 465 is firewalled, so ntfy push IS the alert path.
+
+---
+
+# box-scripts (part 5) — scratch-namespace cleanup safety (uds-szl-demo)
+
+`szl-ns-scratch` makes hand-deployed scratch namespaces on the `uds-szl-demo`
+k3d cluster safe to clean up. People/agents hand-deploy ad-hoc copies of the
+receipts server (and other experiments) into namespaces like `szl-receipts-demo`
+that are **not** tracked by zarf, Helm, or a UDS Package — so a later "remove the
+duplicate" cleanup cannot tell stale cruft apart from a teammate's live work. A
+namespace once described as a stale `0.3.1` leftover had since been rebuilt into
+a same-day `0.4.0` dev scratch; deleting it would have destroyed active work.
+
+The fix is a labelling **convention** plus a helper to apply and audit it. Full
+write-up: [`docs/SCRATCH_NAMESPACE_CONVENTION.md`](../docs/SCRATCH_NAMESPACE_CONVENTION.md).
+
+## The convention
+
+Every ad-hoc / scratch namespace carries, at creation time:
+
+```
+szl.io/ephemeral=true          # disposable scratch, not managed
+szl.io/owner=<who>             # someone a cleanup can ask first
+szl.io/created=<YYYY-MM-DD>    # UTC; for age-based GC
+szl.io/ttl-days=<N>           # optional intended lifetime
+```
+
+Cleanup rule: only delete a namespace that is EITHER labeled
+`szl.io/ephemeral=true` AND past its TTL/age, OR explicitly confirmed with its
+owner. NEVER auto-delete an **UNKNOWN** (unlabeled + unmanaged) namespace.
+
+## Files
+
+```
+sbin/
+  szl-ns-scratch              # audit | list-unlabeled | list-stale | label
+```
+
+There is no systemd unit — this is an on-demand operator tool, run at cleanup
+time, not a periodic guard.
+
+## Usage
+
+```bash
+szl-ns-scratch audit            # classify every ns: SYSTEM | MANAGED | EPHEMERAL | UNKNOWN
+szl-ns-scratch list-unlabeled   # unmanaged ns missing the ephemeral label (the risky set)
+szl-ns-scratch list-stale [N]   # ephemeral ns older than N days (TTL-aware; default 14)
+szl-ns-scratch label <ns> --owner rosa --ttl-days 7   # stamp the convention onto <ns>
+```
+
+`audit` cross-checks live ownership (`helm list`, `kubectl get packages.uds.dev`,
+zarf-managed label) rather than trusting the `managed-by=Helm` label alone — a
+hand-applied scratch can wear that label with no release behind it. A clean
+cluster shows zero **UNKNOWN** rows.
+
+## Reinstall
+
+The top-level `./install.sh` installs this helper along with the others. Manually:
+
+```bash
+sudo install -m 0755 sbin/szl-ns-scratch /usr/local/sbin/szl-ns-scratch
+```
+
+## Verify
+
+```bash
+szl-ns-scratch audit
+# Round-trip a throwaway ns (safe, reversible):
+kubectl create ns szl-scratch-selftest
+szl-ns-scratch label szl-scratch-selftest --owner selftest --created 2000-01-01 --ttl-days 1
+szl-ns-scratch list-stale          # szl-scratch-selftest should appear as expired
+kubectl delete ns szl-scratch-selftest
+```
