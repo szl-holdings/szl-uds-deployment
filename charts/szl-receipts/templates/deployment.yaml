@@ -2,9 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # SZL Receipts MCP server Deployment
-# The server is a lightweight Python FastAPI process that:
-#   1. Accepts POST /receipt with a DSSE-wrapped payload
-#   2. Verifies the HMAC-SHA-256 signature
+# The server is a lightweight Python process (services/szl-receipts-server) that:
+#   1. Accepts POST /receipt and signs the payload with Ed25519 over the
+#      canonical DSSE PAE (Finding A2 / PR-4)
+#   2. Self-verifies the signature it just produced against the mounted key's
+#      public half, setting the receipt `valid` field (a real Ed25519 verify,
+#      not HMAC); GET /pubkey publishes the public key for offline verification
 #   3. Stores the receipt and streams it to connected dashboard clients via SSE
 #   4. Exposes GET /receipts for batch retrieval and GET /health for probes
 

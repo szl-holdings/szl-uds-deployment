@@ -47,14 +47,20 @@ helm lint charts/szl-receipts
 
 ### Local receipts server (no cluster)
 
-Extract server from `charts/szl-receipts/templates/configmap.yaml` or run:
+The canonical server is `services/szl-receipts-server/server.py` (Ed25519 over the
+canonical DSSE PAE — NOT HMAC). Generate a key and run it directly:
 
 ```bash
-sed -n '20,180p' charts/szl-receipts/templates/configmap.yaml | sed 's/^    //' > /tmp/receipts_server.py
-export SZL_HMAC_KEY=c3psLWRldi1kZW1vLWtleS0yMDI2LXdhcmhhY2tlcg==
+openssl genpkey -algorithm ED25519 -out /tmp/ed25519.pem
+export SZL_ED25519_KEY_PATH=/tmp/ed25519.pem
 export SZL_PORT=8443
-python3 /tmp/receipts_server.py
+export SZL_RECEIPT_STORE=/tmp/receipts
+python3 services/szl-receipts-server/server.py &
 curl -sf http://localhost:8443/health
+# POST a receipt and confirm the server's self-verify reports valid:true
+curl -sf -X POST http://localhost:8443/receipt -d '{"subject":"demo/x","specHash":"abc"}'
+# Independently verify the chain offline with the PUBLIC key only:
+SZL_RECEIPTS_URL=http://localhost:8443 bash scripts/verify_receipts.sh
 ```
 
 ### Zarf package create
