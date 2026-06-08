@@ -1,5 +1,5 @@
 [Unit]
-Description=Keep istiod rolling-update strategy single-replica-safe on uds-szl-demo (2-vCPU headroom guard)
+Description=Keep istiod rolling-update strategy single-replica-safe + HPA non-strandable on uds-szl-demo (2-vCPU headroom guard)
 Documentation=file:///usr/local/sbin/istiod-fit-strategy
 After=docker.service network-online.target
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=Periodically ensure istiod's rolling-update strategy fits the 2-vCPU uds-szl-demo node
+Description=Periodically ensure istiod's rolling-update strategy + HPA fit the 2-vCPU uds-szl-demo node
 
 [Timer]
 OnBootSec=2min
