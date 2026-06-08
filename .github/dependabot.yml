@@ -17,9 +17,9 @@ updates:
         patterns:
           - "*"
 
-  # Python pip dependencies
+  # Python (pip) dependencies
   - package-ecosystem: "pip"
-    directory: "/"
+    directory: "/services/szl-receipts-server"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -33,9 +33,9 @@ updates:
         patterns:
           - "*"
 
-  # Docker dependencies
+  # Docker base images
   - package-ecosystem: "docker"
-    directory: "/"
+    directory: "/services/szl-receipts-server"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -45,3 +45,27 @@ updates:
       - "dependencies"
       - "security"
     open-pull-requests-limit: 3
+    groups:
+      docker-deps:
+        patterns:
+          - "*"
+
+  # npm / Node dependencies
+  - package-ecosystem: "npm"
+    directories:
+      - "/capabilities/szl-governance"
+      - "/pepr"
+      - "/tests"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "America/New_York"
+    labels:
+      - "dependencies"
+      - "security"
+    open-pull-requests-limit: 10
+    groups:
+      npm-deps:
+        patterns:
+          - "*"
