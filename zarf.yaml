@@ -22,7 +22,7 @@ kind: ZarfPackageConfig
 metadata:
   name: szl-receipts
   description: "SZL Governance Receipts — DSSE-wrapped audit receipts emitted from live Kubernetes workloads"
-  version: "0.3.1"
+  version: "0.4.0"
   url: "https://szlholdings.com"
   authors: "Stephen Paul Lutar JR <stephen@szlholdings.com>"
   documentation: "https://github.com/szl-holdings/szl-uds-deployment"
@@ -65,14 +65,14 @@ components:
     charts:
       - name: szl-receipts
         namespace: szl-receipts
-        version: 0.3.1
+        version: 0.4.0
         localPath: charts/szl-receipts
         valuesFiles:
           - charts/szl-receipts/values.yaml
     images:
-      # v0.3.1: built OCI image (services/szl-receipts-server/Dockerfile),
+      # v0.4.0: built OCI image (services/szl-receipts-server/Dockerfile),
       # replacing the prior ConfigMap-on-python:3.12-slim approach.
-      - ghcr.io/szl-holdings/szl-receipts-server:uds-v0.3.1
+      - ghcr.io/szl-holdings/szl-receipts-server:uds-v0.4.0
       # NGINX for the dashboard UI
       - docker.io/library/nginx:1.27-alpine
     actions:
@@ -101,17 +101,6 @@ components:
               ./zarf tools kubectl get mutatingwebhookconfigurations.admissionregistration.k8s.io \
                 -l pepr.dev/controller=szl-receipts 2>/dev/null || \
                 echo "WARN: Pepr webhook not yet visible — may take up to 30s"
-
-  - name: szl-ui-dashboard
-    required: false
-    description: "NGINX-served SZL anatomy demo UI"
-    charts:
-      - name: szl-ui-dashboard
-        namespace: szl-receipts
-        version: 0.3.1
-        localPath: ui/chart
-    images:
-      - docker.io/library/nginx:1.27-alpine
 
   - name: kyverno-verify-attestations
     required: true

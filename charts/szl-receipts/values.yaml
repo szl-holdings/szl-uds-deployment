@@ -10,11 +10,11 @@ global:
 # ── MCP Receipts Server ───────────────────────────────────────────────────────
 server:
   name: szl-receipts-server
-  # OCI image built from services/szl-receipts-server/Dockerfile (v0.3.1).
+  # OCI image built from services/szl-receipts-server/Dockerfile (v0.4.0).
   # Replaces the prior ConfigMap-mounted source on stock python:3.12-slim.
   image:
     repository: ghcr.io/szl-holdings/szl-receipts-server
-    tag: "uds-v0.3.1"
+    tag: "uds-v0.4.0"
     pullPolicy: IfNotPresent
 
   replicas: 1
@@ -58,16 +58,32 @@ server:
     initialDelaySeconds: 15
     periodSeconds: 30
 
-# ── Receipt signing (Ed25519) ─────────────────────────────────────────────────
+# ── Receipt signing & key custody (Ed25519) ───────────────────────────────────
 # The HMAC-SHA-256 demo key was REMOVED in v0.3.1 (PhD Crypto Finding A2).
-# Receipts are signed with an Ed25519 key the operator provisions out-of-band.
-# This chart bakes NO key material. See templates/secret-keypair.yaml.
+# Receipts are signed with an Ed25519 key. This chart bakes NO private key
+# material in any backend. Custody tiers (see docs/KEY_CUSTODY_RUNBOOK.md):
+#
+#   backend: file   (Tier 0/1, default)
+#     The server reads an Ed25519 PEM mounted from the Secret named in
+#     signing.keypair.secretName. Provision it out-of-band (kubectl create
+#     secret) OR commit a SealedSecret (signing.sealedSecret.*) so only an
+#     ENCRYPTED blob lives in git (Tier 1 — closes the git-leak hole).
+#
+#   backend: vault  (Tier 2, managed-KMS custody)
+#     The server signs via HashiCorp Vault Transit. The Ed25519 private key is
+#     generated and HELD INSIDE Vault and never leaves it; the pod holds only a
+#     short-lived Vault token. Reading a Kubernetes Secret no longer yields the
+#     private key. Bootstrap Vault with scripts/setup-vault-transit.sh.
 signing:
+  # "file" (Ed25519 PEM Secret / SealedSecret) or "vault" (Vault Transit KMS).
+  backend: file
+
   keypair:
     # Name of the pre-provisioned Secret holding the PEM key file `ed25519.pem`.
-    # Create it BEFORE helm install:
+    # Used by the "file" backend. Create it BEFORE helm install:
     #   kubectl create secret generic szl-receipts-ed25519 \
     #     --from-file=ed25519.pem=ed25519.pem
+    # ...or render it from a SealedSecret (signing.sealedSecret.*) below.
     secretName: szl-receipts-ed25519
     # File name inside the Secret and the in-pod mount path.
     keyFile: ed25519.pem
@@ -82,6 +98,58 @@ signing:
   # intentionally allow the legacy unsigned demo mode.
   requireKey: true
 
+  # ── Tier 1: SealedSecret (Bitnami sealed-secrets) — interim GitOps step ──────
+  # When enabled, the chart renders a SealedSecret CR that the in-cluster
+  # sealed-secrets controller decrypts into the Secret named above. The
+  # ENCRYPTED blob (encryptedKey) is safe to commit to git; the plaintext key
+  # only ever exists in-cluster. Generate the ciphertext with
+  # scripts/seal-signing-key.sh (it runs kubeseal). NEVER put a plaintext key
+  # in encryptedKey — the chart fails the render if encryptedKey is empty.
+  sealedSecret:
+    enabled: false
+    # Output of `kubeseal` for the ed25519.pem key (cluster-key-specific
+    # ciphertext, NOT plaintext). Empty by default — provide per-cluster.
+    encryptedKey: ""
+    # Mirror of the controller's scope annotation used when sealing.
+    scope: strict   # strict | namespace-wide | cluster-wide
+
+  # ── Tier 2: HashiCorp Vault Transit (managed-KMS custody) ────────────────────
+  vault:
+    # Vault API address reachable from the pod, e.g.
+    #   https://vault.vault.svc.cluster.local:8200  (in-cluster) or an
+    #   external Vault URL. Required when backend=vault.
+    address: ""
+    # Vault Enterprise namespace (leave empty for OSS / root namespace).
+    namespace: ""
+    # Transit secrets-engine mount path and Ed25519 key name.
+    transitMount: transit
+    transitKey: szl-receipts
+    auth:
+      # "kubernetes" (pod ServiceAccount JWT — recommended) or "token".
+      method: kubernetes
+      # Vault Kubernetes auth role bound to the szl-receipts ServiceAccount.
+      role: szl-receipts
+      mount: kubernetes
+      # Used only when method=token: a Secret holding a Vault token.
+      tokenSecret:
+        name: ""
+        key: token
+    # TLS to Vault. Provide a CA cert Secret for private CAs; tlsSkipVerify is
+    # for dev only (never in production).
+    tlsSkipVerify: false
+    caCertSecret:
+      name: ""
+      key: ca.crt
+    # Egress allow-list target for the Vault API (UDS Package + NetworkPolicy).
+    egress:
+      # In-cluster Vault: allow to this namespace + pod selector.
+      remoteNamespace: vault
+      remoteSelector:
+        app.kubernetes.io/name: vault
+      # External Vault: set a CIDR instead (leave remoteNamespace empty).
+      cidr: ""
+      port: 8200
+
 # ── OpenTelemetry (real OTLP/gRPC exporter) ───────────────────────────────────
 # PhD Systems Scope 9 fix: the server now links the OTel SDK and exports spans.
 # The uds-package.yaml egress allow-rule already permits monitoring/
@@ -95,6 +163,21 @@ otel:
 dashboard:
   enabled: true
   name: szl-dashboard
+
+  # ── Grafana dashboard (UDS Core sidecar auto-import) ───────────────────────
+  # Ships a ConfigMap labeled grafana_dashboard:"1" so UDS Core's Grafana
+  # sidecar auto-imports the receipt-chain dashboard (#129). No Grafana API
+  # calls; the dashboard appears as soon as the ConfigMap is applied.
+  grafana:
+    enabled: true
+    # Folder shown in Grafana's dashboard browser.
+    folder: "SZL"
+    # Label key the Core Grafana sidecar watches for (stack default).
+    sidecarLabel: grafana_dashboard
+    # Namespace for the ConfigMap. Empty => the release namespace. The Core
+    # sidecar watches ALL namespaces by default, so the release namespace is
+    # fine and keeps the dashboard self-contained with the chart.
+    namespace: ""
   image:
     repository: docker.io/library/nginx
     tag: "1.27-alpine"

@@ -4,36 +4,47 @@ Server image: {{ .Values.server.image.repository }}:{{ .Values.server.image.tag 
 Listen port:  {{ .Values.server.port }}  (health: /healthz)
 
 ────────────────────────────────────────────────────────────────────────────
-Ed25519 signing key — AUTO-PROVISIONED (zero manual steps)
+KEY CUSTODY — signing backend = {{ .Values.signing.backend }}
 ────────────────────────────────────────────────────────────────────────────
-This chart bakes NO key material, but you do NOT need to create one by hand. On
-a fresh deploy the szl-key-init pre-install hook auto-generates an Ed25519
-keypair and stores it as the Secret "{{ .Values.signing.keypair.secretName }}"
-(key file "{{ .Values.signing.keypair.keyFile }}") in this namespace BEFORE the
-server starts. The key never leaves the cluster.
+This chart bakes NO private key in any backend. See docs/KEY_CUSTODY_RUNBOOK.md.
+{{- if eq .Values.signing.backend "vault" }}
 
-{{- if .Values.signing.requireKey }}
-signing.requireKey is true (default): the server REQUIRES this Secret. If it is
-absent the pod will not start and the deploy fails loudly — it will never
-silently sign nothing. If the key-init hook failed, inspect it with:
+backend=vault (Tier 2, managed-KMS custody): the Ed25519 private key is held
+INSIDE HashiCorp Vault and never enters this pod. Bootstrap Vault first:
 
-  kubectl -n {{ .Release.Namespace }} get jobs,pods -l app.kubernetes.io/name=szl-key-init
-  kubectl -n {{ .Release.Namespace }} logs job/szl-key-init
+  export VAULT_ADDR={{ .Values.signing.vault.address }} VAULT_TOKEN=<token>
+  scripts/setup-vault-transit.sh --k8s-auth \
+    --k8s-namespace {{ .Release.Namespace }} --k8s-sa szl-receipts
+
+The pod authenticates to Vault ({{ .Values.signing.vault.auth.method }}), fetches
+the public key, and signs the DSSE PAE via transit/sign. If Vault is unreachable
+the server runs UNSIGNED (explicit sentinel) — it never fabricates a signature.
 {{- else }}
-signing.requireKey is false: if the Secret is absent the server runs in UNSIGNED
-mode (it chains and persists receipts but emits an explicit
-"UNSIGNED-NO-ED25519-KEY" sentinel instead of a signature — it never fabricates
-one). Set signing.requireKey=true to fail loudly instead.
-{{- end }}
 
-Bring-your-own-key (BYOK): pre-create the Secret before install and the hook
-detects it and exits clean without touching it:
+backend=file (Tier 0/1): the server signs with an Ed25519 key read from the
+Secret "{{ .Values.signing.keypair.secretName }}". Provision it before (or just
+after) install, or the server runs UNSIGNED (it chains + persists receipts but
+emits an explicit "UNSIGNED-NO-ED25519-KEY" sentinel — it never fabricates one):
 
   openssl genpkey -algorithm ed25519 -out ed25519.pem
   kubectl create secret generic {{ .Values.signing.keypair.secretName }} \
     --namespace {{ .Release.Namespace }} \
     --from-file={{ .Values.signing.keypair.keyFile }}=ed25519.pem
   shred -u ed25519.pem
+
+Tier 1 (commit only an ENCRYPTED key to git): seal the key and enable the
+SealedSecret instead of the kubectl-created Secret:
+
+  scripts/seal-signing-key.sh --key ed25519.pem \
+    --namespace {{ .Release.Namespace }} \
+    --secret-name {{ .Values.signing.keypair.secretName }}
+  # then set signing.sealedSecret.enabled=true + encryptedKey in values.yaml
+{{- end }}
+
+Verify any receipt OFFLINE against the published public key (works identically
+for either backend — same Ed25519 sig over the same DSSE PAE):
+
+  scripts/verify_receipts_ed25519.py --url https://{{ .Values.udsPackage.expose.host }}.{{ if eq .Values.udsPackage.expose.gateway "admin" }}admin.{{ end }}{{ .Values.global.domain }} -k
 
 {{- if .Values.server.persistence.enabled }}
 

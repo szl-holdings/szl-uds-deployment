@@ -3,10 +3,15 @@
 #
 # UDS Package CR — szl-receipts
 #
-# This Package CR instructs UDS Core (via Pepr) to:
-#   1. Register the szl-receipts Keycloak SSO client with auth-service sidecar
-#   2. Expose the receipts-server via the UDS tenant Istio gateway
-#   3. Allow egress to the OTel collector in the monitoring namespace
+# This Package CR instructs UDS Core (via the Pepr-based UDS Operator) to:
+#   1. (when sso.enabled) Register the szl-receipts Keycloak SSO client and wire
+#      the authservice sidecar in front of the human-facing UI reverse-proxy.
+#   2. Expose the receipts surface via a UDS Core Istio gateway (VirtualService).
+#   3. Allow the in-cluster Pepr admission webhook to POST receipts
+#      machine-to-machine (mesh / mTLS) regardless of SSO state.
+#   4. Allow egress to the OTel collector in the monitoring namespace.
+#   5. (when signing.backend=vault) Allow egress to HashiCorp Vault for Transit
+#      signing (Tier 2 KMS key custody — see docs/KEY_CUSTODY_RUNBOOK.md).
 #
 # Prerequisites:
 #   - uds-core with core-slim-dev (or full core) deployed first
@@ -80,17 +85,28 @@ spec:
         port: 4317
         description: "OTel collector (OTLP/gRPC)"
 
-      # Allow egress to Keycloak for SSO token validation
+      {{- if eq .Values.signing.backend "vault" }}
+      # Allow egress to HashiCorp Vault for Transit signing (Tier 2 KMS custody).
+      # Only rendered when signing.backend=vault. In-cluster Vault uses a
+      # namespace+pod selector; external Vault uses a remoteCidr.
       - direction: Egress
         selector:
           app: szl-receipts-server
-        remoteNamespace: keycloak
+        {{- if .Values.signing.vault.egress.cidr }}
+        remoteCidr: {{ .Values.signing.vault.egress.cidr }}
+        {{- else }}
+        remoteNamespace: {{ .Values.signing.vault.egress.remoteNamespace }}
         remoteSelector:
-          app: keycloak
-        port: 8080
-        description: "Keycloak SSO token validation"
+          {{- toYaml .Values.signing.vault.egress.remoteSelector | nindent 10 }}
+        {{- end }}
+        port: {{ .Values.signing.vault.egress.port }}
+        description: "Vault Transit (Ed25519 signing, Tier 2 KMS custody)"
+      {{- end }}
 
-      # Allow ingress from the Pepr admission webhook to POST receipts
+      # Allow ingress from the Pepr admission webhook to POST receipts.
+      # ALWAYS ON — machine-to-machine, independent of SSO. This is the
+      # public/protected split's "protected app, public webhook" half: the
+      # webhook authenticates by mesh identity (pepr-system), no browser session.
       - direction: Ingress
         selector:
           app: szl-receipts-server

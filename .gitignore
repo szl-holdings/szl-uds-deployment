@@ -3,3 +3,6 @@ node_modules/
 dist/
 *.tar.zst
 __pycache__/
+/szl-receipts
+sbom/
+zarf-sbom/

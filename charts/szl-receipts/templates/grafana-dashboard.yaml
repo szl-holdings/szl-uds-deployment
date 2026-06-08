@@ -1,0 +1,35 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# Grafana dashboard for the SZL governance receipt chain.
+#
+# Provisioned through UDS Core's Grafana dashboard SIDECAR mechanism: the
+# kube-prometheus-stack Grafana runs a sidecar that watches every namespace for
+# ConfigMaps carrying the label `grafana_dashboard: "1"` and auto-imports the
+# JSON found in their data keys. No Grafana API calls, no manual import — the
+# dashboard appears as soon as this ConfigMap is applied (Core's native path).
+#
+# The dashboard reads the real, server-driven series exported by
+# services/szl-receipts-server/server.py:
+#   szl_chain_valid (gauge)   — 1 intact / 0 tamper detected
+#   szl_chain_length (gauge)  — receipts persisted in the chain
+#   szl_chain_index (gauge)   — chain head pointer
+#   szl_receipts_total/allow_total/deny_total/tamper_total (counters)
+{{- if .Values.dashboard.grafana.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-grafana-dashboard
+  namespace: {{ .Values.dashboard.grafana.namespace | default .Release.Namespace }}
+  labels:
+    {{ .Values.dashboard.grafana.sidecarLabel | default "grafana_dashboard" }}: "1"
+    app.kubernetes.io/name: szl-receipts-server
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    szl.io/component: grafana-dashboard
+  annotations:
+    grafana_folder: {{ .Values.dashboard.grafana.folder | default "SZL" | quote }}
+data:
+  szl-receipts.json: |
+{{ .Files.Get "dashboards/szl-receipts.json" | indent 4 }}
+{{- end }}
