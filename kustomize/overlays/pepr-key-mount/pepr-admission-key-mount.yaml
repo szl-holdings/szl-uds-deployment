@@ -1,26 +1,45 @@
 # Copyright 2026 SZL Holdings
 # SPDX-License-Identifier: Apache-2.0
 #
-# Strategic merge patch: mount szl-receipts-ed25519 Secret into Pepr admission pods.
+# Strategic merge patch: mount szl-receipts-ed25519 Secret into the Pepr
+# ADMISSION controller (Deployment pepr-szl, container `server`) so the Pepr
+# policy can read the Ed25519 key at /etc/szl-receipts-key/key.priv and sign
+# deploy receipts.
 #
 # The Pepr policy (pepr/policies/szl-receipt-on-deploy.ts) reads the Ed25519
-# private key from /etc/szl-receipts-key/key.priv. This patch mounts the
-# szl-receipts-ed25519 Secret (created by the founder via scripts/generate-receipt-key.sh)
-# at that path.
+# private key from /etc/szl-receipts-key/key.priv. The Mutate action that signs
+# receipts runs in the ADMISSION controller (pepr-szl), NOT the watcher — so
+# this patch MUST target the pepr-szl Deployment (a previous version wrongly
+# named the watcher `szl-receipt-policy-watcher`, which never carried the key).
 #
-# Secret must exist in pepr-system namespace BEFORE applying this patch:
-#   kubectl create secret generic szl-receipts-ed25519 \
-#     --namespace pepr-system \
-#     --from-file=key.priv=ed25519.pem
+# Secret must exist in the pepr-system namespace BEFORE applying this patch:
+#   bash scripts/generate-receipt-key.sh   # emits the Secret YAML (pepr-system)
+#   kubectl apply -f <that yaml>
+#
+# Apply directly with kubectl (the reliable path — Pepr generates pepr-szl at
+# runtime so it cannot be a static kustomize base resource):
+#   kubectl -n pepr-system patch deployment pepr-szl \
+#     --type=strategic --patch-file pepr-admission-key-mount.yaml
+#
+# Pepr regenerates its Deployment spec on every `npx pepr deploy` / zarf
+# redeploy, dropping this mount. The self-heal guard /usr/local/sbin/pepr-key-mount
+# (systemd timer pepr-key-mount.timer, every 2 min, + hooked into
+# `a11oy-mode coexist`) re-applies this mount automatically so signing survives
+# redeploys with zero hand-steps.
 #
 # The volume is mounted optional: true so Pepr starts in unsigned mode if the
 # Secret is absent (fail-open behavior is preserved).
+#
+# strategy.type=Recreate avoids a rolling-update CPU deadlock on the single
+# 2-vCPU node (a surge pod cannot schedule and the rollout hangs).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: szl-receipt-policy-watcher
+  name: pepr-szl
   namespace: pepr-system
 spec:
+  strategy:
+    type: Recreate
   template:
     spec:
       containers:
