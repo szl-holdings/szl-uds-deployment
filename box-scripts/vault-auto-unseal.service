@@ -1,0 +1,9 @@
+[Unit]
+Description=Auto-unseal the persistent szl-receipts Vault on uds-szl-demo so receipt signing recovers without a human after a Vault restart / box reboot
+Documentation=file:///usr/local/sbin/vault-auto-unseal
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/vault-auto-unseal

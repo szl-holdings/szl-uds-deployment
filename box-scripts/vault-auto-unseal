@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+#
+# vault-auto-unseal — guarded local auto-unseal for the persistent szl-receipts
+# Vault on the single-node uds-szl-demo k3d cluster (box 167.233.50.75).
+#
+# WHY THIS EXISTS
+# Persistent Vault (k8s/vault/vault-persistent.yaml) uses file storage + a real
+# 1/1 Shamir seal. That is honest custody — the Transit signing key survives a
+# pod restart — but the tradeoff is that after ANY Vault restart / box reboot
+# the pod comes back **Sealed**, and until a human runs `vault operator unseal`
+# szl-receipts signing fails closed (backend=vault). On an unattended box that
+# means signing silently breaks until someone notices and unseals by hand.
+#
+# Real Vault auto-unseal normally delegates the seal to an external KMS / a
+# Transit auto-unseal Vault. This box is a 2-vCPU air-gapped single node with no
+# second Vault and no cloud KMS, so the pragmatic option is a GUARDED LOCAL
+# HELPER: read the unseal key share(s) from the off-git, root-only
+# /root/vault-init/init.json (chmod 600 — the same crown-jewel file the runbook
+# already mandates) and replay `vault operator unseal` whenever Vault is sealed.
+#
+# SECURITY POSTURE (read before assuming this is production-grade)
+#   * The unseal key lives on the same host as Vault. This collapses the Shamir
+#     "key held off the box" boundary on THIS node — it is a demo/single-node
+#     convenience, NOT a production pattern. Production must use KMS/Transit
+#     auto-unseal so the key never sits next to the sealed data (see the runbook
+#     §6). This helper only reads init.json; it never copies it into the cluster,
+#     never logs the key, and never writes it anywhere.
+#   * init.json must stay root-only (chmod 600). The helper refuses to run if it
+#     is missing or world/group-readable, so a custody regression fails loud.
+#
+# BEHAVIOUR
+#   * Idempotent + a TRUE no-op when Vault is already unsealed (no API writes,
+#     no log spam) — safe to run on a tight timer.
+#   * Resolves the k3d kubeconfig; if the cluster is absent (e.g. stopped after a
+#     reboot — k3d nodes are `--restart no`) it exits 0 and does nothing.
+#   * Only acts when the vault Deployment exists AND reports Sealed=true.
+#
+# Installed at /usr/local/sbin/vault-auto-unseal, driven by
+# vault-auto-unseal.timer (every 1 min + OnBootSec) so szl-receipts resumes
+# signing within ~1 min of any Vault restart. Mirrors the szl-core-rightsize /
+# istiod-fit-strategy self-healing pattern on this box.
+set -uo pipefail
+
+CLUSTER="uds-szl-demo"
+NS="vault"
+DEPLOY="vault"
+INIT_JSON="/root/vault-init/init.json"
+
+# szl-receipts re-init target. The receipts server initialises its Vault Transit
+# signer ONCE at boot; if Vault was sealed/unreachable then (the exact reboot
+# case), it boots `signed=False` and stays unsigned even after Vault unseals. So
+# after a successful seal->unseal we nudge receipts to re-init.
+RX_NS="szl-receipts-demo"
+RX_DEPLOY="szl-receipts-server"
+RX_SELECTOR="app.kubernetes.io/instance=szl-receipts-demo,app.kubernetes.io/name=szl-receipts-server"
+
+log() { echo "[vault-auto-unseal] $*"; }
+
+# Force the receipts server to re-establish its Vault signer, but only if it is
+# actually running unsigned. Restart is a POD DELETE (not `rollout restart`): on
+# this 2-vCPU node a rolling surge can't schedule a 2nd receipts pod (it goes
+# Pending "Insufficient cpu"), whereas deleting the single replica lets the
+# Deployment recreate ONE fresh pod that now finds Vault unsealed -> signed=True.
+nudge_receipts() {
+  kubectl --request-timeout=20s -n "$RX_NS" get deploy "$RX_DEPLOY" >/dev/null 2>&1 || {
+    log "receipts deploy/$RX_DEPLOY absent — no signer to nudge"; return 0; }
+  local rpod signed
+  rpod="$(kubectl --request-timeout=20s -n "$RX_NS" get pods -l "$RX_SELECTOR" \
+    --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
+  if [ -n "$rpod" ]; then
+    signed="$(kubectl --request-timeout=20s -n "$RX_NS" exec "$rpod" -- python3 -c \
+      'import json,urllib.request;print(json.load(urllib.request.urlopen("http://127.0.0.1:8080/pubkey",timeout=8)).get("signed"))' 2>/dev/null)"
+  fi
+  if [ "$signed" = "True" ]; then
+    log "receipts already signing (signed=True) — no nudge needed"
+    return 0
+  fi
+  log "receipts signed=${signed:-unreachable} — deleting its pod(s) to re-init the Vault signer against the now-unsealed Vault"
+  kubectl --request-timeout=30s -n "$RX_NS" delete pod -l "$RX_SELECTOR" --wait=false >/dev/null 2>&1
+}
+
+# --- Custody guard: the unseal-key file must exist and be root-only ---------
+if [ ! -f "$INIT_JSON" ]; then
+  log "FATAL: $INIT_JSON not found — cannot auto-unseal. (Has Vault been initialised? See VAULT_PERSISTENT_RUNBOOK §2.)"
+  exit 1
+fi
+PERMS="$(stat -c '%a' "$INIT_JSON" 2>/dev/null || echo '?')"
+OWNER="$(stat -c '%U' "$INIT_JSON" 2>/dev/null || echo '?')"
+if [ "$PERMS" != "600" ] || [ "$OWNER" != "root" ]; then
+  log "FATAL: $INIT_JSON is $OWNER:$PERMS — refusing to read an unseal key from a non-root-only file. Run: chown root $INIT_JSON && chmod 600 $INIT_JSON"
+  exit 1
+fi
+
+# --- Resolve cluster; no-op if it isn't up ----------------------------------
+KC="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" || { log "cluster $CLUSTER absent — nothing to do"; exit 0; }
+export KUBECONFIG="$KC"
+
+# Vault Deployment present? Otherwise no-op (cluster migrating / not deployed).
+if ! kubectl --request-timeout=20s -n "$NS" get deploy "$DEPLOY" >/dev/null 2>&1; then
+  log "deploy/$DEPLOY not present in ns/$NS — nothing to do"
+  exit 0
+fi
+
+# --- Read seal status (vault status exits 2 when sealed but still emits JSON) -
+STATUS_JSON="$(kubectl --request-timeout=30s -n "$NS" exec "deploy/$DEPLOY" -- \
+  sh -c 'VAULT_ADDR=http://127.0.0.1:8200 vault status -format=json' 2>/dev/null)"
+if [ -z "$STATUS_JSON" ]; then
+  log "could not read vault status (pod starting / not ready?) — will retry next tick"
+  exit 0
+fi
+
+SEALED="$(printf '%s' "$STATUS_JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("sealed"))' 2>/dev/null)"
+INITED="$(printf '%s' "$STATUS_JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("initialized"))' 2>/dev/null)"
+
+if [ "$INITED" != "True" ]; then
+  log "Vault reports initialized=$INITED — NOT auto-initialising (init is a one-time human step, see runbook §2). Nothing to do."
+  exit 0
+fi
+
+if [ "$SEALED" != "True" ]; then
+  # Already unsealed — the common case. True no-op.
+  exit 0
+fi
+
+log "Vault is SEALED — replaying unseal key share(s) from $INIT_JSON"
+
+# Threshold + the exact number of shares needed, read straight from init.json.
+THRESHOLD="$(python3 -c 'import json;print(json.load(open("'"$INIT_JSON"'")).get("unseal_threshold",1))' 2>/dev/null)"
+[ -z "$THRESHOLD" ] && THRESHOLD=1
+
+# Feed shares one at a time until Vault reports unsealed (or we run out).
+i=0
+while [ "$i" -lt "$THRESHOLD" ]; do
+  KEY="$(python3 -c 'import json,sys;k=json.load(open("'"$INIT_JSON"'"))["unseal_keys_b64"];sys.stdout.write(k['"$i"'])' 2>/dev/null)"
+  if [ -z "$KEY" ]; then
+    log "ERROR: unseal_keys_b64[$i] missing in $INIT_JSON — cannot reach threshold $THRESHOLD"
+    exit 1
+  fi
+  # Pipe the key over stdin and have the in-pod shell read it into a variable,
+  # so the key appears in NO command line — not in the box's `ps` (kubectl args
+  # carry no key) and only fleetingly inside the pod. `vault operator unseal -`
+  # (read-from-stdin) returns HTTP 400 here, so read+pass-as-arg is used.
+  printf '%s\n' "$KEY" | kubectl --request-timeout=30s -n "$NS" exec -i "deploy/$DEPLOY" -- \
+    sh -c 'read K; VAULT_ADDR=http://127.0.0.1:8200 vault operator unseal "$K"' >/dev/null 2>&1
+  i=$((i+1))
+done
+
+# Confirm the result; do not declare success blindly.
+NEW_SEALED="$(kubectl --request-timeout=30s -n "$NS" exec "deploy/$DEPLOY" -- \
+  sh -c 'VAULT_ADDR=http://127.0.0.1:8200 vault status -format=json' 2>/dev/null \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin).get("sealed"))' 2>/dev/null)"
+
+if [ "$NEW_SEALED" = "False" ]; then
+  log "Vault UNSEALED — ensuring szl-receipts re-establishes its Vault signer."
+  nudge_receipts
+  exit 0
+else
+  log "ERROR: Vault still sealed (sealed=$NEW_SEALED) after replaying $THRESHOLD share(s). Check key custody / Vault logs."
+  exit 1
+fi

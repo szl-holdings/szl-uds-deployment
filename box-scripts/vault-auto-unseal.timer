@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodically re-unseal the persistent szl-receipts Vault if it has come back sealed, so signing recovers within ~1 min of any Vault restart/reboot
+
+[Timer]
+# Run shortly after boot (catches a box reboot) and every minute thereafter so a
+# sealed Vault is detected and unsealed within ~1 min — the runbook's recovery
+# target. The helper is a true no-op when Vault is already unsealed.
+OnBootSec=45s
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
