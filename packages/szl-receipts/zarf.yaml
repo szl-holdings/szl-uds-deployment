@@ -33,7 +33,64 @@ variables:
     description: "Log level for szl-receipts-server"
     default: "info"
 
+  # Small-server CPU posture toggle. On a ~2-vCPU node (uds-szl-demo) the shared
+  # UDS-core HA admission components do not fit at their HA defaults; pin them to
+  # single-replica + no-surge so a fresh deploy is born rightsized. Set to "false"
+  # on multi-node / HA clusters that should keep the upstream HA defaults.
+  - name: SMALL_SERVER_RIGHTSIZE
+    description: "Pin shared UDS-core HA admission components (pepr-uds-core, zarf agent-hook) to single-replica + no-surge for small (~2-vCPU) nodes. Set false on HA clusters."
+    default: "true"
+
 components:
+  # ── Small-server CPU posture (MUST be first) ──────────────────────────────────
+  # Pin the shared UDS-core HA admission components to single-replica + no-surge so a
+  # fresh `uds deploy` / `zarf package deploy` on the ~2-vCPU uds-szl-demo node comes
+  # up rightsized with no Pending storm BEFORE the runtime self-heal guard
+  # (/usr/local/sbin/szl-core-rightsize) ever runs. The guard remains the safety net
+  # for later drift (cold restart, core helm/zarf reset-to-HA, manual scale).
+  #
+  # Why an action and not a values override: Pepr 1.2.0 and the zarf init agent
+  # HARDCODE `replicas: 2` (and the default 25% rolling surge) directly in their
+  # generated templates — there is no Helm value to set — so the only way to bake
+  # this posture into the deploy artifact is a post-deploy patch. This component
+  # runs after init + UDS Core (which deploy earlier in the bundle) are up, and
+  # before the heavier szl-receipts workloads schedule, freeing CPU just in time.
+  - name: szl-core-rightsize
+    required: true
+    description: "Small-server CPU posture: pin pepr-uds-core + zarf agent-hook to single-replica, no-surge (born-rightsized fresh deploy)"
+    actions:
+      onDeploy:
+        before:
+          - description: "Rightsize pepr-uds-core admission + zarf agent-hook to single-replica, no-surge"
+            maxTotalSeconds: 90
+            cmd: |
+              set -uo pipefail
+              if [ "###ZARF_VAR_SMALL_SERVER_RIGHTSIZE###" != "true" ]; then
+                echo "[szl-core-rightsize] SMALL_SERVER_RIGHTSIZE != true -> leaving upstream HA defaults in place"
+                exit 0
+              fi
+              # Pin the shared UDS-core HA admission components to single-replica +
+              # no-surge. Mirrors /usr/local/sbin/szl-core-rightsize. Idempotent and a
+              # true no-op once conformant. A merge patch of replicas (2->1) only scales
+              # the extra pod away; the remaining admission pod keeps serving, so there
+              # is no webhook downtime. Strategy-aware: Recreate deploys get replicas
+              # only (Recreate never surges); RollingUpdate deploys also get maxSurge=0.
+              for t in pepr-system/pepr-uds-core zarf/agent-hook; do
+                ns="${t%%/*}"; name="${t##*/}"
+                if ! kubectl -n "$ns" get deploy "$name" >/dev/null 2>&1; then
+                  echo "[szl-core-rightsize] $t not present yet, skipping"; continue
+                fi
+                stype="$(kubectl -n "$ns" get deploy "$name" -o jsonpath='{.spec.strategy.type}' 2>/dev/null)"
+                if [ "$stype" = "Recreate" ]; then
+                  kubectl -n "$ns" patch deploy "$name" --type=merge \
+                    -p '{"spec":{"replicas":1}}'
+                else
+                  kubectl -n "$ns" patch deploy "$name" --type=merge \
+                    -p '{"spec":{"replicas":1,"strategy":{"rollingUpdate":{"maxSurge":0,"maxUnavailable":1}}}}'
+                fi
+                echo "[szl-core-rightsize] $t -> replicas=1, no-surge (was strategy=${stype:-RollingUpdate})"
+              done
+
   # ── UDS Exemption (MUST be first) ─────────────────────────────────────────────
   # The Ed25519 keygen hook (szl-key-init) must run as root (uid 0) to `apk add`
   # openssl + install kubectl. UDS Core's pepr-uds-core admission webhook enforces
