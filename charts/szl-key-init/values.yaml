@@ -7,7 +7,7 @@
 # Target namespace for the Ed25519 Secret.
 # Defaults to the Helm release namespace (usually pepr-system when
 # integrated with the szl-receipts bundle).
-namespace: pepr-system
+namespace: szl-receipts
 
 # Name of the Kubernetes Secret to create (must match what the
 # szl-receipts Deployment expects via signing.keypair.secretName).

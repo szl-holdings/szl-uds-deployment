@@ -81,8 +81,7 @@ spec:
               echo "szl-key-init: Creating Secret $SECRET_NAME in $NAMESPACE"
               kubectl create secret generic "$SECRET_NAME" \
                 -n "$NAMESPACE" \
-                --from-file=key.priv=/tmp/priv.pem \
-                --from-file=key.pub=/tmp/pub.pem
+                --from-file=ed25519.pem=/tmp/priv.pem
 
               # Remove key files
               rm -f /tmp/priv.pem /tmp/pub.pem

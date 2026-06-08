@@ -11,7 +11,7 @@ kind: ZarfPackageConfig
 metadata:
   name: szl-receipts
   description: "SZL Governance Receipts — DSSE-wrapped audit receipts emitted from live Kubernetes workloads"
-  version: "0.3.1"
+  version: "0.4.0"
   url: "https://szlholdings.com"
   authors: "Stephen Paul Lutar JR <stephen@szlholdings.com>"
   documentation: "https://github.com/szl-holdings/szl-uds-deployment"
@@ -34,24 +34,26 @@ variables:
     default: "info"
 
 components:
-  # ── Ed25519 key auto-generation (runs before deploy via Helm pre-install hook) ──
-  # On first `uds deploy`, a Helm pre-install hook Job generates an Ed25519 keypair
-  # in the pepr-system namespace as Secret szl-receipts-ed25519. Idempotent (BYOK).
-  # Doctrine v11 LOCKED 749/14/163 at kernel commit c7c0ba17
-  - name: szl-key-init
+  # ── UDS Exemption (MUST be first) ─────────────────────────────────────────────
+  # The Ed25519 keygen hook (szl-key-init) must run as root (uid 0) to `apk add`
+  # openssl + install kubectl. UDS Core's pepr-uds-core admission webhook enforces
+  # non-root cluster-wide on application namespaces, so without this Exemption the
+  # keygen Job pod is DENIED ("Pod level securityContext does not meet the non-root
+  # user requirement") and the server comes up UNSIGNED. The Exemption is scoped to
+  # RequireNonRootUser only and matched tightly to the keygen pod in szl-receipts.
+  - name: szl-key-init-exemption
     required: true
-    description: "Helm pre-install hook: auto-generate Ed25519 signing key on first deploy"
-    charts:
-      - name: szl-key-init
-        namespace: pepr-system
-        version: 0.1.0
-        localPath: ../../charts/szl-key-init
-        valuesFiles:
-          - ../../charts/szl-key-init/values.yaml
-    images:
-      # alpine:3.21 used in the keygen Job (replaces cgr.dev/chainguard/openssl — no public auth)
-      - docker.io/library/alpine:3.21
+    description: "UDS Exemption: allow the root Ed25519 keygen hook (RequireNonRootUser only)"
+    manifests:
+      - name: szl-key-init-exemption
+        namespace: uds-policy-exemptions
+        files:
+          - ../../manifests/key-init-exemption.yaml
 
+  # ── Namespace (before key-init) ───────────────────────────────────────────────
+  # Create the szl-receipts namespace before the key-init hook runs, so the
+  # auto-generated Ed25519 Secret and its RBAC land in the same namespace as the
+  # receipts-server Deployment that mounts it (Secrets are namespace-local).
   - name: szl-receipts-namespace
     required: true
     description: "Create the szl-receipts namespace with required labels"
@@ -61,6 +63,26 @@ components:
         files:
           - ../../manifests/namespace.yaml
 
+  # ── Ed25519 key auto-generation (runs before deploy via Helm pre-install hook) ──
+  # On first `uds deploy`, a Helm pre-install hook Job generates an Ed25519 keypair
+  # in the szl-receipts namespace as Secret szl-receipts-ed25519 (key file
+  # ed25519.pem — the exact name the receipts-server Deployment mounts). Idempotent
+  # (BYOK): if the Secret already exists the Job exits clean without touching it.
+  # Doctrine v11 LOCKED 749/14/163 at kernel commit c7c0ba17
+  - name: szl-key-init
+    required: true
+    description: "Helm pre-install hook: auto-generate Ed25519 signing key on first deploy"
+    charts:
+      - name: szl-key-init
+        namespace: szl-receipts
+        version: 0.1.0
+        localPath: ../../charts/szl-key-init
+        valuesFiles:
+          - ../../charts/szl-key-init/values.yaml
+    images:
+      # alpine:3.21 used in the keygen Job (replaces cgr.dev/chainguard/openssl — no public auth)
+      - docker.io/library/alpine:3.21
+
   - name: szl-receipts-server
     required: true
     description: "Deploy the SZL receipts MCP server and dashboard"
@@ -69,13 +91,13 @@ components:
     charts:
       - name: szl-receipts
         namespace: szl-receipts
-        version: 0.3.1
+        version: 0.4.0
         localPath: ../../charts/szl-receipts
         valuesFiles:
           - ../../charts/szl-receipts/values.yaml
     images:
-      # v0.3.1: built OCI image (services/szl-receipts-server/Dockerfile)
-      - ghcr.io/szl-holdings/szl-receipts-server:uds-v0.3.1
+      # v0.4.0: built OCI image (services/szl-receipts-server/Dockerfile)
+      - ghcr.io/szl-holdings/szl-receipts-server:uds-v0.4.0
       - docker.io/library/nginx:1.27-alpine
     actions:
       onDeploy:
