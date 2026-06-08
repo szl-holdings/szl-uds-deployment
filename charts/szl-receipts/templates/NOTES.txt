@@ -4,13 +4,30 @@ Server image: {{ .Values.server.image.repository }}:{{ .Values.server.image.tag 
 Listen port:  {{ .Values.server.port }}  (health: /healthz)
 
 ────────────────────────────────────────────────────────────────────────────
-REQUIRED BEFORE THIS WORKS — Ed25519 signing key
+Ed25519 signing key — AUTO-PROVISIONED (zero manual steps)
 ────────────────────────────────────────────────────────────────────────────
-This chart bakes NO signing key. The server signs receipts with an Ed25519 key
-read from the Secret "{{ .Values.signing.keypair.secretName }}". You MUST create
-it before (or immediately after) install, or the server runs in UNSIGNED mode
-(it chains and persists receipts but emits an explicit "UNSIGNED-NO-ED25519-KEY"
-sentinel instead of a signature — it never fabricates one):
+This chart bakes NO key material, but you do NOT need to create one by hand. On
+a fresh deploy the szl-key-init pre-install hook auto-generates an Ed25519
+keypair and stores it as the Secret "{{ .Values.signing.keypair.secretName }}"
+(key file "{{ .Values.signing.keypair.keyFile }}") in this namespace BEFORE the
+server starts. The key never leaves the cluster.
+
+{{- if .Values.signing.requireKey }}
+signing.requireKey is true (default): the server REQUIRES this Secret. If it is
+absent the pod will not start and the deploy fails loudly — it will never
+silently sign nothing. If the key-init hook failed, inspect it with:
+
+  kubectl -n {{ .Release.Namespace }} get jobs,pods -l app.kubernetes.io/name=szl-key-init
+  kubectl -n {{ .Release.Namespace }} logs job/szl-key-init
+{{- else }}
+signing.requireKey is false: if the Secret is absent the server runs in UNSIGNED
+mode (it chains and persists receipts but emits an explicit
+"UNSIGNED-NO-ED25519-KEY" sentinel instead of a signature — it never fabricates
+one). Set signing.requireKey=true to fail loudly instead.
+{{- end }}
+
+Bring-your-own-key (BYOK): pre-create the Secret before install and the hook
+detects it and exits clean without touching it:
 
   openssl genpkey -algorithm ed25519 -out ed25519.pem
   kubectl create secret generic {{ .Values.signing.keypair.secretName }} \

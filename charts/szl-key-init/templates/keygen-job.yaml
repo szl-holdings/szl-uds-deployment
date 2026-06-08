@@ -56,37 +56,70 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
+              # Fail LOUD and fail HARD. -e: abort on any non-zero command;
+              # -u: abort on unset variable; -o pipefail: a failure anywhere in a
+              # pipe aborts. Combined with the explicit checks + `fail()` helper
+              # below, a botched secret create can NEVER exit 0 (which would let
+              # the hook self-delete with no Secret and no trace, leaving the
+              # server to silently sign nothing).
               set -euo pipefail
+
+              fail() {
+                echo "szl-key-init: ERROR — $*" >&2
+                echo "szl-key-init: FAILED — no Ed25519 Secret was created; refusing to exit 0." >&2
+                exit 1
+              }
+
+              KEY_FILE="{{ .Values.keyFile | default "ed25519.pem" }}"
               SECRET_NAME="{{ .Values.secretName | default "szl-receipts-ed25519" }}"
               NAMESPACE="{{ .Values.namespace | default .Release.Namespace }}"
 
-              # Install kubectl and openssl
-              apk add --no-cache curl openssl >/dev/null 2>&1
-              # Install kubectl
-              KUBECTL_VERSION="v1.31.0"
-              curl -sLo /usr/local/bin/kubectl \
-                "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
-              chmod +x /usr/local/bin/kubectl
+              # Install openssl (keygen) + curl (kubectl download).
+              apk add --no-cache curl openssl >/dev/null 2>&1 \
+                || fail "apk add curl openssl failed"
 
-              # Idempotency check: if Secret already exists, exit clean (BYOK path)
+              # Install kubectl. -f makes curl FAIL on an HTTP error (404/5xx)
+              # instead of writing an error page into the kubectl binary and
+              # exiting 0; -S surfaces the error message.
+              KUBECTL_VERSION="v1.31.0"
+              curl -fsSLo /usr/local/bin/kubectl \
+                "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+                || fail "kubectl download failed (HTTP error or network)"
+              chmod +x /usr/local/bin/kubectl
+              kubectl version --client >/dev/null 2>&1 \
+                || fail "downloaded kubectl is not runnable"
+
+              # Idempotency check: if Secret already exists, exit clean (BYOK path).
               if kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
                 echo "szl-key-init: Secret $SECRET_NAME exists in $NAMESPACE — skipping keygen (BYOK mode)"
                 exit 0
               fi
 
               echo "szl-key-init: Generating Ed25519 keypair..."
-              openssl genpkey -algorithm ED25519 -out /tmp/priv.pem
-              openssl pkey -in /tmp/priv.pem -pubout -out /tmp/pub.pem
+              openssl genpkey -algorithm ED25519 -out /tmp/priv.pem \
+                || fail "openssl genpkey (Ed25519) failed"
+              openssl pkey -in /tmp/priv.pem -pubout -out /tmp/pub.pem \
+                || fail "openssl pkey (public derive) failed"
+              test -s /tmp/priv.pem || fail "generated private key is empty"
 
               echo "szl-key-init: Creating Secret $SECRET_NAME in $NAMESPACE"
               kubectl create secret generic "$SECRET_NAME" \
                 -n "$NAMESPACE" \
-                --from-file=ed25519.pem=/tmp/priv.pem
+                --from-file="${KEY_FILE}=/tmp/priv.pem" \
+                || fail "kubectl create secret failed (RBAC? namespace missing?)"
+
+              # VERIFY the Secret actually exists and carries non-empty key data.
+              # A create that "succeeded" but produced nothing usable must still
+              # fail the Job — this is the check that closes the silent-failure gap.
+              kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" \
+                -o "jsonpath={.data.${KEY_FILE}}" 2>/dev/null | grep -q . \
+                || fail "Secret $SECRET_NAME has no '$KEY_FILE' data after create"
 
               # Remove key files
               rm -f /tmp/priv.pem /tmp/pub.pem
 
-              echo "szl-key-init: Ed25519 Secret created. Key material removed from container."
+              echo "szl-key-init: Ed25519 Secret $SECRET_NAME verified present in $NAMESPACE."
+              echo "szl-key-init: Key material removed from container."
               echo "szl-key-init: DONE — founder never sees this key."
           securityContext:
             allowPrivilegeEscalation: false

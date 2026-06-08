@@ -14,11 +14,6 @@ metadata:
   name: {{ .Values.server.name }}
   namespace: {{ .Release.Namespace }}
   labels:
-    # Bare `app` label is REQUIRED: UDS Package selectors, the generated Istio
-    # AuthorizationPolicies/VirtualService, the NetworkPolicies and the PDB all
-    # match on `app: szl-receipts-server`. Without it the waypoint/authz never
-    # binds and the receipts route 404s. (Chart default — no hand-patch needed.)
-    app: szl-receipts-server
     app.kubernetes.io/name: szl-receipts-server
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/version: {{ .Chart.AppVersion }}
@@ -35,10 +30,6 @@ spec:
   template:
     metadata:
       labels:
-        # Bare `app` label — see metadata comment above. This is the one that
-        # actually lands on the pod, so UDS/Istio ambient authz + the waypoint
-        # match it. Required for the receipts route to serve (not 404).
-        app: szl-receipts-server
         app.kubernetes.io/name: szl-receipts-server
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/version: {{ .Chart.AppVersion }}
@@ -142,12 +133,15 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
-        # Ed25519 signing key from the operator-provisioned Secret.
-        # optional: true so the pod still starts (unsigned mode) if absent.
+        # Ed25519 signing key from the auto-provisioned Secret (szl-key-init).
+        # When signing.requireKey is true (default), optional is false: if the
+        # Secret is absent the pod will NOT start (readiness never goes Available
+        # and the deploy fails loudly) rather than silently signing nothing.
+        # Set signing.requireKey=false to allow the legacy unsigned demo mode.
         - name: ed25519-key
           secret:
             secretName: {{ .Values.signing.keypair.secretName }}
-            optional: true
+            optional: {{ not .Values.signing.requireKey }}
             defaultMode: 0400
         {{- if .Values.dashboard.enabled }}
         - name: dashboard-html
