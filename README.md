@@ -7,7 +7,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square)](LICENSE) [![Build](https://github.com/szl-holdings/szl-uds-deployment/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/szl-holdings/szl-uds-deployment/actions/workflows/release.yml) [![Doctrine v11](https://img.shields.io/badge/Doctrine-v11_LOCKED-3b82f6?style=flat-square)](https://github.com/szl-holdings/.github/tree/main/doctrine) [![SLSA](https://img.shields.io/badge/SLSA-L1_honest_·_L2_roadmap-22c55e?style=flat-square)](https://slsa.dev/spec/v1.0/levels)
 
-[Docs](https://docs.szlholdings.com) · [Quickstart](https://docs.szlholdings.com/quickstart) · [SZL Holdings](https://szlholdings.com)
+[Docs](https://szl-holdings.github.io/docs-site) · [Quickstart](https://szl-holdings.github.io/docs-site/quickstart) · [SZL Holdings](https://a11oy.net)
 
 **Deployment story:** [szl-fleet-overlay](https://github.com/szl-holdings/szl-fleet-overlay) (UDS Operator packages) · [uds-bundles](https://github.com/szl-holdings/uds-bundles) (Zarf bundle manifests) · [szl-mesh](https://github.com/szl-holdings/szl-mesh) (CRDT coordination) · [uds-mesh](https://github.com/szl-holdings/uds-mesh) (observability spine). This repo is the **live reference deployment**.
 
@@ -19,7 +19,7 @@ It is the live reference deployment used for the 2026 Warhacker demo — showing
 
 ## ▶️ Live demo
 
-_Internal / private repository — no public demo surface. See [docs.szlholdings.com](https://docs.szlholdings.com) for the public product walkthrough._
+_Internal / private repository — no public demo surface. See [docs.szlholdings.com](https://szl-holdings.github.io/docs-site) for the public product walkthrough._
 
 ## ⚡ Quick start (30 seconds)
 
@@ -31,7 +31,7 @@ make quickstart   # or: see docs.szlholdings.com/quickstart
 
 ## 🔍 How it works
 
-In two sentences: this component is part of SZL's governed-AI mesh — it enforces policy and emits signed, replayable audit receipts so every AI action can be verified after the fact. The full mathematical foundation, formal proofs, and protocol details are documented below and in the [technical docs](https://docs.szlholdings.com).
+In two sentences: this component is part of SZL's governed-AI mesh — it enforces policy and emits signed, replayable audit receipts so every AI action can be verified after the fact. The full mathematical foundation, formal proofs, and protocol details are documented below and in the [technical docs](https://szl-holdings.github.io/docs-site).
 
 ---
 
@@ -173,7 +173,7 @@ See [LICENSE](LICENSE) for full text.
 ## Contact
 
 Stephen Paul Lutar JR — stephen@szlholdings.com  
-[SZL Holdings](https://szlholdings.com)
+[SZL Holdings](https://a11oy.net)
 
 ## Optional Components
 
@@ -249,4 +249,4 @@ rather than an Ed25519 signature.
 
 Cite this work via [`CITATION.cff`](CITATION.cff). Math foundations: [szl-papers](https://github.com/szl-holdings/szl-papers) · [lutar-lean](https://github.com/szl-holdings/lutar-lean) (kernel `c7c0ba17`).
 
-<sub>Λ Conjecture 1 (not a theorem) · locked kernel 749/14/163 @ `c7c0ba17` (5 proven) · experimental main 1304/22 @ `7885fd9` (~36 theorems CI-green, never folded into the locked 5) · v11 LOCKED · SLSA L1 honest; L2 roadmap (NOT L3) · Section 889 = 5 vendors · [SZL Holdings](https://szlholdings.com) · Apache-2.0 code · CC-BY-4.0 papers</sub>
+<sub>Λ Conjecture 1 (not a theorem) · locked kernel 749/14/163 @ `c7c0ba17` (5 proven) · experimental main 1304/22 @ `7885fd9` (~36 theorems CI-green, never folded into the locked 5) · v11 LOCKED · SLSA L1 honest; L2 roadmap (NOT L3) · Section 889 = 5 vendors · [SZL Holdings](https://a11oy.net) · Apache-2.0 code · CC-BY-4.0 papers</sub>
