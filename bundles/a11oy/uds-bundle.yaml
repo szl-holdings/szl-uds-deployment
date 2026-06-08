@@ -33,8 +33,13 @@ metadata:
     SZL A11oy governed-AI decision substrate — UDS Package bundle (mesh-ready).
     Deploys on UDS Core (AGPL-3.0, defenseunicorns/uds-core). Not affiliated with
     Defense Unicorns. Doctrine v11 LOCKED. Lambda=Conjecture 1.
-    SLSA Build L2 on organ images; bundle attestation NOT earned (cosign signature
+    SLSA L1 honest / L2 roadmap; organ images cosign-signed (L1), L2 attestation NOT yet earned (cosign signature
     is the bundle provenance).
+    Current organ capabilities (uds-v0.2.0 image): live USGS seismic-forecast endpoints
+    (/api/a11oy/v1/seismic/{health,quakes,forecast}; Reasenberg-Jones + Omori aftershock model),
+    graph-router (a11oy.graph.* OTEL spans: lambda/automorphism/position/gcpn_propose), and the
+    experimental CI-green frontier formula cards in the console Formulas + Trust-Score tabs
+    (NOT folded into locked-5; Λ stays Conjecture 1).
   version: "0.5.0"
   architecture: amd64
   authors: "SZL Holdings <eng@szlholdings.com>"
