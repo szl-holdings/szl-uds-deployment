@@ -184,6 +184,56 @@ jobs:
           # hash-chain verification.
           bash scripts/verify_receipts.sh
 
+      - name: Tamper a stored receipt and assert the verifier REJECTS it
+        run: |
+          # NEGATIVE path. The step above only proves a clean chain is ACCEPTED.
+          # That alone is hollow: a regression that swallows InvalidSignature (an
+          # always-pass verifier) would still print "all VERIFIED". Here we flip a
+          # single byte in a stored receipt and require verify_receipts.sh to exit
+          # non-zero AND name a FAILED receipt — so "all VERIFIED" keeps meaning
+          # "tampering would have been caught."
+          mkdir -p "${RUNNER_TEMP}/tamper"
+          # Snapshot the real signed chain + the public key (offline verify needs
+          # only the public key — never the private one).
+          curl -sf http://localhost:8080/receipts > "${RUNNER_TEMP}/tamper/chain.json"
+          curl -sf http://localhost:8080/pubkey \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['public_key_b64u'])" \
+            > "${RUNNER_TEMP}/tamper/pub.b64"
+          # Flip one bit of the first stored receipt's signed payload. This breaks
+          # both its Ed25519 signature (signed over the DSSE PAE of the payload)
+          # and its SHA-256 hash-chain link — exactly like on-disk tampering of a
+          # receipt under SZL_RECEIPT_STORE.
+          python3 - << 'PYEOF'
+          import os, json, base64
+          p = os.path.join(os.environ["RUNNER_TEMP"], "tamper", "chain.json")
+          with open(p) as f:
+              receipts = json.load(f)
+          assert receipts, "no receipts to tamper"
+          env = receipts[0]["envelope"]
+          raw = bytearray(base64.b64decode(env["payload"]))
+          raw[0] ^= 0x01
+          env["payload"] = base64.b64encode(bytes(raw)).decode()
+          with open(p, "w") as f:
+              json.dump(receipts, f)
+          print("Flipped one byte in receipt #1 payload.")
+          PYEOF
+          # Feed the doctored chain to the SHIPPED verifier (offline file mode).
+          # It MUST fail; if it passes, the negative path is broken.
+          if SZL_CHAIN_FILE="${RUNNER_TEMP}/tamper/chain.json" \
+             SZL_PUBKEY_FILE="${RUNNER_TEMP}/tamper/pub.b64" \
+             bash scripts/verify_receipts.sh > "${RUNNER_TEMP}/tamper/verify.log" 2>&1; then
+            echo "::error::verifier ACCEPTED a tampered receipt — the negative path is broken (always-pass verifier?)"
+            cat "${RUNNER_TEMP}/tamper/verify.log"
+            exit 1
+          fi
+          if ! grep -q "FAILED" "${RUNNER_TEMP}/tamper/verify.log"; then
+            echo "::error::verifier exited non-zero but never reported a FAILED receipt"
+            cat "${RUNNER_TEMP}/tamper/verify.log"
+            exit 1
+          fi
+          echo "Tamper correctly detected — verifier rejected the doctored chain:"
+          grep -E "FAILED|Summary" "${RUNNER_TEMP}/tamper/verify.log"
+
       - name: Stop the server
         if: always()
         run: |
