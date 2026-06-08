@@ -1,0 +1,203 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# image-pin-guard.yml — Catch an unbuildable image pin before it lands.
+#
+# Why this exists
+# ---------------
+# `zarf package create` CANNOT package a multi-arch image when the `@sha256:`
+# pin points at the OCI *index* (a.k.a. manifest list) digest — zarf needs a
+# single-platform manifest it can pull and bake into the airgap tarball. A
+# sibling commit once pinned ghcr.io/szl-holdings/szl-receipts-server to its
+# multi-arch INDEX digest; every clean checkout then failed `uds run bundle`
+# / `zarf package create`, but nothing caught it until someone tried a manual
+# build minutes-to-hours later. The fix is always to pin the linux/amd64 CHILD
+# digest (see deploy/.../szl-uds-deployment-push notes). This workflow turns
+# "discovered during a manual build" into a seconds-long CI failure on the PR.
+#
+# What it asserts (no cluster, no docker daemon required)
+# -------------------------------------------------------
+#   1. For EVERY `@sha256:` image pin in zarf.yaml and
+#      packages/szl-receipts/zarf.yaml, the digest resolves to a SINGLE-PLATFORM
+#      manifest — NOT an OCI index / Docker manifest list. (crane manifest +
+#      a `.manifests != null` / index-mediaType check.)
+#   2. The `bundle` task exists (`uds run --list`) and the `start` task ROUTES
+#      to it (`- task: bundle`), so `uds run start` and `uds run bundle` keep
+#      building from one clean-checkout code path.
+#
+# It complements chart-guard.yml (chart render/lint) and clean-deploy-guard.yml
+# (grep invariants); this one guards the zarf image pins + the bundle task wiring.
+
+name: Image Pin Guard
+
+on:
+  pull_request:
+    paths:
+      - "zarf.yaml"
+      - "packages/**/zarf.yaml"
+      - "tasks.yaml"
+      - ".github/workflows/image-pin-guard.yml"
+  push:
+    branches: [main]
+    paths:
+      - "zarf.yaml"
+      - "packages/**/zarf.yaml"
+      - "tasks.yaml"
+      - ".github/workflows/image-pin-guard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  image-pin-guard:
+    name: Image pins are single-platform + bundle task wired
+    runs-on: ubuntu-24.04
+    env:
+      CRANE_VERSION: v0.20.2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install crane + PyYAML
+        run: |
+          set -euo pipefail
+          curl -sSL \
+            "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin crane
+          crane version
+          python3 -m pip install --quiet pyyaml
+
+      # crane needs auth for the (org-private) GHCR receipts-server package.
+      # The repo-scoped GITHUB_TOKEN has package: read on packages built in
+      # this same repo (receipts-server-image.yml). docker.io stays anonymous.
+      - name: Authenticate crane to GHCR
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      # ── 1. Every @sha256: pin must be a single-platform manifest ──────────────
+      - name: "Collect @sha256: image pins from zarf packages"
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys, yaml
+          files = ["zarf.yaml", "packages/szl-receipts/zarf.yaml"]
+          pins = []
+          for path in files:
+              try:
+                  doc = yaml.safe_load(open(path))
+              except FileNotFoundError:
+                  sys.exit(f"::error::expected zarf package file not found: {path}")
+              for comp in (doc or {}).get("components", []) or []:
+                  for img in comp.get("images", []) or []:
+                      if isinstance(img, str) and "@sha256:" in img:
+                          pins.append((path, img))
+          if not pins:
+              sys.exit("::error::no @sha256: image pins found in zarf.yaml / "
+                       "packages/szl-receipts/zarf.yaml — the digest-pin guard "
+                       "would silently pass; refusing.")
+          seen = set()
+          with open("/tmp/pins.txt", "w") as out:
+              for path, img in pins:
+                  if img in seen:
+                      continue
+                  seen.add(img)
+                  out.write(img + "\n")
+                  print(f"{path}: {img}")
+          print(f"Collected {len(seen)} unique @sha256: pin(s).")
+          PY
+
+      - name: Assert each pin resolves to a single-platform manifest
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r ref; do
+            [ -n "$ref" ] || continue
+            # Normalize "registry/repo:tag@sha256:..." -> "registry/repo@sha256:..."
+            digest="${ref##*@}"
+            name="${ref%@*}"
+            last="${name##*/}"
+            head="${name%/*}"
+            last="${last%%:*}"          # strip any :tag on the final path segment
+            dref="${head}/${last}@${digest}"
+
+            echo "::group::$dref"
+            if ! body="$(crane manifest "$dref" 2>/tmp/crane.err)"; then
+              echo "::error::could not fetch manifest for $dref"
+              cat /tmp/crane.err
+              fail=1
+              echo "::endgroup::"
+              continue
+            fi
+            mt="$(printf '%s' "$body" | jq -r '.mediaType // ""')"
+            is_index="$(printf '%s' "$body" | jq -r 'if (.manifests != null) then "yes" else "no" end')"
+            echo "mediaType: $mt"
+            echo "has .manifests[]: $is_index"
+            case "$mt" in
+              *image.index*|*manifest.list*)
+                echo "::error file=zarf.yaml::$ref is pinned to a multi-arch INDEX digest ($mt). zarf package create cannot package an index — pin the linux/amd64 CHILD digest instead."
+                fail=1 ;;
+            esac
+            if [ "$is_index" = "yes" ]; then
+              echo "::error file=zarf.yaml::$ref resolves to a manifest list (.manifests[] present). Pin the single-platform (linux/amd64) child digest, not the index digest."
+              fail=1
+            fi
+            if [ "$mt" != "" ] && [ "$is_index" = "no" ]; then
+              echo "OK: single-platform manifest"
+            fi
+            echo "::endgroup::"
+          done < /tmp/pins.txt
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::one or more image pins are unbuildable (index digest or unresolvable)."
+            exit 1
+          fi
+          echo "All @sha256: image pins are single-platform — zarf can package them."
+
+      # ── 2. bundle task exists + start routes to it ────────────────────────────
+      - name: Install uds-cli
+        run: |
+          set -euo pipefail
+          UDS_VERSION=v0.32.0
+          curl -sSL -o /tmp/uds \
+            "https://github.com/defenseunicorns/uds-cli/releases/download/${UDS_VERSION}/uds-cli_${UDS_VERSION}_Linux_amd64"
+          sudo install -m 0755 /tmp/uds /usr/local/bin/uds
+          uds version
+
+      - name: Assert `uds run --list` includes the bundle task
+        run: |
+          set -euo pipefail
+          uds run --list | tee /tmp/uds-tasks.txt
+          if ! grep -Eq '(^|[[:space:]])bundle([[:space:]]|$)' /tmp/uds-tasks.txt; then
+            echo "::error file=tasks.yaml::`uds run --list` does not include a `bundle` task"
+            exit 1
+          fi
+          echo "OK: bundle task is listed by uds run --list"
+
+      - name: Assert the start task routes to the bundle task
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys, yaml
+          doc = yaml.safe_load(open("tasks.yaml"))
+          tasks = {t["name"]: t for t in (doc or {}).get("tasks", []) if "name" in t}
+          if "bundle" not in tasks:
+              sys.exit("::error file=tasks.yaml::no top-level task named 'bundle'")
+          start = tasks.get("start")
+          if not start:
+              sys.exit("::error file=tasks.yaml::no top-level task named 'start'")
+          routes = any(
+              isinstance(a, dict) and a.get("task") == "bundle"
+              for a in start.get("actions", []) or []
+          )
+          if not routes:
+              sys.exit("::error file=tasks.yaml::the 'start' task does not route to "
+                       "'bundle' (expected an action `- task: bundle`); uds run start "
+                       "and uds run bundle must share one clean-checkout build path.")
+          print("OK: start -> bundle (uds run start and uds run bundle share one build path)")
+          PY
+
+      - name: All image-pin guards passed
+        run: echo "Image pins are single-platform and the bundle build path is wired."
