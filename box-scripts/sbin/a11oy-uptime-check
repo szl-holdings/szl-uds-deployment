@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+#
+# a11oy-uptime-check — external uptime probe + port-guard intervention watcher
+# for the public a11oy.net site on Stephen's box (167.233.50.75).
+#
+# WHAT IT DOES
+#   1. Probes the public HTTPS vhosts (a11oy.net + killinchu/elite) and records
+#      an OK/DOWN state for each.
+#   2. Counts how many times /usr/local/sbin/a11oy-port-guard had to INTERVENE
+#      since the previous run (parsed from its systemd journal) so repeated port
+#      grabs become visible even though the guard recovers the site silently.
+#   3. Alerts ONLY on the healthy->problem edge (transition de-dup via an md5
+#      signature of the current problem set), not every cycle. A persisting
+#      problem is logged quietly; a return to health logs RECOVERED.
+#
+# NOTIFICATION
+#   SMS is NOT wired on this box (no Gmail/nodemailer transport here, unlike the
+#   5.161.81.107 box). So the wired notification path is a clearly-named LOG plus
+#   a machine-readable STATUS FILE:
+#       log    -> /var/log/a11oy-uptime/a11oy-uptime.log
+#       status -> /var/lib/a11oy-uptime/status.json
+#   If/when SMS is added, set NOTIFY_CMD to a command that accepts the alert text
+#   on stdin (it is invoked on every edge alert / recovery). It must respect the
+#   standing "recurring alerts = Rosa only" policy — see memory sms-alerts-on-hetzner.md.
+#
+# Idempotent and safe to run on a short timer.
+set -uo pipefail
+
+# ---- config (overridable via env for testing) -------------------------------
+HOSTS="${HOSTS:-a11oy.net killinchu.a11oy.net elite.a11oy.net}"
+GUARD_UNIT="${GUARD_UNIT:-a11oy-port-guard.service}"
+STATE_DIR="${STATE_DIR:-/var/lib/a11oy-uptime}"
+LOG_DIR="${LOG_DIR:-/var/log/a11oy-uptime}"
+LOG="${LOG:-$LOG_DIR/a11oy-uptime.log}"
+STATUS="${STATUS:-$STATE_DIR/status.json}"
+SIG_FILE="${SIG_FILE:-$STATE_DIR/problem.sig}"
+LASTRUN_FILE="${LASTRUN_FILE:-$STATE_DIR/lastrun.epoch}"
+CURL_TIMEOUT="${CURL_TIMEOUT:-15}"
+NOTIFY_CMD="${NOTIFY_CMD:-}"          # optional external notifier (stdin = message)
+ALERT_PREFIX="${ALERT_PREFIX:-}"      # e.g. "[TEST-ignore] " to test without alarming
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
+
+now_epoch=$(date +%s)
+now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+log() { printf '%s %s\n' "$now_iso" "$*" >>"$LOG"; }
+
+# ---- 1. probe each host -----------------------------------------------------
+declare -A CODE
+declare -A OK
+down_hosts=()
+for h in $HOSTS; do
+  code=$(curl -sS -L -o /dev/null -w '%{http_code}' --max-time "$CURL_TIMEOUT" "https://$h/" 2>/dev/null)
+  [ -z "$code" ] && code="000"
+  CODE["$h"]="$code"
+  if [ "$code" -ge 200 ] 2>/dev/null && [ "$code" -lt 400 ] 2>/dev/null; then
+    OK["$h"]=1
+  else
+    OK["$h"]=0
+    down_hosts+=("$h")
+  fi
+done
+
+# ---- 2. count port-guard interventions since last run -----------------------
+# Window starts at the previous run (or the last 10 min on first run).
+if [ -r "$LASTRUN_FILE" ]; then
+  since_epoch=$(cat "$LASTRUN_FILE" 2>/dev/null)
+fi
+case "${since_epoch:-}" in
+  ''|*[!0-9]*) since_epoch=$(( now_epoch - 600 )) ;;
+esac
+recent_interventions=$(journalctl -u "$GUARD_UNIT" --since "@$since_epoch" --no-pager 2>/dev/null | grep -c 'intervening')
+hour_interventions=$(journalctl -u "$GUARD_UNIT" --since "@$(( now_epoch - 3600 ))" --no-pager 2>/dev/null | grep -c 'intervening')
+case "$recent_interventions" in ''|*[!0-9]*) recent_interventions=0 ;; esac
+case "$hour_interventions" in ''|*[!0-9]*) hour_interventions=0 ;; esac
+
+# ---- 3. build the problem set ----------------------------------------------
+problems=()
+for h in "${down_hosts[@]:-}"; do
+  [ -n "$h" ] && problems+=("DOWN $h (http=${CODE[$h]})")
+done
+if [ "$recent_interventions" -gt 0 ]; then
+  problems+=("PORT-GUARD intervened ${recent_interventions} time(s) since last check (${hour_interventions} in last hour)")
+fi
+
+# ---- write the status file (always) ----------------------------------------
+overall="OK"
+[ "$recent_interventions" -gt 0 ] && overall="DEGRADED"
+[ "${#down_hosts[@]}" -gt 0 ] && [ -n "${down_hosts[0]:-}" ] && overall="DOWN"
+
+{
+  printf '{\n'
+  printf '  "checked_at": "%s",\n' "$now_iso"
+  printf '  "overall": "%s",\n' "$overall"
+  printf '  "hosts": {\n'
+  first=1
+  for h in $HOSTS; do
+    [ $first -eq 0 ] && printf ',\n'
+    first=0
+    st="OK"; [ "${OK[$h]}" -eq 0 ] && st="DOWN"
+    printf '    "%s": { "http": "%s", "status": "%s" }' "$h" "${CODE[$h]}" "$st"
+  done
+  printf '\n  },\n'
+  printf '  "port_guard": { "interventions_since_last_check": %s, "interventions_last_hour": %s },\n' \
+    "$recent_interventions" "$hour_interventions"
+  printf '  "alerting": %s\n' "$( [ "${#problems[@]}" -gt 0 ] && [ -n "${problems[0]:-}" ] && echo true || echo false )"
+  printf '}\n'
+} >"$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
+
+# ---- 4. transition de-dup + alert ------------------------------------------
+prev_sig=""
+[ -r "$SIG_FILE" ] && prev_sig=$(cat "$SIG_FILE" 2>/dev/null)
+
+# push(): fire the external notifier (stdin = message). Fail-soft — a missing or
+# broken notifier never hides the edge, which is always recorded in the log too.
+push() {
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed"
+}
+
+emit_alert() {
+  local body="$1"
+  log "ALERT $body"
+  push "$body"
+}
+
+if [ "${#problems[@]}" -eq 0 ] || [ -z "${problems[0]:-}" ]; then
+  # healthy now
+  if [ -n "$prev_sig" ]; then
+    recovered_msg="a11oy.net RECOVERED: checks healthy again (all hosts OK, no new port-guard interventions)"
+    log "RECOVERED a11oy.net checks healthy again (all hosts OK, no new port-guard interventions)"
+    push "$recovered_msg"
+    rm -f "$SIG_FILE"
+  fi
+else
+  # problems present
+  problem_text=$(printf '%s; ' "${problems[@]}")
+  cur_sig=$(printf '%s\n' "${problems[@]}" | sort | md5sum | awk '{print $1}')
+  if [ "$cur_sig" = "$prev_sig" ]; then
+    log "(persisting) ${problem_text%; }"
+  else
+    emit_alert "a11oy.net monitor: ${problem_text%; }"
+    printf '%s' "$cur_sig" >"$SIG_FILE"
+  fi
+fi
+
+# heartbeat: always record the current state so the log proves the monitor is
+# alive and carries an OK/DOWN history (edges above are logged distinctly).
+host_summary=""
+for h in $HOSTS; do
+  st="OK"; [ "${OK[$h]}" -eq 0 ] && st="${CODE[$h]}"
+  host_summary="${host_summary}${h}=${st} "
+done
+log "STATE overall=$overall ${host_summary}guard_interventions=$recent_interventions"
+
+# record run timestamp for the next interval's journal window
+printf '%s' "$now_epoch" >"$LASTRUN_FILE"
+exit 0

@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+#
+# a11oy-uptime-notify — push a REAL notification (not just a log) when the
+# a11oy.net uptime monitor fires an edge alert / RECOVERED on Stephen's box
+# (167.233.50.75).
+#
+# CONTRACT (matches a11oy-uptime-check's NOTIFY_CMD hook):
+#   The alert text arrives on STDIN. We push it to whatever channel(s) are
+#   configured and exit 0 if at least one delivery succeeded, non-zero
+#   otherwise. It is deliberately FAIL-SOFT: if nothing is configured (or a
+#   send fails) the monitor still records the alert in its own log + status
+#   file, so a missing/broken notifier can never hide an outage.
+#
+# WHY NOT SMS/EMAIL: this box has no Gmail/nodemailer transport (unlike the
+# 5.161.81.107 box) and outbound TCP 465 is firewalled on Hetzner. ntfy and
+# Telegram only need outbound HTTPS via curl, which is always present here.
+#
+# CONFIGURE: drop the credentials in an env file (default /etc/a11oy-uptime.env,
+# override with A11OY_UPTIME_ENV). Real environment variables take precedence
+# over the file. Set ONE or more channels — they all fire independently:
+#
+#   # ntfy (recommended — no account; just subscribe to the topic on your phone)
+#   NTFY_URL=https://ntfy.sh/a11oy-uptime-<pick-something-unguessable>
+#   NTFY_TOKEN=            # optional bearer token for a protected/self-hosted ntfy
+#   NTFY_PRIORITY=high     # optional (default high)
+#
+#   # Telegram bot
+#   TELEGRAM_BOT_TOKEN=123456:abc...
+#   TELEGRAM_CHAT_ID=987654321
+#
+#   # Slack / Discord incoming webhook (set WEBHOOK_KIND=discord for Discord)
+#   WEBHOOK_URL=https://hooks.slack.com/services/...
+#   WEBHOOK_KIND=slack
+#
+# Recurring-alert policy: the monitor only invokes this on the healthy->problem
+# EDGE and on RECOVERED (it de-dups persisting problems), so this respects the
+# standing "recurring alerts = Rosa only" rule by construction — it does not
+# re-fire every cycle. See memory sms-alerts-on-hetzner.md.
+set -uo pipefail
+
+ENV_FILE="${A11OY_UPTIME_ENV:-/etc/a11oy-uptime.env}"
+
+# Load KEY=VALUE lines from the env file, but never clobber a value that is
+# already set in the real environment (env > file precedence).
+if [ -r "$ENV_FILE" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|'#'*) continue ;;
+    esac
+    key=${line%%=*}
+    val=${line#*=}
+    # trim surrounding whitespace + matching quotes
+    key="$(printf '%s' "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    val="$(printf '%s' "$val" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    case "$key" in ''|*[!A-Za-z0-9_]*) continue ;; esac
+    case "$val" in
+      \"*\") val=${val#\"}; val=${val%\"} ;;
+      \'*\') val=${val#\'}; val=${val%\'} ;;
+    esac
+    if [ -z "${!key:-}" ]; then
+      export "$key=$val"
+    fi
+  done < "$ENV_FILE"
+fi
+
+# Read the alert text from stdin (NOTIFY_CMD contract); fall back to argv.
+MSG="$(cat 2>/dev/null)"
+[ -z "$MSG" ] && MSG="${1:-}"
+MSG="$(printf '%s' "$MSG" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+[ -z "$MSG" ] && MSG="a11oy.net uptime alert"
+
+CURL_TIMEOUT="${NOTIFY_CURL_TIMEOUT:-15}"
+sent=0
+configured=0
+
+json_escape() {
+  # Escape a string for embedding inside a JSON double-quoted value.
+  printf '%s' "$1" | python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))' 2>/dev/null && return 0
+  # Fallback if python3 is unavailable: handle \ " and newlines.
+  local s="$1"
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}
+  printf '"%s"' "$s"
+}
+
+# ---- ntfy -------------------------------------------------------------------
+if [ -n "${NTFY_URL:-}" ]; then
+  configured=1
+  set -- -fsS -m "$CURL_TIMEOUT" \
+    -H "Title: ${NOTIFY_TITLE:-a11oy.net uptime}" \
+    -H "Priority: ${NTFY_PRIORITY:-high}" \
+    -H "Tags: warning,satellite"
+  [ -n "${NTFY_TOKEN:-}" ] && set -- "$@" -H "Authorization: Bearer ${NTFY_TOKEN}"
+  if curl "$@" -d "$MSG" "$NTFY_URL" >/dev/null 2>&1; then
+    echo "[uptime-notify] ntfy: delivered"
+    sent=1
+  else
+    echo "[uptime-notify] ntfy: send FAILED ($NTFY_URL)" >&2
+  fi
+fi
+
+# ---- Telegram ---------------------------------------------------------------
+if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+  configured=1
+  if curl -fsS -m "$CURL_TIMEOUT" \
+        --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+        --data-urlencode "text=${MSG}" \
+        --data-urlencode "disable_web_page_preview=true" \
+        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" >/dev/null 2>&1; then
+    echo "[uptime-notify] telegram: delivered"
+    sent=1
+  else
+    echo "[uptime-notify] telegram: send FAILED" >&2
+  fi
+fi
+
+# ---- Slack / Discord incoming webhook --------------------------------------
+if [ -n "${WEBHOOK_URL:-}" ]; then
+  configured=1
+  esc="$(json_escape "$MSG")"
+  case "${WEBHOOK_KIND:-slack}" in
+    discord) payload="{\"content\": ${esc}}" ;;
+    *)       payload="{\"text\": ${esc}}" ;;
+  esac
+  if curl -fsS -m "$CURL_TIMEOUT" -H 'Content-Type: application/json' \
+        -d "$payload" "$WEBHOOK_URL" >/dev/null 2>&1; then
+    echo "[uptime-notify] webhook: delivered"
+    sent=1
+  else
+    echo "[uptime-notify] webhook: send FAILED" >&2
+  fi
+fi
+
+if [ "$configured" -eq 0 ]; then
+  echo "[uptime-notify] no channel configured (set NTFY_URL / TELEGRAM_* / WEBHOOK_URL in $ENV_FILE); alert was logged only" >&2
+  exit 2
+fi
+[ "$sent" -eq 1 ] && exit 0
+echo "[uptime-notify] all configured channels failed; alert was logged only" >&2
+exit 1

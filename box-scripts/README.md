@@ -250,3 +250,101 @@ kubectl -n szl-receipts scale deploy szl-receipts-server --replicas=0 && sleep 1
 ALERT_PREFIX="[TEST-ignore] " /usr/local/sbin/receipt-chain-watch
 kubectl -n szl-receipts scale deploy szl-receipts-server --replicas=1
 ```
+
+---
+
+# box-scripts (part 4) — a11oy.net public-site alerting watchers
+
+The final pair of host-level watchers on box `167.233.50.75` alert when the
+**public a11oy.net site** goes down or when its **DNS stops pointing at the
+box**. Together with the shared notifier below they make sure an outage or a
+registrar/DNS change is pushed to Stephen instead of being noticed by accident.
+Like the scripts above they live ONLY at `/usr/local/sbin` +
+`/etc/systemd/system` on the box and are **not** otherwise under version control
+(longer-form monorepo copies also exist under `deploy/hetzner/a11oy-uptime/` and
+`deploy/hetzner/dns-drift/`), so restore them from here after a rebuild.
+
+## Files
+
+```
+sbin/
+  a11oy-uptime-check          # probe a11oy.net uptime, alert on the outage edge
+  a11oy-uptime-notify         # shared push notifier (ntfy / Telegram / webhook)
+  dns-drift-check             # alert if a11oy.net DNS drifts off the box
+systemd/
+  a11oy-uptime-check.service  # oneshot: runs a11oy-uptime-check (+ notifier env)
+  a11oy-uptime-check.timer    # ~3 min after boot, then every 5 min
+  dns-drift-check.service     # oneshot: runs dns-drift-check (+ notifier env)
+  dns-drift-check.timer       # ~4 min after boot, then every 15 min
+```
+
+- **`a11oy-uptime-check`** — probes the public a11oy.net endpoints and also
+  watches for port-guard interventions; alerts on the healthy→down edge and once
+  on RECOVERED (edge-triggered + de-duped), never every cycle.
+- **`dns-drift-check`** — queries a PUBLIC resolver (`dig @8.8.8.8`, never the
+  box's own) for the apex/www/killinchu/elite A records (== `167.233.50.75`),
+  the apex SPF `v=spf1 -all`, and `_dmarc` `p=reject`. Edge-triggered + de-duped
+  the same way. (Trap baked into the script: a `grep` whose needle starts with
+  `-`, such as the SPF `-all`, must use `grep -e "$pat"` or it is parsed as
+  options and falsely reports drift.) A one-command DNS restore lives separately
+  at `/opt/dns/dns-drift-reapply.sh` on the box.
+- **`a11oy-uptime-notify`** — the single shared push notifier used by BOTH
+  watchers above AND by `receipt-chain-watch` (part 3). It is curl-only and
+  reads its channel (ntfy / Telegram / Slack-Discord webhook) from
+  `/etc/a11oy-uptime.env`. It is fail-soft: with no channel configured it just
+  exits and the alert is still logged.
+
+## The push channel (`/etc/a11oy-uptime.env`)
+
+The alert channel is a **private secret** (an ntfy topic, a Telegram token,
+etc.) and is deliberately **not** kept in this public repo. The units reference
+it as an OPTIONAL `EnvironmentFile=-/etc/a11oy-uptime.env`, so the watchers run
+in **log-only** mode until the channel is restored. `install.sh` seeds a
+commented-out stub at `/etc/a11oy-uptime.env` if the file is absent (never
+clobbering a hand-filled one) so the path exists and the operator knows where
+the channel lives. To actually restore the live channel after a wipe, use the
+richer installer that supports pulling a saved env or discrete vars:
+
+```bash
+# from deploy/hetzner/a11oy-uptime/ (monorepo), with the saved secret env:
+sudo VERIFY_PUSH=1 A11OY_UPTIME_ENV_SRC=/root/a11oy-uptime.env.secret bash install.sh
+# or set a discrete channel, e.g. NTFY_URL=https://ntfy.sh/a11oy-uptime-XXXX
+```
+
+## Reinstall
+
+The top-level `./install.sh` installs and enables these watchers along with the
+others. To (re)install just these manually:
+
+```bash
+sudo install -m 0755 sbin/a11oy-uptime-check  /usr/local/sbin/a11oy-uptime-check
+sudo install -m 0755 sbin/a11oy-uptime-notify /usr/local/sbin/a11oy-uptime-notify
+sudo install -m 0755 sbin/dns-drift-check     /usr/local/sbin/dns-drift-check
+sudo install -m 0644 systemd/a11oy-uptime-check.service /etc/systemd/system/
+sudo install -m 0644 systemd/a11oy-uptime-check.timer   /etc/systemd/system/
+sudo install -m 0644 systemd/dns-drift-check.service    /etc/systemd/system/
+sudo install -m 0644 systemd/dns-drift-check.timer      /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now a11oy-uptime-check.timer dns-drift-check.timer
+```
+
+## Verify
+
+```bash
+systemctl is-enabled a11oy-uptime-check.timer dns-drift-check.timer
+# Force a DNS-drift edge (safe, reversible) and confirm the push fires:
+EXPECT_IP=10.0.0.1 ALERT_PREFIX="[TEST-ignore] " \
+  NOTIFY_CMD=/usr/local/sbin/a11oy-uptime-notify NOTIFY_TITLE="a11oy.net DNS" \
+  /usr/local/sbin/dns-drift-check
+rm -f /var/lib/dns-drift/problem.sig    # clear the test edge afterwards
+```
+
+## Notes
+
+- Background + rationale lives in the monorepo memory notes
+  `dns-drift-watcher.md` and `a11oy-uptime-channel-restore.md`, and in the
+  fuller monorepo copies under `deploy/hetzner/a11oy-uptime/` /
+  `deploy/hetzner/dns-drift/` (which also carry the logrotate config and an
+  `a11oy-uptime.env.example`).
+- SMS/email is intentionally NOT used on this box: it has no Gmail/nodemailer
+  transport and outbound TCP 465 is firewalled, so ntfy push IS the alert path.

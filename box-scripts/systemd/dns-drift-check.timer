@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodically check a11oy.net DNS for drift (A records + SPF + DMARC)
+
+[Timer]
+# First check shortly after boot, then every 15 minutes thereafter.
+OnBootSec=4min
+OnUnitActiveSec=15min
+AccuracySec=30s
+Persistent=true
+Unit=dns-drift-check.service
+
+[Install]
+WantedBy=timers.target

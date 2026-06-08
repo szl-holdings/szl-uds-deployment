@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically probe a11oy.net uptime and watch port-guard interventions
+
+[Timer]
+# First check shortly after boot, then every 5 minutes thereafter.
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=20s
+Unit=a11oy-uptime-check.service
+
+[Install]
+WantedBy=timers.target

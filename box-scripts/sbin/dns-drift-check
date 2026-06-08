@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+#
+# dns-drift-check — watch a11oy.net's public DNS for drift on Stephen's box
+# (167.233.50.75). EasyWP silently grabbed the apex once (an ALIAS to
+# ingress-euterpe.easywp.com + a www CNAME + email-forwarding MX), which would
+# have quietly taken the public site offline. Now that DNS is under programmatic
+# control (Namecheap API, /opt/dns/namecheap-dns.py) this watcher detects drift
+# and warns before users notice.
+#
+# WHAT IT CHECKS (all via a PUBLIC resolver, dig @8.8.8.8 — never the box's own):
+#   1. a11oy.net, www, killinchu, elite each still A-resolve to 167.233.50.75.
+#   2. SPF  "v=spf1 ... -all"  is still present on the apex TXT.
+#   3. DMARC "p=reject"        is still present on _dmarc TXT.
+#
+# ALERTING
+#   Alerts ONLY on the healthy->problem edge (transition de-dup via an md5
+#   signature of the current problem set), so a persisting drift does not spam.
+#   A return to health logs RECOVERED and clears the signature so a fresh drift
+#   re-alerts. This mirrors the env-drift / a11oy-uptime monitors.
+#
+#   The notification path is always: a clearly-named LOG + a machine-readable
+#   STATUS FILE. On top of that it sends a REAL push on every drift edge /
+#   RECOVERED via the SAME notifier the a11oy-uptime monitor uses
+#   (/usr/local/sbin/a11oy-uptime-notify -> ntfy / Telegram / Slack-Discord
+#   webhook), wired through NOTIFY_CMD in the service unit. SMS/email is NOT used
+#   here (no Gmail/nodemailer transport on this box; outbound TCP 465 is
+#   firewalled). NOTIFY_CMD reads the alert text on stdin and is fail-soft. The
+#   monitor only fires on the healthy->drift EDGE and on RECOVERED (persisting
+#   drift is de-duped), so it respects the standing "recurring alerts = the owner
+#   only" policy by construction — see memory sms-alerts-on-hetzner.md.
+#
+# Idempotent and safe to run on a short timer.
+set -uo pipefail
+
+# ---- config (overridable via env for testing) -------------------------------
+EXPECT_IP="${EXPECT_IP:-167.233.50.75}"
+RESOLVER="${RESOLVER:-8.8.8.8}"
+DOMAIN="${DOMAIN:-a11oy.net}"
+# Hostnames that must A-resolve to the box.
+HOSTS="${HOSTS:-a11oy.net www.a11oy.net killinchu.a11oy.net elite.a11oy.net}"
+# Substrings that must appear (case-insensitive) in the relevant TXT records.
+EXPECT_SPF="${EXPECT_SPF:-v=spf1}"          # plus the -all hard-fail below
+EXPECT_SPF_ALL="${EXPECT_SPF_ALL:--all}"
+EXPECT_DMARC="${EXPECT_DMARC:-p=reject}"
+
+STATE_DIR="${STATE_DIR:-/var/lib/dns-drift}"
+LOG_DIR="${LOG_DIR:-/var/log/dns-drift}"
+LOG="${LOG:-$LOG_DIR/dns-drift.log}"
+STATUS="${STATUS:-$STATE_DIR/status.json}"
+SIG_FILE="${SIG_FILE:-$STATE_DIR/problem.sig}"
+DIG_TIMEOUT="${DIG_TIMEOUT:-5}"
+NOTIFY_CMD="${NOTIFY_CMD:-}"          # optional external notifier (stdin = message)
+ALERT_PREFIX="${ALERT_PREFIX:-}"      # e.g. "[TEST-ignore] " to test without alarming
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
+
+now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+log() { printf '%s %s\n' "$now_iso" "$*" >>"$LOG"; }
+
+dig_one() { dig +short +time="$DIG_TIMEOUT" +tries=2 @"$RESOLVER" "$@" 2>/dev/null; }
+
+# ---- 1. A-record checks -----------------------------------------------------
+declare -A AREC
+problems=()
+for h in $HOSTS; do
+  ans=$(dig_one A "$h" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort | tr '\n' ' ')
+  ans="${ans% }"
+  AREC["$h"]="$ans"
+  if [ -z "$ans" ]; then
+    problems+=("$h: NO A record resolved")
+  elif ! printf '%s\n' "$ans" | tr ' ' '\n' | grep -qx "$EXPECT_IP"; then
+    problems+=("$h: A=$ans expected $EXPECT_IP")
+  fi
+done
+
+# ---- 2. SPF check (apex TXT contains v=spf1 ... -all) ------------------------
+spf_txt=$(dig_one TXT "$DOMAIN" | tr -d '"' | tr '\n' ' ')
+spf_ok=0
+if printf '%s' "$spf_txt" | grep -qiF -e "$EXPECT_SPF" && printf '%s' "$spf_txt" | grep -qiF -e "$EXPECT_SPF_ALL"; then
+  spf_ok=1
+else
+  problems+=("SPF missing '${EXPECT_SPF} ${EXPECT_SPF_ALL}' on $DOMAIN (got: ${spf_txt:-<none>})")
+fi
+
+# ---- 3. DMARC check (_dmarc TXT contains p=reject) --------------------------
+dmarc_txt=$(dig_one TXT "_dmarc.$DOMAIN" | tr -d '"' | tr '\n' ' ')
+dmarc_ok=0
+if printf '%s' "$dmarc_txt" | grep -qiF "$EXPECT_DMARC"; then
+  dmarc_ok=1
+else
+  problems+=("DMARC missing '${EXPECT_DMARC}' on _dmarc.$DOMAIN (got: ${dmarc_txt:-<none>})")
+fi
+
+# ---- write the status file (always) ----------------------------------------
+overall="OK"; [ "${#problems[@]}" -gt 0 ] && [ -n "${problems[0]:-}" ] && overall="DRIFT"
+{
+  printf '{\n'
+  printf '  "checked_at": "%s",\n' "$now_iso"
+  printf '  "resolver": "%s",\n' "$RESOLVER"
+  printf '  "expect_ip": "%s",\n' "$EXPECT_IP"
+  printf '  "overall": "%s",\n' "$overall"
+  printf '  "hosts": {\n'
+  first=1
+  for h in $HOSTS; do
+    [ $first -eq 0 ] && printf ',\n'; first=0
+    st="OK"; printf '%s\n' "${AREC[$h]}" | tr ' ' '\n' | grep -qx "$EXPECT_IP" || st="DRIFT"
+    printf '    "%s": { "a": "%s", "status": "%s" }' "$h" "${AREC[$h]}" "$st"
+  done
+  printf '\n  },\n'
+  printf '  "spf":   { "status": "%s", "value": "%s" },\n' "$( [ $spf_ok -eq 1 ] && echo OK || echo DRIFT )" "${spf_txt//\"/}"
+  printf '  "dmarc": { "status": "%s", "value": "%s" },\n' "$( [ $dmarc_ok -eq 1 ] && echo OK || echo DRIFT )" "${dmarc_txt//\"/}"
+  printf '  "alerting": %s\n' "$( [ "${#problems[@]}" -gt 0 ] && [ -n "${problems[0]:-}" ] && echo true || echo false )"
+  printf '}\n'
+} >"$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
+
+# ---- transition de-dup + alert ---------------------------------------------
+prev_sig=""; [ -r "$SIG_FILE" ] && prev_sig=$(cat "$SIG_FILE" 2>/dev/null)
+
+# push(): fire the external notifier (stdin = message). Fail-soft — a missing or
+# broken notifier never hides the edge, which is always recorded in the log too.
+push() {
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed"
+}
+
+emit_alert() {
+  local body="$1"
+  log "ALERT $body"
+  push "$body"
+}
+
+if [ "${#problems[@]}" -eq 0 ] || [ -z "${problems[0]:-}" ]; then
+  if [ -n "$prev_sig" ]; then
+    rec="a11oy.net DNS healthy again (all A->$EXPECT_IP, SPF -all + DMARC p=reject present)"
+    log "RECOVERED $rec"
+    push "a11oy.net DNS RECOVERED: $rec"
+    rm -f "$SIG_FILE"
+  fi
+else
+  problem_text=$(printf '%s; ' "${problems[@]}"); problem_text="${problem_text%; }"
+  cur_sig=$(printf '%s\n' "${problems[@]}" | sort | md5sum | awk '{print $1}')
+  if [ "$cur_sig" = "$prev_sig" ]; then
+    log "(persisting) $problem_text"
+  else
+    emit_alert "a11oy.net DNS DRIFT: $problem_text. Re-apply clean set: /opt/dns/dns-drift-reapply.sh"
+    printf '%s' "$cur_sig" >"$SIG_FILE"
+  fi
+fi
+
+# heartbeat: prove the monitor is alive + carry an OK/DRIFT history.
+host_summary=""
+for h in $HOSTS; do
+  st="ok"; printf '%s\n' "${AREC[$h]}" | tr ' ' '\n' | grep -qx "$EXPECT_IP" || st="DRIFT(${AREC[$h]:-none})"
+  host_summary="${host_summary}${h}=${st} "
+done
+log "STATE overall=$overall ${host_summary}spf=$( [ $spf_ok -eq 1 ] && echo ok || echo DRIFT) dmarc=$( [ $dmarc_ok -eq 1 ] && echo ok || echo DRIFT)"
+exit 0
