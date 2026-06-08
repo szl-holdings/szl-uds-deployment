@@ -19,7 +19,7 @@ and a proven pull-back **and deploy** round-trip from the registry.
 
 ```bash
 cosign verify ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream \
-  --certificate-identity-regexp 'zarf-package-sign.yml' \
+  --certificate-identity "https://github.com/szl-holdings/szl-uds-deployment/.github/workflows/zarf-package-sign.yml@refs/heads/main" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 # => "signatures were verified against the certificate" (Rekor transparency log: Verified OK)
 
@@ -100,7 +100,7 @@ and `cosign sign`s the published OCI ref). Verify with **no key file**:
 
 ```bash
 cosign verify ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream \
-  --certificate-identity-regexp 'zarf-package-sign.yml' \
+  --certificate-identity "https://github.com/szl-holdings/szl-uds-deployment/.github/workflows/zarf-package-sign.yml@refs/heads/main" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 # => signatures verified against the cert; transparency log: Verified OK   ✅
 
@@ -219,7 +219,7 @@ These steps need credentials/secrets only Stephen holds; everything else is in
    ```bash
    docker logout ghcr.io
    cosign verify ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream \
-     --certificate-identity-regexp 'zarf-package-sign.yml' \
+     --certificate-identity "https://github.com/szl-holdings/szl-uds-deployment/.github/workflows/zarf-package-sign.yml@refs/heads/main" \
      --certificate-oidc-issuer https://token.actions.githubusercontent.com
    ```
 5. **Version-lock** the package's `uds-v0.4.0` image reference vs the GHCR

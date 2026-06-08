@@ -155,7 +155,7 @@ jobs:
       # (what outsiders actually pull) is cosign-signed keyless via GitHub OIDC,
       # exactly like the receipts *image* (receipts-server-image.yml). No private
       # key is ever stored, and no public key needs to be committed — verifiers
-      # use --certificate-identity-regexp + --certificate-oidc-issuer only.
+      # use --certificate-identity + --certificate-oidc-issuer only.
       - name: Publish szl-receipts package to GHCR + keyless-sign (OCI)
         env:
           COSIGN_EXPERIMENTAL: "1"
@@ -201,7 +201,7 @@ jobs:
 
           echo "PUBLISHED_REF=${REF}" >> "$GITHUB_ENV"
 
-          CERT_ID_REGEXP="zarf-package-sign.yml"
+          CERT_IDENTITY="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/zarf-package-sign.yml@refs/heads/main"
           CERT_ISSUER="https://token.actions.githubusercontent.com"
           cat >> "${GITHUB_STEP_SUMMARY}" <<SUMMARY
           ### Published + keyless-signed OCI package
@@ -211,7 +211,7 @@ jobs:
           Verify (no key file, no login once the package is public):
           \`\`\`bash
           cosign verify ${REF} \\
-            --certificate-identity-regexp '${CERT_ID_REGEXP}' \\
+            --certificate-identity "${CERT_IDENTITY}" \\
             --certificate-oidc-issuer ${CERT_ISSUER}
           \`\`\`
           SUMMARY

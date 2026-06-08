@@ -51,7 +51,7 @@ signature. The published OCI package is signed **keyless via GitHub OIDC** in CI
 # 1. Verify the published package signature keyless (pulls only manifest + sig).
 #    No key file — identity is the signing workflow, issued by Fulcio, logged to Rekor.
 cosign verify ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream \
-  --certificate-identity-regexp 'zarf-package-sign.yml' \
+  --certificate-identity "https://github.com/szl-holdings/szl-uds-deployment/.github/workflows/zarf-package-sign.yml@refs/heads/main" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
 # 2. (optional) Pull the full self-contained airgap package (~220 MB) for offline deploy
