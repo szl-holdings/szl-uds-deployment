@@ -1,20 +1,20 @@
 # Copyright 2026 SZL Holdings
 # SPDX-License-Identifier: Apache-2.0
 #
-# clean-deploy-guard.yml — Guard the four szl-receipts clean-deploy invariants.
+# clean-deploy-guard.yml — Guard the szl-receipts clean-deploy invariants.
 #
 # The "clean from-scratch deploy" property of szl-receipts (a single
-# `zarf package deploy` that comes up Ready + signed with ZERO manual kubectl)
-# lives in exactly four files. They were once found SILENTLY REGRESSED on
-# origin/main (ns pepr-system, two-file key.priv/key.pub, no exemption manifest,
-# image uds-v0.3.1) while a correct copy only existed on the box working tree —
-# a fresh clone would have reintroduced the unsigned-server / ErrImagePull
-# failures.
+# `zarf package deploy` that comes up Ready + signed + rightsized with ZERO
+# manual kubectl) lives in exactly five places. Several were once found
+# SILENTLY REGRESSED on origin/main (ns pepr-system, two-file key.priv/key.pub,
+# no exemption manifest, image uds-v0.3.1) while a correct copy only existed on
+# the box working tree — a fresh clone would have reintroduced the
+# unsigned-server / ErrImagePull / CPU-Pending-storm failures.
 #
 # This workflow fails the build (loudly) if any PR or push regresses one of the
-# four invariants below. It is a pure grep/text check — no cluster needed.
+# invariants below. It is a pure grep/awk text check — no cluster needed.
 #
-# The four invariants:
+# The invariants:
 #   1. charts/szl-key-init/values.yaml          -> namespace: szl-receipts
 #   2. charts/szl-key-init/templates/keygen-job.yaml
 #                                               -> single --from-file=ed25519.pem=
@@ -24,9 +24,18 @@
 #                                                  RequireNonRootUser, matcher
 #                                                  ^szl-key-init.* in ns
 #                                                  szl-receipts
-#   4. packages/szl-receipts/zarf.yaml           -> szl-key-init-exemption is the
-#                                                  FIRST component AND the server
-#                                                  image tag is uds-v0.4.0
+#   4. packages/szl-receipts/zarf.yaml           -> szl-key-init-exemption is
+#                                                  ordered BEFORE szl-key-init
+#                                                  AND the server image tag is
+#                                                  uds-v0.4.0
+#   5. packages/szl-receipts/zarf.yaml           -> szl-core-rightsize is the
+#                                                  FIRST component with an
+#                                                  onDeploy.before action that
+#                                                  pins pepr-uds-core +
+#                                                  zarf agent-hook to replicas=1,
+#                                                  gated on the
+#                                                  SMALL_SERVER_RIGHTSIZE var
+#                                                  (default true)
 
 name: Clean Deploy Guard
 
@@ -108,15 +117,16 @@ jobs:
             || { echo "::error file=$F::REGRESSION — matcher name not '^szl-key-init.*'."; exit 1; }
           echo "OK: $F is a UDS Exemption (RequireNonRootUser, ^szl-key-init.* in ns szl-receipts)"
 
-      - name: Invariant 4 — exemption is the FIRST component & image tag is uds-v0.4.0
+      - name: Invariant 4 — exemption ordered before key-init & image tag is uds-v0.4.0
         run: |
           set -euo pipefail
           F="packages/szl-receipts/zarf.yaml"
           test -f "$F" || { echo "::error file=$F::missing — required for clean deploy"; exit 1; }
-          # The first component (first `- name:` under the top-level `components:`
-          # block) must be szl-key-init-exemption, so the Exemption is admitted
-          # BEFORE the root keygen Job runs.
-          FIRST_COMPONENT="$(awk '
+          # Extract the ORDERED list of top-level component names. The Exemption no
+          # longer needs to be literally first (szl-core-rightsize precedes it now,
+          # see Invariant 5), but it MUST still be admitted before the root keygen
+          # Job runs — i.e. szl-key-init-exemption must come BEFORE szl-key-init.
+          COMPONENTS="$(awk '
             /^components:[[:space:]]*$/ { in_c=1; next }
             in_c && /^[^[:space:]#]/   { exit }          # left the components block
             in_c && /^[[:space:]]*-[[:space:]]*name:/ {
@@ -124,13 +134,23 @@ jobs:
               sub(/^[[:space:]]*-[[:space:]]*name:[[:space:]]*/, "", line)
               gsub(/[[:space:]"\x27]/, "", line)
               print line
-              exit
             }
           ' "$F")"
-          echo "First component: '${FIRST_COMPONENT}'"
-          if [ "$FIRST_COMPONENT" != "szl-key-init-exemption" ]; then
-            echo "::error file=$F::REGRESSION — first component is '${FIRST_COMPONENT}', expected 'szl-key-init-exemption'."
-            echo "::error file=$F::If the Exemption is not first, the root keygen pod is DENIED -> UNSIGNED server."
+          echo "Components in order:"; echo "$COMPONENTS" | nl
+          EX_POS="$(printf '%s\n' "$COMPONENTS" | grep -nx 'szl-key-init-exemption' | head -1 | cut -d: -f1 || true)"
+          KI_POS="$(printf '%s\n' "$COMPONENTS" | grep -nx 'szl-key-init'           | head -1 | cut -d: -f1 || true)"
+          if [ -z "$EX_POS" ]; then
+            echo "::error file=$F::REGRESSION — szl-key-init-exemption component is MISSING."
+            echo "::error file=$F::Without it pepr-uds-core DENIES the root keygen pod -> UNSIGNED server."
+            exit 1
+          fi
+          if [ -z "$KI_POS" ]; then
+            echo "::error file=$F::REGRESSION — szl-key-init component is MISSING."
+            exit 1
+          fi
+          if [ "$EX_POS" -ge "$KI_POS" ]; then
+            echo "::error file=$F::REGRESSION — szl-key-init-exemption (pos $EX_POS) must come BEFORE szl-key-init (pos $KI_POS)."
+            echo "::error file=$F::If the Exemption is not admitted first, the root keygen pod is DENIED -> UNSIGNED server."
             exit 1
           fi
           # The server image tag must be uds-v0.4.0 (chart tag & zarf images: list
@@ -140,7 +160,67 @@ jobs:
             grep -nE 'szl-receipts-server:' "$F" || echo "(no szl-receipts-server image line)"
             exit 1
           fi
-          echo "OK: $F lists szl-key-init-exemption first and pins uds-v0.4.0"
+          echo "OK: $F orders szl-key-init-exemption (pos $EX_POS) before szl-key-init (pos $KI_POS) and pins uds-v0.4.0"
+
+      - name: Invariant 5 — born-rightsized posture is baked into the package
+        run: |
+          set -euo pipefail
+          F="packages/szl-receipts/zarf.yaml"
+          test -f "$F" || { echo "::error file=$F::missing — required for clean deploy"; exit 1; }
+          # 5a. The SMALL_SERVER_RIGHTSIZE variable must still exist, defaulting to
+          #     "true" — turning it false opts an HA cluster out of the rightsize.
+          if ! awk '
+            /^variables:[[:space:]]*$/ { in_v=1; next }
+            in_v && /^[^[:space:]#]/   { exit }          # left the variables block
+            in_v && /^[[:space:]]*-[[:space:]]*name:[[:space:]]*SMALL_SERVER_RIGHTSIZE[[:space:]]*$/ { found=1 }
+            in_v && found && /^[[:space:]]*default:[[:space:]]*"?true"?[[:space:]]*$/ { print "ok"; exit }
+          ' "$F" | grep -q ok; then
+            echo "::error file=$F::REGRESSION — variable SMALL_SERVER_RIGHTSIZE (default \"true\") not found."
+            echo "::error file=$F::Without it a fresh deploy keeps the HA replica defaults and a ~2-vCPU node stalls in a CPU Pending storm."
+            grep -nE 'SMALL_SERVER_RIGHTSIZE' "$F" || echo "(no SMALL_SERVER_RIGHTSIZE line)"
+            exit 1
+          fi
+          # 5b. szl-core-rightsize must be the FIRST component, so it frees CPU
+          #     before the heavier szl-receipts workloads schedule.
+          FIRST_COMPONENT="$(awk '
+            /^components:[[:space:]]*$/ { in_c=1; next }
+            in_c && /^[^[:space:]#]/   { exit }
+            in_c && /^[[:space:]]*-[[:space:]]*name:/ {
+              line=$0
+              sub(/^[[:space:]]*-[[:space:]]*name:[[:space:]]*/, "", line)
+              gsub(/[[:space:]"\x27]/, "", line)
+              print line
+              exit
+            }
+          ' "$F")"
+          echo "First component: '${FIRST_COMPONENT}'"
+          if [ "$FIRST_COMPONENT" != "szl-core-rightsize" ]; then
+            echo "::error file=$F::REGRESSION — first component is '${FIRST_COMPONENT}', expected 'szl-core-rightsize'."
+            echo "::error file=$F::The rightsize patch must run before the heavy receipts pods schedule, or a ~2-vCPU node stalls."
+            exit 1
+          fi
+          # 5c. The szl-core-rightsize component must carry an onDeploy.before action
+          #     that pins BOTH pepr-system/pepr-uds-core and zarf/agent-hook to
+          #     replicas=1, gated on SMALL_SERVER_RIGHTSIZE. Capture just that
+          #     component's YAML block (up to the next top-level component).
+          BLOCK="$(awk '
+            $0 ~ /^[[:space:]]*-[[:space:]]*name:[[:space:]]*szl-core-rightsize[[:space:]]*$/ { cap=1; print; next }
+            cap && /^[[:space:]]*-[[:space:]]*name:/ { exit }   # next component starts
+            cap { print }
+          ' "$F")"
+          check() {
+            if ! printf '%s\n' "$BLOCK" | grep -Eq -- "$1"; then
+              echo "::error file=$F::REGRESSION — szl-core-rightsize action: $2"
+              exit 1
+            fi
+          }
+          check 'onDeploy:'                  "no onDeploy actions block"
+          check 'before:'                    "no onDeploy.before action"
+          check 'SMALL_SERVER_RIGHTSIZE'     "no longer gated on SMALL_SERVER_RIGHTSIZE"
+          check 'pepr-system/pepr-uds-core'  "no longer targets pepr-system/pepr-uds-core"
+          check 'zarf/agent-hook'            "no longer targets zarf/agent-hook"
+          check '"replicas":[[:space:]]*1'   "no longer patches replicas=1"
+          echo "OK: szl-core-rightsize is first, gated on SMALL_SERVER_RIGHTSIZE, pins pepr-uds-core + zarf agent-hook to replicas=1"
 
       - name: All clean-deploy invariants hold
-        run: echo "All four szl-receipts clean-deploy invariants are intact."
+        run: echo "All five szl-receipts clean-deploy invariants are intact."
