@@ -1,15 +1,27 @@
 # Copyright 2026 SZL Holdings
 # SPDX-License-Identifier: Apache-2.0
 #
-# Kustomize overlay to mount the szl-receipts-ed25519 Secret into
-# Pepr admission pods so the Pepr policy can read the Ed25519 key
-# at /etc/szl-receipts-key/key.priv.
+# Kustomize overlay to mount the szl-receipts-ed25519 Secret into the Pepr
+# ADMISSION controller (pepr-szl) so the Pepr policy can read the Ed25519 key
+# at /etc/szl-receipts-key/key.priv and sign deploy receipts.
 #
-# Apply after deploying UDS Core (Pepr is deployed as part of UDS Core):
-#   kubectl apply -k kustomize/overlays/pepr-key-mount/
+# Pepr generates the pepr-szl Deployment at runtime, so it is NOT a static base
+# resource here. The reliable way to apply the patch to the live Deployment is:
+#   kubectl -n pepr-system patch deployment pepr-szl \
+#     --type=strategic --patch-file pepr-admission-key-mount.yaml
 #
-# NOTE: Pepr regenerates its Deployment spec on re-deploy. Re-apply
-# this kustomize overlay after any `npx pepr deploy` operation.
+# This kustomization records the correct patch + target selector for tooling
+# that renders the live Deployment into the overlay (e.g. `kubectl get deploy
+# pepr-szl -o yaml` piped through `kustomize build`). The previous selector
+# (app.kubernetes.io/name=module,app.kubernetes.io/part-of=szl-receipt-policy)
+# matched NOTHING — the live pepr-szl pod is labelled app=pepr-szl,
+# pepr.dev/uuid=szl, pepr.dev/controller=admission.
+#
+# AUTOMATION: Pepr regenerates its Deployment spec on every `npx pepr deploy` /
+# zarf redeploy, dropping this mount. The self-heal guard
+# /usr/local/sbin/pepr-key-mount (systemd timer pepr-key-mount.timer, every
+# 2 min, + hooked into `a11oy-mode coexist`) re-applies it automatically so
+# signing survives redeploys with zero hand-steps.
 #
 # Refs:
 #   Pepr Deep Dive: team/zarf-uds-deep-sweep/PEPR_DEEP_DIVE.md
@@ -27,4 +39,5 @@ patches:
     target:
       kind: Deployment
       namespace: pepr-system
-      labelSelector: "app.kubernetes.io/name=module,app.kubernetes.io/part-of=szl-receipt-policy"
+      name: pepr-szl
+      labelSelector: "pepr.dev/uuid=szl,pepr.dev/controller=admission"

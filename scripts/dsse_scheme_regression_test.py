@@ -4,26 +4,28 @@
 #
 # dsse_scheme_regression_test.py — lock the receipt signing/verification scheme.
 #
-# Two components in this repo must agree byte-for-byte on how a governance
-# receipt is signed:
+# As of Finding A2 / PR-4 the live szl-receipts-server signs governance receipts
+# with **Ed25519 over the canonical DSSE Pre-Authentication Encoding (PAE)**,
+# NOT HMAC and NOT over raw payload bytes. The offline verifier
+# (scripts/verify_receipts.sh) must agree byte-for-byte:
 #
-#   * pepr/policies/szl-receipt-on-deploy.ts (signer) computes
-#       HMAC-SHA-256(key, payloadBytes)
-#     where payloadBytes = Buffer.from(JSON.stringify(payload)) — the RAW
-#     JSON bytes, with NO DSSE Pre-Authentication Encoding (PAE) prefix.
+#   * server.py (signer) computes
+#       Ed25519_sign(privkey, PAE(payloadType, payloadBytes))
+#     where PAE = "DSSEv1" SP LEN(type) SP type SP LEN(body) SP body.
 #
 #   * scripts/verify_receipts.sh (verifier) computes
-#       HMAC-SHA-256(key, base64decode(envelope.payload))
-#     — again the RAW payload bytes, NO PAE.
+#       Ed25519_verify(pubkey, sig, PAE(payloadType, payloadBytes))
+#     using the PUBLIC key only.
 #
-# A separate family of demo/scenario scripts in the survival kit signs over the
-# DSSE PAE byte-string ("DSSEv1 " || len(type) || ... || payload). Those two
-# schemes are INCOMPATIBLE: a receipt produced under one fails verification
-# under the other. This test pins the in-repo scheme to RAW-no-PAE so a future
-# edit that quietly switches the signer or verifier to PAE (or vice versa) is
-# caught here instead of in the field.
+# An older family of demo scripts signed HMAC-SHA-256 over the RAW payload bytes
+# (no PAE). That scheme is INCOMPATIBLE: a receipt produced under it fails the
+# Ed25519/PAE verify, and vice-versa. This test pins the in-repo scheme to
+# Ed25519-over-PAE so any future edit that quietly reverts to HMAC, drops the
+# PAE prefix, or otherwise diverges signer↔verifier is caught here instead of in
+# the field (which is exactly the bug Replit flagged: a legacy HMAC verifier left
+# behind after the server moved to Ed25519).
 #
-# Standard library, no cluster, no network. Run:
+# Standard library + `cryptography`. No cluster, no network. Run:
 #   python3 scripts/dsse_scheme_regression_test.py
 
 from __future__ import annotations
@@ -34,16 +36,21 @@ import hmac
 import json
 import sys
 
-# Demo HMAC key used by the in-repo signer/verifier (matches the default in
-# verify_receipts.sh and the SZL_HMAC_KEY env contract). Not a production
-# secret — it is a labelled demo key carried in public source by design.
-HMAC_KEY_B64 = "c3psLWRldi1kZW1vLWtleS0yMDI2LXdhcmhhY2tlcg=="
-KEY_ID = "szl-dev-hmac-sha256-2026"
+try:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+        Ed25519PrivateKey,
+        Ed25519PublicKey,
+    )
+    from cryptography.exceptions import InvalidSignature
+except Exception:  # pragma: no cover
+    print("DSSE scheme regression: SKIP (python3 'cryptography' not installed)")
+    sys.exit(0)
+
+KEY_ID = "szl-receipts-ed25519-2026"
 PAYLOAD_TYPE = "application/vnd.szl.receipt.v1+json"
 
-# Mirrors the payload object built by the Deployment handler in the pepr policy,
-# in the same key order (JSON.stringify preserves insertion order, so order is
-# part of the signed bytes).
+# Mirrors a governance receipt payload (key order is preserved by the signer;
+# json.dumps with these separators matches the server's canonical bytes).
 SAMPLE_PAYLOAD = {
     "_type": "https://szlholdings.com/receipt/v1",
     "subject": "szl-demo-workload/Deployment/szl-demo-agent",
@@ -55,78 +62,105 @@ SAMPLE_PAYLOAD = {
 
 
 def canonical_payload_bytes(payload: dict) -> bytes:
-    """Reproduce the signer's payload bytes: Buffer.from(JSON.stringify(payload)).
-
-    JSON.stringify with no replacer/space uses comma+colon separators and
-    preserves key insertion order; json.dumps with these separators and
-    sort_keys=False matches that byte-for-byte for ASCII payloads.
-    """
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
 
-def pae(payload_type: str, payload: bytes) -> bytes:
-    """DSSE v1 Pre-Authentication Encoding — the scheme this repo does NOT use."""
-    pt = payload_type.encode("utf-8")
-    return (
-        b"DSSEv1 "
-        + str(len(pt)).encode() + b" " + pt + b" "
-        + str(len(payload)).encode() + b" " + payload
-    )
+def dsse_pae(payload_type: str, body: bytes) -> bytes:
+    """Canonical DSSE v1 Pre-Authentication Encoding — the scheme the server uses."""
+    t = payload_type.encode("utf-8")
+    return b" ".join([
+        b"DSSEv1",
+        str(len(t)).encode(), t,
+        str(len(body)).encode(), body,
+    ])
 
 
-def sign_like_pepr_policy(payload: dict, key: bytes) -> dict:
-    """Build a DSSE envelope exactly as pepr/policies/szl-receipt-on-deploy.ts does."""
+def b64u(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
+def b64u_decode(s: str) -> bytes:
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def sign_like_server(payload: dict, priv: Ed25519PrivateKey) -> dict:
+    """Build a DSSE envelope exactly as server.sign_dsse does (Ed25519 over PAE)."""
     payload_bytes = canonical_payload_bytes(payload)
-    sig = hmac.new(key, payload_bytes, hashlib.sha256).digest()  # RAW bytes, no PAE
+    sig = priv.sign(dsse_pae(PAYLOAD_TYPE, payload_bytes))  # Ed25519 over PAE
     return {
         "payload": base64.b64encode(payload_bytes).decode(),
         "payloadType": PAYLOAD_TYPE,
-        "signatures": [{"keyid": KEY_ID, "sig": base64.b64encode(sig).decode()}],
+        "signatures": [{"keyid": KEY_ID, "sig": b64u(sig)}],
     }
 
 
-def verify_like_verify_receipts_sh(envelope: dict, key: bytes) -> bool:
-    """Verify exactly as scripts/verify_receipts.sh does: HMAC over RAW payload bytes."""
-    payload_b64 = envelope["payload"]
-    expected = hmac.new(key, base64.b64decode(payload_b64), hashlib.sha256).digest()
-    actual = base64.b64decode(envelope["signatures"][0]["sig"])
-    return hmac.compare_digest(expected, actual)
+def verify_like_verify_receipts_sh(envelope: dict, pub: Ed25519PublicKey) -> bool:
+    """Verify exactly as scripts/verify_receipts.sh does: Ed25519 over PAE, pubkey only."""
+    try:
+        body = base64.b64decode(envelope["payload"])
+        ptype = envelope.get("payloadType", PAYLOAD_TYPE)
+        sig = b64u_decode(envelope["signatures"][0]["sig"])
+        pub.verify(sig, dsse_pae(ptype, body))
+        return True
+    except (InvalidSignature, Exception):
+        return False
 
 
 def main() -> int:
-    key = base64.b64decode(HMAC_KEY_B64)
+    priv = Ed25519PrivateKey.generate()
+    pub = priv.public_key()
     failures: list[str] = []
 
     # 1. The signer's output must verify under the verifier (schemes agree).
-    envelope = sign_like_pepr_policy(SAMPLE_PAYLOAD, key)
-    if not verify_like_verify_receipts_sh(envelope, key):
+    envelope = sign_like_server(SAMPLE_PAYLOAD, priv)
+    if not verify_like_verify_receipts_sh(envelope, pub):
         failures.append(
-            "signer (pepr policy) and verifier (verify_receipts.sh) disagree: "
-            "a receipt signed over RAW payload bytes did not verify"
+            "signer (server.sign_dsse) and verifier (verify_receipts.sh) disagree: "
+            "an Ed25519/PAE receipt did not verify"
         )
 
-    # 2. A PAE-wrapped signature must NOT verify under the RAW verifier. This
-    #    pins the scheme: if someone switches the signer to DSSE PAE without
-    #    updating the verifier, that divergence is caught here.
+    # 2. A LEGACY HMAC-over-RAW-bytes signature must NOT verify under the Ed25519
+    #    verifier. This pins the scheme: if anyone reintroduces the old HMAC
+    #    verifier (the exact Replit-flagged regression), it is caught here.
     payload_bytes = canonical_payload_bytes(SAMPLE_PAYLOAD)
-    pae_sig = hmac.new(key, pae(PAYLOAD_TYPE, payload_bytes), hashlib.sha256).digest()
-    pae_envelope = {
+    legacy_hmac_key = base64.b64decode("c3psLWRldi1kZW1vLWtleS0yMDI2LXdhcmhhY2tlcg==")
+    hmac_sig = hmac.new(legacy_hmac_key, payload_bytes, hashlib.sha256).digest()
+    legacy_envelope = {
         "payload": base64.b64encode(payload_bytes).decode(),
         "payloadType": PAYLOAD_TYPE,
-        "signatures": [{"keyid": KEY_ID, "sig": base64.b64encode(pae_sig).decode()}],
+        "signatures": [{"keyid": "szl-dev-hmac-sha256-2026", "sig": b64u(hmac_sig)}],
     }
-    if verify_like_verify_receipts_sh(pae_envelope, key):
+    if verify_like_verify_receipts_sh(legacy_envelope, pub):
         failures.append(
-            "scheme drift: a DSSE-PAE signature verified under the RAW verifier — "
-            "the two schemes must remain distinguishable"
+            "scheme drift: a legacy HMAC-SHA-256 signature verified under the "
+            "Ed25519 verifier — the legacy scheme must be rejected"
         )
 
-    # 3. Tampering with the payload after signing must fail verification.
+    # 3. An Ed25519 signature over the RAW payload (no PAE) must NOT verify —
+    #    pins the PAE prefix into the scheme.
+    raw_sig = priv.sign(payload_bytes)  # no PAE
+    no_pae_envelope = {
+        "payload": base64.b64encode(payload_bytes).decode(),
+        "payloadType": PAYLOAD_TYPE,
+        "signatures": [{"keyid": KEY_ID, "sig": b64u(raw_sig)}],
+    }
+    if verify_like_verify_receipts_sh(no_pae_envelope, pub):
+        failures.append(
+            "scheme drift: an Ed25519 signature over RAW bytes (no PAE) verified — "
+            "the DSSE PAE prefix must be part of the signed bytes"
+        )
+
+    # 4. Tampering with the payload after signing must fail verification.
     tampered = json.loads(json.dumps(envelope))
     bad_payload = dict(SAMPLE_PAYLOAD, specHash="b" * 64)
     tampered["payload"] = base64.b64encode(canonical_payload_bytes(bad_payload)).decode()
-    if verify_like_verify_receipts_sh(tampered, key):
+    if verify_like_verify_receipts_sh(tampered, pub):
         failures.append("tampered payload verified — signature is not bound to payload")
+
+    # 5. The wrong public key must not verify a good signature.
+    other_pub = Ed25519PrivateKey.generate().public_key()
+    if verify_like_verify_receipts_sh(envelope, other_pub):
+        failures.append("signature verified under the WRONG public key")
 
     if failures:
         print("DSSE scheme regression: FAIL")
@@ -135,9 +169,11 @@ def main() -> int:
         return 1
 
     print("DSSE scheme regression: PASS")
-    print("  - signer and verifier agree on HMAC-SHA-256 over RAW payload bytes (no PAE)")
-    print("  - DSSE-PAE signatures are correctly rejected by the RAW verifier")
+    print("  - signer and verifier agree on Ed25519 over the canonical DSSE PAE")
+    print("  - legacy HMAC-SHA-256 (raw) signatures are correctly rejected")
+    print("  - Ed25519-over-RAW (no PAE) signatures are correctly rejected")
     print("  - tampered payloads are rejected")
+    print("  - signatures do not verify under the wrong public key")
     return 0
 
 

@@ -5,7 +5,7 @@
 
 ### A ready-to-run deployment that proves SZL's governance receipts working live on a Kubernetes cluster, signed and verifiable end to end.
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square)](LICENSE) [![Build](https://github.com/szl-holdings/szl-uds-deployment/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/szl-holdings/szl-uds-deployment/actions/workflows/release.yml) [![Doctrine v11](https://img.shields.io/badge/Doctrine-v11_LOCKED-3b82f6?style=flat-square)](https://github.com/szl-holdings/.github/tree/main/doctrine) [![SLSA](https://img.shields.io/badge/SLSA-L1%2BL2_honest-22c55e?style=flat-square)](https://slsa.dev/spec/v1.0/levels)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square)](LICENSE) [![Build](https://github.com/szl-holdings/szl-uds-deployment/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/szl-holdings/szl-uds-deployment/actions/workflows/release.yml) [![Doctrine v11](https://img.shields.io/badge/Doctrine-v11_LOCKED-3b82f6?style=flat-square)](https://github.com/szl-holdings/.github/tree/main/doctrine) [![SLSA](https://img.shields.io/badge/SLSA-L1_honest_·_L2_roadmap-22c55e?style=flat-square)](https://slsa.dev/spec/v1.0/levels)
 
 [Docs](https://docs.szlholdings.com) · [Quickstart](https://docs.szlholdings.com/quickstart) · [SZL Holdings](https://szlholdings.com)
 
@@ -46,7 +46,7 @@ In two sentences: this component is part of SZL's governed-AI mesh — it enforc
 
 **uds deploy**
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20434276.svg)](https://doi.org/10.5281/zenodo.20434276) [![ORCID](https://img.shields.io/badge/ORCID-0009--0001--0110--4173-a6ce39?style=flat-square&logo=orcid&logoColor=white)](https://orcid.org/0009-0001-0110-4173) [![Doctrine v11 LOCKED](https://img.shields.io/badge/Doctrine-v11_LOCKED-d4a444?style=flat-square)](https://github.com/szl-holdings/lutar-lean) [![SLSA](https://img.shields.io/badge/SLSA-L1%2BL2_honest-22c55e?style=flat-square)](https://slsa.dev/spec/v1.0/levels)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20434276.svg)](https://doi.org/10.5281/zenodo.20434276) [![ORCID](https://img.shields.io/badge/ORCID-0009--0001--0110--4173-a6ce39?style=flat-square&logo=orcid&logoColor=white)](https://orcid.org/0009-0001-0110-4173) [![Doctrine v11 LOCKED](https://img.shields.io/badge/Doctrine-v11_LOCKED-d4a444?style=flat-square)](https://github.com/szl-holdings/lutar-lean) [![SLSA](https://img.shields.io/badge/SLSA-L1_honest_·_L2_roadmap-22c55e?style=flat-square)](https://slsa.dev/spec/v1.0/levels)
 
 [Hugging Face](https://huggingface.co/SZLHOLDINGS) · [Demo](https://szlholdings-readme.static.hf.space/) · [GitHub Org](https://github.com/szl-holdings)
 
@@ -67,7 +67,7 @@ In two sentences: this component is part of SZL's governed-AI mesh — it enforc
 
 [![GHAS Code Security](https://img.shields.io/badge/GHAS-Code_Security-2DA44E.svg?style=flat-square&logo=github)](https://github.com/szl-holdings/szl-uds-deployment/security/code-scanning)
 [![Secret Protection](https://img.shields.io/badge/GHAS-Secret_Protection-2DA44E.svg?style=flat-square&logo=github)](https://github.com/szl-holdings/szl-uds-deployment/security/secret-scanning)
-[![SLSA L1+L2 honest](https://img.shields.io/badge/SLSA-L1%2BL2_honest-0B1F3A.svg?style=flat-square)](https://slsa.dev/spec/v1.0/levels)
+[![SLSA L1 honest; L2 roadmap](https://img.shields.io/badge/SLSA-L1_honest_·_L2_roadmap-0B1F3A.svg?style=flat-square)](https://slsa.dev/spec/v1.0/levels)
 
 **SZL Governance Receipts — UDS Running Deployment**
 
@@ -79,7 +79,7 @@ Built for [Warhacker 2026](https://warhacker.io), June 16-20, San Diego.
 
 ## What This Is
 
-A UDS add-on that attaches cryptographic governance receipts to every Kubernetes Deployment and Job admitted to the cluster. The Pepr admission controller intercepts each workload API call, generates a DSSE-wrapped HMAC-SHA-256 receipt, posts it to an in-cluster receipt server, and annotates the resource with the receipt ID.
+A UDS add-on that attaches cryptographic governance receipts to every Kubernetes Deployment and Job admitted to the cluster. The Pepr admission controller intercepts each workload API call, generates a DSSE-wrapped, Ed25519-signed receipt, posts it to an in-cluster receipt server, and annotates the resource with the receipt ID.
 
 **This is NOT:**
 - A replacement for uds-core security policies
@@ -102,6 +102,24 @@ uds run demo:verify     # verify receipt chain from cluster
 
 Dashboard: `http://localhost:8443` (after `uds run port-forward`)
 
+### Verifying receipts (authoritative)
+
+Receipts are signed with **Ed25519 over the canonical DSSE Pre-Authentication
+Encoding (PAE)** — the scheme implemented by `services/szl-receipts-server`. The
+**authoritative** verify command is:
+
+```bash
+uds run demo:verify          # → bash scripts/verify_receipts.sh
+```
+
+`scripts/verify_receipts.sh` validates real server output offline using only the
+**public** key (`GET /pubkey`): it re-derives the DSSE PAE, checks each Ed25519
+signature, and walks the SHA-256 hash chain. `scripts/dsse_scheme_regression_test.py`
+pins this scheme in CI and proves that legacy HMAC-SHA-256 (and Ed25519-without-PAE)
+signatures are correctly **rejected**. There is no separate HMAC verify path; any
+older HMAC-based demo verifier has been retired in favour of the Ed25519/DSSE one
+above.
+
 ---
 
 ## Repository Structure
@@ -121,7 +139,7 @@ szl-uds-deployment/
 │       ├── values.yaml
 │       └── templates/
 │           ├── deployment.yaml    # MCP receipts server + nginx sidecar
-│           ├── service.yaml       # ClusterIP + ServiceAccount + HMAC secret
+│           ├── service.yaml       # ClusterIP + ServiceAccount + Ed25519 keypair secret
 │           ├── ingress.yaml       # UDS Package CR + ServiceMonitor
 │           └── configmap.yaml     # Server Python source + dashboard HTML
 ├── pepr/                          # Pepr policy module
@@ -231,4 +249,4 @@ rather than an Ed25519 signature.
 
 Cite this work via [`CITATION.cff`](CITATION.cff). Math foundations: [szl-papers](https://github.com/szl-holdings/szl-papers) · [lutar-lean](https://github.com/szl-holdings/lutar-lean) (kernel `c7c0ba17`).
 
-<sub>Λ Conjecture 1 (not a theorem) · 749/14/163 v11 LOCKED (kernel `c7c0ba17`) · SLSA L1+L2 honest (NOT L3) · Section 889 = 5 vendors · [SZL Holdings](https://szlholdings.com) · Apache-2.0 code · CC-BY-4.0 papers</sub>
+<sub>Λ Conjecture 1 (not a theorem) · locked kernel 749/14/163 @ `c7c0ba17` (5 proven) · experimental main 1304/22 @ `7885fd9` (~36 theorems CI-green, never folded into the locked 5) · v11 LOCKED · SLSA L1 honest; L2 roadmap (NOT L3) · Section 889 = 5 vendors · [SZL Holdings](https://szlholdings.com) · Apache-2.0 code · CC-BY-4.0 papers</sub>
