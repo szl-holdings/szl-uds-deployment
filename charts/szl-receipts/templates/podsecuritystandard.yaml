@@ -64,9 +64,14 @@ spec:
     matchLabels:
       app: szl-receipts-server
 
+{{- if .Values.resourceGovernance.enabled }}
 ---
 # ResourceQuota — limits total resource consumption in the namespace.
-# Prevents a runaway pod from exhausting cluster capacity.
+# Prevents a runaway pod from exhausting cluster capacity. Ceilings are
+# value-driven (resourceGovernance.resourceQuota.hard) and sized to leave
+# headroom for the Istio ambient waypoint pod that UDS schedules into this
+# namespace (~1Gi / 2 CPU) — too tight and the waypoint is rejected so the
+# receipts route never binds.
 apiVersion: v1
 kind: ResourceQuota
 metadata:
@@ -78,21 +83,13 @@ metadata:
     szl.io/component: resource-quota
 spec:
   hard:
-    # Compute resources
-    requests.cpu: "500m"
-    requests.memory: "512Mi"
-    limits.cpu: "2000m"
-    limits.memory: "1Gi"
-    # Object counts
-    pods: "10"
-    services: "5"
-    secrets: "10"
-    configmaps: "10"
-    persistentvolumeclaims: "2"
+    {{- toYaml .Values.resourceGovernance.resourceQuota.hard | nindent 4 }}
 
 ---
 # LimitRange — enforces per-pod/container resource defaults and limits.
 # All containers must declare resource requests; limits cap runaway usage.
+# The `max` ceiling is value-driven and must comfortably exceed the Istio
+# waypoint pod's request or the waypoint is rejected (receipts route 404s).
 apiVersion: v1
 kind: LimitRange
 metadata:
@@ -106,14 +103,11 @@ spec:
   limits:
     - type: Container
       default:
-        cpu: "250m"
-        memory: "256Mi"
+        {{- toYaml .Values.resourceGovernance.limitRange.default | nindent 8 }}
       defaultRequest:
-        cpu: "50m"
-        memory: "128Mi"
+        {{- toYaml .Values.resourceGovernance.limitRange.defaultRequest | nindent 8 }}
       max:
-        cpu: "1000m"
-        memory: "512Mi"
+        {{- toYaml .Values.resourceGovernance.limitRange.max | nindent 8 }}
       min:
-        cpu: "10m"
-        memory: "32Mi"
+        {{- toYaml .Values.resourceGovernance.limitRange.min | nindent 8 }}
+{{- end }}

@@ -35,6 +35,12 @@ spec:
   # ── SSO — Keycloak OIDC client registration ────────────────────────────────
   # STAGED: Keycloak must be running from core-slim-dev before this takes effect.
   # auth-service sidecar is injected by Pepr when enableAuthserviceSelector matches.
+  #
+  # Gated on udsPackage.sso.enabled (default false). When disabled we emit NO
+  # `sso` key at all — an empty `sso: []` still trips the UDS authservice gate
+  # and forces an unsatisfiable waypoint, so the receipts route never serves.
+  # Flip udsPackage.sso.enabled=true only after Keycloak is up (FA-002).
+  {{- if .Values.udsPackage.sso.enabled }}
   sso:
     - name: SZL Receipts
       clientId: szl-receipts
@@ -47,6 +53,7 @@ spec:
       # Group-based authorization is enforced by the authservice sidecar
       # via the szl-receipts-sso Secret's OIDC claims. Configure group
       # membership in Keycloak realm /szl/receipts after FA-002 is resolved.
+  {{- end }}
 
   # ── Network — ingress + egress rules (generate Istio + K8s NetworkPolicy) ──
   network:

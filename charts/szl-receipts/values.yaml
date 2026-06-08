@@ -134,9 +134,54 @@ networkPolicy:
 # Deployed alongside the chart so uds-core network policies apply correctly.
 udsPackage:
   enabled: true
+  # ── SSO (Keycloak OIDC) gate ────────────────────────────────────────────────
+  # Keycloak only exists once core-slim-dev / full core is deployed (FA-002).
+  # When disabled the Package CR emits NO `sso` block at all (not an empty
+  # `sso: []`) — an empty array still trips the UDS authservice gate and forces
+  # an unsatisfiable waypoint, so the receipts route never serves. Leave OFF for
+  # a clean machine-to-machine deploy; flip ON only after Keycloak is up.
+  sso:
+    enabled: false
   monitor:
     - portName: http-metrics
       selector:
         app.kubernetes.io/name: szl-receipts-server
       targetPort: 8080
       description: "SZL Receipts server metrics endpoint"
+
+# ── Namespace resource governance (LimitRange + ResourceQuota) ────────────────
+# UDS ambient mesh schedules an Istio waypoint pod INTO this namespace. The
+# waypoint requests far more than the receipts server (~1Gi / 2 CPU), so the
+# LimitRange `max` and the ResourceQuota `hard` ceilings must be large enough or
+# the waypoint pod is rejected and the receipts route never binds. These
+# defaults leave headroom for the waypoint out of the box; tune for tighter
+# clusters via uds-bundle variable bindings.
+resourceGovernance:
+  # Enable/disable the LimitRange + ResourceQuota objects entirely.
+  enabled: true
+  limitRange:
+    # Per-container ceiling. Must comfortably exceed the istio waypoint request.
+    max:
+      cpu: "2"
+      memory: "1Gi"
+    min:
+      cpu: "10m"
+      memory: "32Mi"
+    default:
+      cpu: "250m"
+      memory: "256Mi"
+    defaultRequest:
+      cpu: "50m"
+      memory: "128Mi"
+  resourceQuota:
+    hard:
+      # Aggregate ceiling = receipts server + dashboard + istio waypoint.
+      requests.cpu: "2"
+      requests.memory: "1536Mi"
+      limits.cpu: "4"
+      limits.memory: "3Gi"
+      pods: "10"
+      services: "5"
+      secrets: "10"
+      configmaps: "10"
+      persistentvolumeclaims: "2"

@@ -14,6 +14,11 @@ metadata:
   name: {{ .Values.server.name }}
   namespace: {{ .Release.Namespace }}
   labels:
+    # Bare `app` label is REQUIRED: UDS Package selectors, the generated Istio
+    # AuthorizationPolicies/VirtualService, the NetworkPolicies and the PDB all
+    # match on `app: szl-receipts-server`. Without it the waypoint/authz never
+    # binds and the receipts route 404s. (Chart default — no hand-patch needed.)
+    app: szl-receipts-server
     app.kubernetes.io/name: szl-receipts-server
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/version: {{ .Chart.AppVersion }}
@@ -30,6 +35,10 @@ spec:
   template:
     metadata:
       labels:
+        # Bare `app` label — see metadata comment above. This is the one that
+        # actually lands on the pod, so UDS/Istio ambient authz + the waypoint
+        # match it. Required for the receipts route to serve (not 404).
+        app: szl-receipts-server
         app.kubernetes.io/name: szl-receipts-server
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/version: {{ .Chart.AppVersion }}
