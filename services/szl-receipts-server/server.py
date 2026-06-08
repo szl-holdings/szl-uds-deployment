@@ -98,6 +98,16 @@ PAYLOAD_TYPE = "application/vnd.szl.receipt.v1+json"
 # Genesis sentinel for the first receipt's prev_hash.
 GENESIS = "GENESIS"
 
+# Signer self-healing: if the signing backend (e.g. Vault Transit) is sealed or
+# unreachable at boot, the signer starts UNAVAILABLE. Rather than requiring a pod
+# restart to recover, the server lazily re-establishes the signer — on the sign
+# path, on a /pubkey read, and via a background watchdog — so signing resumes on
+# its own once the backend is healthy again (no restart, no pod delete needed).
+# Tunables (seconds): the minimum gap between on-demand re-init attempts (so a
+# burst of requests can't hammer Vault) and the background watchdog cadence.
+SIGNER_REINIT_MIN_INTERVAL = float(os.environ.get("SZL_SIGNER_REINIT_INTERVAL", "10"))
+SIGNER_RECHECK_INTERVAL    = float(os.environ.get("SZL_SIGNER_RECHECK_INTERVAL", "30"))
+
 os.makedirs(STORE_PATH, exist_ok=True)
 
 _receipts      = []
@@ -172,10 +182,45 @@ class BaseSigner:
     def __init__(self):
         self.key_id = KEY_ID
         self.public_key_raw = None   # 32-byte raw Ed25519 public key, or None
+        self._reinit_lock = threading.Lock()
+        self._last_reinit = 0.0      # monotonic time of the last re-init attempt
 
     @property
     def available(self) -> bool:
         return self.public_key_raw is not None
+
+    def _reinit(self):
+        """Backend-specific attempt to (re-)establish signing capability.
+
+        Override in subclasses. Must set self.public_key_raw on success and be
+        safe to call repeatedly. Default is a no-op (nothing to recover)."""
+        return
+
+    def ensure_available(self, force: bool = False) -> bool:
+        """Return True if the signer can sign, attempting a throttled re-init if
+        it currently cannot.
+
+        This is what lets an already-running server recover with NO restart: if
+        the backend (e.g. Vault) was sealed/unreachable at boot — or was sealed
+        after boot — the signer comes up unavailable; the next sign attempt,
+        /pubkey read, or background watchdog tick calls this, which retries the
+        backend handshake and flips the signer back to available once the backend
+        is healthy again. Throttled by SIGNER_REINIT_MIN_INTERVAL so a burst of
+        requests can't hammer the backend. Thread-safe and never raises."""
+        if self.available:
+            return True
+        now = time.monotonic()
+        with self._reinit_lock:
+            if self.available:
+                return True
+            if not force and (now - self._last_reinit) < SIGNER_REINIT_MIN_INTERVAL:
+                return False
+            self._last_reinit = now
+            try:
+                self._reinit()
+            except Exception as e:
+                log("debug", f"signer re-init attempt failed: {e}")
+        return self.available
 
     @property
     def public_key_b64u(self):
@@ -255,6 +300,12 @@ class FileSigner(BaseSigner):
                 f"pub={self.public_key_b64u}")
         except Exception as e:
             log("error", f"failed to load Ed25519 key, running unsigned: {e}")
+
+    def _reinit(self):
+        # The Secret/PEM may be provisioned after boot (e.g. a SealedSecret
+        # controller materialises it late); re-read it so signing can start
+        # without a pod restart. _load() is idempotent and silent on absence.
+        self._load()
 
     def sign(self, pae: bytes) -> bytes:
         if self._key is None:
@@ -384,6 +435,13 @@ class VaultTransitSigner(BaseSigner):
             self._token = None
             self.public_key_raw = None
 
+    def _reinit(self):
+        # Re-run the Vault handshake (login + fetch public key). This is the
+        # recovery path: when the server booted while Vault was sealed/unreachable
+        # and Vault has since been unsealed, this re-establishes the signer with
+        # NO pod restart. _init() resets state on failure so it stays honest.
+        self._init()
+
     # ── Signing ──────────────────────────────────────────────────────────────
 
     def _sign_once(self, inp_b64):
@@ -426,7 +484,9 @@ def sign_dsse(payload_bytes: bytes):
     is available, sig is an explicit unsigned sentinel (honest, not a forgery)."""
     payload_b64 = base64.b64encode(payload_bytes).decode("ascii")
     pae = dsse_pae(PAYLOAD_TYPE, payload_bytes)
-    if _signer is not None and _signer.available:
+    # ensure_available() retries a sealed/unreachable backend (throttled) so a
+    # receipt that arrives after Vault is unsealed gets signed with no restart.
+    if _signer is not None and _signer.ensure_available():
         try:
             raw_sig = _signer.sign(pae)   # 64 bytes for Ed25519
             sig_b64u = b64u_encode(raw_sig)
@@ -712,7 +772,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/pubkey":
             # Publish the active signing public key so verifiers can fetch it
             # for independent offline Ed25519 verification of any receipt.
-            if _signer is not None and _signer.available:
+            # ensure_available() lets a /pubkey poll itself drive recovery, so
+            # signed flips back to true once Vault is unsealed (no restart).
+            if _signer is not None and _signer.ensure_available():
                 body = json.dumps({
                     "keyid": _signer.key_id,
                     "backend": _signer.backend,
@@ -876,12 +938,39 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, "application/json", json.dumps(resp))
 
 
+def _signer_recheck_loop():
+    """Background watchdog that re-establishes the signer with NO pod restart.
+
+    When the signer is unavailable — e.g. the server booted while Vault was
+    sealed/unreachable (the box-reboot case) — poll the backend on a fixed
+    cadence and re-init as soon as it is healthy again, so GET /pubkey flips to
+    signed:true and signing resumes on its own even with zero request traffic.
+    While the signer is available this is a single cheap check per tick. This is
+    what makes the auto-unseal helper's receipts pod-delete nudge unnecessary."""
+    while True:
+        time.sleep(SIGNER_RECHECK_INTERVAL)
+        try:
+            s = _signer
+            if s is not None and not s.available:
+                if s.ensure_available(force=True):
+                    log("info",
+                        f"[signer] re-established without restart; "
+                        f"backend={s.backend} keyid={s.key_id} signed=True")
+        except Exception as e:
+            log("debug", f"signer recheck loop error: {e}")
+
+
 def boot():
     """Startup hook: build the signer, init tracer, rehydrate chain, emit span."""
     global _signer, _public_key_b64
     _signer = build_signer()
     _public_key_b64 = _signer.public_key_b64u if _signer else None
     _init_tracer()
+    # Background watchdog: recover the signer on its own if the backend was down
+    # at boot and later comes back (no restart / no pod delete required).
+    threading.Thread(
+        target=_signer_recheck_loop, name="signer-recheck", daemon=True
+    ).start()
     count = _rehydrate()
     with _span("szl_receipts.boot", {
         "store_path": STORE_PATH,
