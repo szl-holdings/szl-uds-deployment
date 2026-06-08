@@ -38,3 +38,30 @@ syft "registry:$IMG" -o spdx-json=sbom/szl-receipts-server-image.spdx.json \
   for the full signing + publish + round-trip evidence.
 - SLSA honesty: build provenance is GitHub-Actions keyless attestation (SLSA L1/L2
   class). No SLSA L3, Iron Bank, FedRAMP, or CMMC claims are made.
+
+
+## Public pull + verify (no login)
+
+Once the GHCR package visibility is **Public**, anyone — with no GitHub auth — can
+pull the self-contained package and verify its cosign signature. The verification
+key for the published OCI package is
+[`cosign/szl-receipts-package.pub`](../cosign/szl-receipts-package.pub).
+
+```bash
+# 1. Fetch the published verification key (no auth)
+curl -fsSL -o szl-receipts-package.pub \
+  https://raw.githubusercontent.com/szl-holdings/szl-uds-deployment/main/cosign/szl-receipts-package.pub
+
+# 2. Verify the published package signature (pulls only the manifest + signature)
+cosign verify --key szl-receipts-package.pub \
+  ghcr.io/szl-holdings/packages/szl-receipts:0.3.1-upstream
+
+# 3. (optional) Pull the full self-contained airgap package (~220 MB) for offline deploy
+zarf package pull oci://ghcr.io/szl-holdings/packages/szl-receipts:0.3.1-upstream
+```
+
+> **Which key?** The published **package** (`packages/szl-receipts`) is signed with
+> the key-pair in `cosign/szl-receipts-package.pub` (verified against Rekor —
+> `logIndex 1752638899`). This is **not** `cosign/cosign.pub` (the optional image
+> key-pair) and **not** the receipts **image**, which is signed *keyless*:
+> `cosign verify ghcr.io/szl-holdings/szl-receipts-server:uds-v0.3.1 --certificate-identity-regexp 'receipts-server-image.yml' --certificate-oidc-issuer https://token.actions.githubusercontent.com`.

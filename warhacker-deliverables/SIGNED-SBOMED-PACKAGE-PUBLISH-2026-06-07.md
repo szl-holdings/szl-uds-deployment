@@ -10,6 +10,30 @@ and a proven pull-back **and deploy** round-trip from the registry.
 
 ---
 
+## Public pull + verify (no login) — TL;DR
+
+Anyone can independently verify the published package once its GHCR visibility is
+Public (see §5 step 4). No GitHub login required:
+
+```bash
+# Published verification key (also committed at cosign/szl-receipts-package.pub):
+curl -fsSL -o szl-receipts-package.pub \
+  https://raw.githubusercontent.com/szl-holdings/szl-uds-deployment/main/cosign/szl-receipts-package.pub
+
+cosign verify --key szl-receipts-package.pub \
+  ghcr.io/szl-holdings/packages/szl-receipts:0.3.1-upstream
+# => "The signatures were verified against the specified public key"  (Rekor logIndex 1752638899)
+
+# Full self-contained airgap package (~220 MB) for offline deploy:
+zarf package pull oci://ghcr.io/szl-holdings/packages/szl-receipts:0.3.1-upstream
+```
+
+> The package key-pair is the `cosign/szl-receipts-package.pub` key below. It is
+> distinct from `cosign/cosign.pub` (the optional image key-pair) and from the
+> receipts **image**, which is signed keyless in CI. See §3.
+
+---
+
 ## 1. Artifacts
 
 | Artifact | Reference / file |
@@ -156,8 +180,19 @@ These steps need credentials/secrets only Stephen holds; everything else is in
 3. **Production (keyless) signing** — preferred over the box key-pair. Tag a
    release; the `zarf-package-sign.yml` workflow signs keyless via GitHub OIDC, so
    no private key is stored. (Workflow fix applied this round — see §6.)
-4. **Make the GHCR package public** (optional, for unauthenticated pull): org
-   *Packages → szl-receipts → Package settings → Change visibility → Public*.
+4. **Make the GHCR package public** — required for unauthenticated pull/verify.
+   The package `packages/szl-receipts` is currently **`internal`** (org-only). This
+   is the **only** step that cannot be automated: GitHub's REST API has **no**
+   package-visibility endpoint (`PATCH .../packages/container/...` returns 404), so
+   an org owner must flip it in the web UI:
+   *github.com/orgs/szl-holdings → Packages → `szl-receipts` → Package settings →
+   Danger Zone → Change visibility → **Public***.
+   Then confirm anonymous access works:
+   ```bash
+   docker logout ghcr.io
+   cosign verify --key cosign/szl-receipts-package.pub \
+     ghcr.io/szl-holdings/packages/szl-receipts:0.3.1-upstream   # passes with no login
+   ```
 5. **Version-lock** the package's `uds-v0.4.0` image reference vs the GHCR
    `uds-v0.3.1` image — **tracked separately**, intentionally out of scope here
    (the package is self-contained, so the round-trip/deploy does not need it).
