@@ -78,6 +78,19 @@ packages:
     repository: ghcr.io/defenseunicorns/packages/uds/core
     ref: 1.5.0-upstream
     overrides:
+      # ── istiod HPA: single-replica for the ~2-vCPU uds-szl-demo node ──────────
+      # Pin istiod's HorizontalPodAutoscaler to maxReplicas:1 so a FRESH deploy of
+      # core comes up rightsized from the first second — no window at the upstream
+      # default (min1/max5). A 2nd istiod (~500m CPU) can never schedule on this
+      # ~90%-requested 2-vCPU node, so any autoscale >1 would strand a permanently
+      # Pending pod. The runtime guard /usr/local/sbin/istiod-fit-strategy remains
+      # as belt-and-suspenders (re-clamps the HPA after any later core upgrade).
+      # Drop this override (or raise the value) on multi-node / HA clusters.
+      istio-controlplane:
+        istiod:
+          values:
+            - path: pilot.autoscaleMax
+              value: 1
       keycloak:
         keycloak:
           values:
