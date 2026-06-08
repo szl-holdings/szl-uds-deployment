@@ -100,7 +100,14 @@ jobs:
             mkdir -p dist/pepr
             # Create a minimal placeholder zarf.yaml so the import resolves
             printf 'kind: ZarfPackageConfig\nmetadata:\n  name: szl-receipt-policy\n  version: "0.0.0"\n  description: "CI placeholder"\ncomponents:\n  - name: szl-receipt-policy\n    required: false\n    description: "CI placeholder component"\n' > dist/pepr/zarf.yaml
+            # IMPORTANT: build with --flavor upstream. The szl-receipts-server
+            # component is gated `only.flavor: upstream`; building without the
+            # flavor drops the actual server (and its baked image) and produces a
+            # hollow package. The published OCI artifact must be the complete one,
+            # so the flavor is required here. zarf derives the published tag from
+            # metadata version + flavor -> szl-receipts:<version>-upstream.
             zarf package create packages/szl-receipts \
+              --flavor upstream \
               --confirm \
               --no-progress \
               --output-directory ./dist
@@ -143,8 +150,69 @@ jobs:
             syft . -o spdx-json --file "${SBOM}"
           echo "SBOM: ${SBOM}"
 
-      # ── Keyless sign all packages ─────────────────────────────────────────
-      - name: Sign all Zarf packages (keyless OIDC)
+      # ── Publish szl-receipts package to GHCR + keyless-sign the OCI ref ────
+      # This is the core of keyless package signing: the PUBLISHED OCI artifact
+      # (what outsiders actually pull) is cosign-signed keyless via GitHub OIDC,
+      # exactly like the receipts *image* (receipts-server-image.yml). No private
+      # key is ever stored, and no public key needs to be committed — verifiers
+      # use --certificate-identity-regexp + --certificate-oidc-issuer only.
+      - name: Publish szl-receipts package to GHCR + keyless-sign (OCI)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          set -euo pipefail
+          RECEIPTS_PKG="$(ls dist/zarf-package-szl-receipts-*.tar.zst 2>/dev/null | head -1)"
+          if [ -z "${RECEIPTS_PKG}" ]; then
+            echo "No szl-receipts package built; cannot publish/sign OCI ref"; exit 1
+          fi
+          echo "Publishing ${RECEIPTS_PKG} -> oci://${REGISTRY}/${ORG}/packages"
+
+          # zarf derives the published OCI tag from package metadata (version +
+          # flavor), e.g. szl-receipts:0.4.0-upstream.
+          zarf package publish "${RECEIPTS_PKG}" "oci://${REGISTRY}/${ORG}/packages" \
+            --no-progress 2>&1 | tee publish.log
+
+          # Resolve the exact published reference from zarf's output. Fall back to
+          # deriving it deterministically from metadata.version + the upstream flavor.
+          REF="$(grep -oE "${REGISTRY//./\\.}/${ORG}/packages/szl-receipts:[A-Za-z0-9._-]+" publish.log | tail -1 || true)"
+          if [ -z "${REF}" ]; then
+            VERSION="$(awk '/^metadata:/{m=1} m&&/^[[:space:]]+version:/{gsub(/[" ]/,"",$2);print $2;exit}' packages/szl-receipts/zarf.yaml)"
+            REF="${REGISTRY}/${ORG}/packages/szl-receipts:${VERSION}-upstream"
+          fi
+          echo "Published reference: ${REF}"
+
+          # Sign by digest (immutable) when resolvable; otherwise sign the tag.
+          REPO="${REF%:*}"
+          DIGEST="$(docker buildx imagetools inspect "${REF}" --format '{{.Manifest.Digest}}' 2>/dev/null || true)"
+          if [ -n "${DIGEST}" ]; then
+            SIGN_TARGET="${REPO}@${DIGEST}"
+          else
+            SIGN_TARGET="${REF}"
+          fi
+          echo "Keyless-signing published OCI artifact: ${SIGN_TARGET}"
+          cosign sign --yes "${SIGN_TARGET}"
+
+          echo "PUBLISHED_REF=${REF}" >> "$GITHUB_ENV"
+
+          CERT_ID_REGEXP="zarf-package-sign.yml"
+          CERT_ISSUER="https://token.actions.githubusercontent.com"
+          cat >> "${GITHUB_STEP_SUMMARY}" <<SUMMARY
+          ### Published + keyless-signed OCI package
+
+          \`${REF}\`
+
+          Verify (no key file, no login once the package is public):
+          \`\`\`bash
+          cosign verify ${REF} \\
+            --certificate-identity-regexp '${CERT_ID_REGEXP}' \\
+            --certificate-oidc-issuer ${CERT_ISSUER}
+          \`\`\`
+          SUMMARY
+
+      # ── Keyless sign all package tarballs (airgap / offline) ──────────────
+      # Detached cosign bundles for the local tarball(s) — useful for airgap
+      # verification of a pulled .tar.zst (verify-blob, no registry needed).
+      - name: Sign all Zarf package tarballs (keyless OIDC, airgap)
         env:
           COSIGN_EXPERIMENTAL: "1"
         run: |
@@ -162,9 +230,9 @@ jobs:
           done
 
           cat >> "${GITHUB_STEP_SUMMARY}" <<SUMMARY
-          ### Signed packages
+          ### Airgap tarball bundles
 
-          Verify with:
+          Verify a pulled \`.tar.zst\` offline with:
           \`\`\`bash
           cosign verify-blob \\
             --bundle <pkg>.cosign.bundle \\

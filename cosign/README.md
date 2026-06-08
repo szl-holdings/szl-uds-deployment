@@ -1,31 +1,55 @@
-# cosign signing key (CI / demo)
+# cosign signing keys — LEGACY (kept for back-compat verification only)
 
-Fixes UDS deploy stall **Gap 2** — the cosign signing key was flagged `staged`
-/ not provisioned. This directory wires the deploy/CI image-signing path to a
-**properly generated** cosign key-pair (ECDSA P-256, the same scheme the live
-`szlholdings-cosign` signer uses for receipts).
+> **Canonical signing is KEYLESS (no key file).** Both the receipts **image**
+> (`.github/workflows/receipts-server-image.yml`) and the published **package**
+> (`.github/workflows/zarf-package-sign.yml`) are signed keyless via GitHub OIDC
+> (Sigstore Fulcio + Rekor). Verifiers need **no committed key** — they use
+> `--certificate-identity-regexp` + `--certificate-oidc-issuer`. The two public
+> keys in this directory are **legacy**: they verify older artifacts only and are
+> not used for current releases.
 
-## What lives here
+## Legacy files in this directory
 
-| File | Committed? | Notes |
+| File | Status | What it verifies |
 | --- | --- | --- |
-| `cosign.pub` | **YES** | The public verification key. ECDSA P-256. Safe to commit. |
-| `cosign.key` | **NEVER** | Encrypted private key. Lives ONLY as a GitHub Actions secret. `.gitignore` blocks it. |
+| `szl-receipts-package.pub` | **LEGACY** | The ephemeral box key-pair that signed the original published package `ghcr.io/szl-holdings/packages/szl-receipts:0.3.1-upstream`. Its private half was ephemeral and is gone — kept only so that old artifact still verifies. **Current packages are keyless.** |
+| `cosign.pub` | **LEGACY / OPTIONAL** | The optional image key-pair. Only used if `COSIGN_PRIVATE_KEY` (+ `COSIGN_PASSWORD`) repo secrets are provisioned; they are not, so the image is signed keyless. |
+| `cosign.key` | **NEVER committed** | Encrypted private key. `.gitignore` blocks it. |
+
+## Verify the current (keyless) artifacts — no key file
+
+```bash
+# Published package (OCI)
+cosign verify ghcr.io/szl-holdings/packages/szl-receipts:0.4.0-upstream \
+  --certificate-identity-regexp 'zarf-package-sign.yml' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+# Receipts image
+cosign verify ghcr.io/szl-holdings/szl-receipts-server:uds-v0.4.0 \
+  --certificate-identity-regexp 'receipts-server-image.yml' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+## (Optional, legacy) image key-pair details
+
+The optional key-pair path below is retained for operators who specifically want
+key-pair (not keyless) image signing. It is **not** required and **not** the
+default.
 
 The private key for `cosign.pub` here was generated with
 `cosign generate-key-pair` and verified to sign+verify a blob (`Verified OK`).
 **It is intentionally not in the repo.** Image signing in CI reads it from the
 `COSIGN_PRIVATE_KEY` repo secret (see `.github/workflows/receipts-server-image.yml`).
 
-## Founder step — ONE command to enable key-pair image signing
+## (Legacy) Founder step — enable key-pair image signing
 
-The image **publishes and is signed today** without this step — the
-`receipts-server-image.yml` workflow falls back to **keyless OIDC** signing
-(no secret needed), so `cosign verify --certificate-identity-regexp=...` works
-out of the box.
+You do **not** need this. Both the image and the package are signed **keyless**
+today (no secret needed), so `cosign verify --certificate-identity-regexp=...`
+works out of the box.
 
-To switch to the committed `cosign.pub` key-pair instead of keyless, the founder
-runs once (locally, with the `cosign` CLI authenticated to GitHub via `gh`):
+This is retained only if an operator deliberately wants the committed `cosign.pub`
+key-pair instead of keyless image signing. Run once (locally, with the `cosign`
+CLI authenticated to GitHub via `gh`):
 
 ```bash
 # Generate the key-pair and push the private half + password as repo secrets.

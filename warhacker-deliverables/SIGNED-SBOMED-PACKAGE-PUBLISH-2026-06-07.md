@@ -10,27 +10,34 @@ and a proven pull-back **and deploy** round-trip from the registry.
 
 ---
 
-## Public pull + verify (no login) — TL;DR
+## Public pull + verify (no login, no key file) — TL;DR
 
-Anyone can independently verify the published package once its GHCR visibility is
-Public (see §5 step 4). No GitHub login required:
+> **UPDATE (keyless):** current releases are signed **keyless via GitHub OIDC** in
+> CI (`.github/workflows/zarf-package-sign.yml`) — no committed key, no stored
+> private key. The key-pair flow below is **legacy** (the original `0.3.1-upstream`
+> publish only). Verify the current package with **no key file**:
 
 ```bash
-# Published verification key (also committed at cosign/szl-receipts-package.pub):
+cosign verify ghcr.io/szl-holdings/packages/szl-receipts:0.4.0-upstream \
+  --certificate-identity-regexp 'zarf-package-sign.yml' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+# => "signatures were verified against the certificate" (Rekor transparency log: Verified OK)
+
+# Full self-contained airgap package (~220 MB) for offline deploy:
+zarf package pull oci://ghcr.io/szl-holdings/packages/szl-receipts:0.4.0-upstream
+```
+
+<details><summary>Legacy key-pair verify (original 0.3.1-upstream artifact only)</summary>
+
+```bash
+# Legacy: ephemeral box key-pair, public half committed at cosign/szl-receipts-package.pub
 curl -fsSL -o szl-receipts-package.pub \
   https://raw.githubusercontent.com/szl-holdings/szl-uds-deployment/main/cosign/szl-receipts-package.pub
-
 cosign verify --key szl-receipts-package.pub \
   ghcr.io/szl-holdings/packages/szl-receipts:0.3.1-upstream
 # => "The signatures were verified against the specified public key"  (Rekor logIndex 1752638899)
-
-# Full self-contained airgap package (~220 MB) for offline deploy:
-zarf package pull oci://ghcr.io/szl-holdings/packages/szl-receipts:0.3.1-upstream
 ```
-
-> The package key-pair is the `cosign/szl-receipts-package.pub` key below. It is
-> distinct from `cosign/cosign.pub` (the optional image key-pair) and from the
-> receipts **image**, which is signed keyless in CI. See §3.
+</details>
 
 ---
 
@@ -86,23 +93,43 @@ cosign verify ghcr.io/szl-holdings/szl-receipts-server:uds-v0.3.1 \
 # => "signatures were verified against the certificate" (transparency log: Verified OK)
 ```
 
-### Package — cosign key-pair (headless/box publish)
-The published OCI package and the airgap tarball are signed and verify cleanly:
+### Package — keyless OIDC (canonical, CI)
+The published OCI package is signed **keyless** in GitHub Actions
+(`zarf-package-sign.yml`, which now `zarf package publish`es the package to GHCR
+and `cosign sign`s the published OCI ref). Verify with **no key file**:
 
 ```bash
-# OCI artifact
-cosign verify --key cosign.pub ghcr.io/szl-holdings/packages/szl-receipts:0.3.1-upstream
-#   - Existence of the claims in the transparency log was verified offline
+cosign verify ghcr.io/szl-holdings/packages/szl-receipts:0.4.0-upstream \
+  --certificate-identity-regexp 'zarf-package-sign.yml' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+# => signatures verified against the cert; transparency log: Verified OK   ✅
+
+# Airgap tarball (detached keyless bundle, also produced by CI):
+cosign verify-blob \
+  --bundle zarf-package-szl-receipts-amd64-0.4.0.tar.zst.cosign.bundle \
+  --certificate-identity "https://github.com/szl-holdings/szl-uds-deployment/.github/workflows/zarf-package-sign.yml@refs/heads/main" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  zarf-package-szl-receipts-amd64-0.4.0.tar.zst
+# => Verified OK   ✅
+```
+
+<details><summary>Legacy — original key-pair publish (0.3.1-upstream only, deprecated)</summary>
+
+The original `0.3.1-upstream` artifact was signed with an ephemeral box key-pair
+whose public half is committed at `cosign/szl-receipts-package.pub`:
+
+```bash
+cosign verify --key cosign/szl-receipts-package.pub \
+  ghcr.io/szl-holdings/packages/szl-receipts:0.3.1-upstream
 #   - The signatures were verified against the specified public key   ✅
 
-# Airgap tarball (detached bundle)
-cosign verify-blob --key cosign.pub \
+cosign verify-blob --key cosign/szl-receipts-package.pub \
   --bundle zarf-package-szl-receipts-amd64-0.3.1.tar.zst.cosign.bundle \
   zarf-package-szl-receipts-amd64-0.3.1.tar.zst
 # => Verified OK   ✅
 ```
 
-Verification public key (box run, 2026-06-07):
+Legacy public key (box run, 2026-06-07):
 
 ```
 -----BEGIN PUBLIC KEY-----
@@ -111,9 +138,9 @@ IQCtbM6ZD1T0BMzEg5F4bj1ryoVe1edz/sENsx4vXZ0eCpVWVrp7V8Yz9w==
 -----END PUBLIC KEY-----
 ```
 
-> The key-pair above is an ephemeral box pair used for headless publish. For
-> production releases, sign keyless in CI (same OIDC flow as the image) so no
-> private key is ever stored — see the runbook.
+The private half was ephemeral and is gone; no further artifacts will be signed
+with it. New releases are keyless (above), so no key custody is required.
+</details>
 
 ---
 
@@ -177,21 +204,23 @@ These steps need credentials/secrets only Stephen holds; everything else is in
    ```bash
    ./scripts/sbom-sign-publish-receipts.sh
    ```
-3. **Production (keyless) signing** — preferred over the box key-pair. Tag a
-   release; the `zarf-package-sign.yml` workflow signs keyless via GitHub OIDC, so
-   no private key is stored. (Workflow fix applied this round — see §6.)
+3. **Production (keyless) signing — now the default, no Stephen step.** Every push
+   to `main` runs `zarf-package-sign.yml`, which `zarf package publish`es the
+   szl-receipts package to GHCR **and** `cosign sign`s the published OCI ref keyless
+   via GitHub OIDC. No private key is stored and no public key is committed. The
+   box key-pair publish (steps 1–2) is now legacy/optional.
 4. **Make the GHCR package public** — required for unauthenticated pull/verify.
-   The package `packages/szl-receipts` is currently **`internal`** (org-only). This
-   is the **only** step that cannot be automated: GitHub's REST API has **no**
-   package-visibility endpoint (`PATCH .../packages/container/...` returns 404), so
-   an org owner must flip it in the web UI:
+   GitHub's REST API has **no** package-visibility endpoint (`PATCH
+   .../packages/container/...` returns 404), so an org owner flips it once in the
+   web UI:
    *github.com/orgs/szl-holdings → Packages → `szl-receipts` → Package settings →
    Danger Zone → Change visibility → **Public***.
-   Then confirm anonymous access works:
+   Then confirm anonymous, **keyless** access works (no key file):
    ```bash
    docker logout ghcr.io
-   cosign verify --key cosign/szl-receipts-package.pub \
-     ghcr.io/szl-holdings/packages/szl-receipts:0.3.1-upstream   # passes with no login
+   cosign verify ghcr.io/szl-holdings/packages/szl-receipts:0.4.0-upstream \
+     --certificate-identity-regexp 'zarf-package-sign.yml' \
+     --certificate-oidc-issuer https://token.actions.githubusercontent.com
    ```
 5. **Version-lock** the package's `uds-v0.4.0` image reference vs the GHCR
    `uds-v0.3.1` image — **tracked separately**, intentionally out of scope here
@@ -218,7 +247,10 @@ zarf package create uds --set UDSMESH_IMAGE_TAG=latest --set A11OY_IMAGE_TAG=lat
 - **Provenance level: SLSA L1/L2 class only** — GitHub-Actions keyless attestation +
   cosign signatures + Syft SBOMs. **No** SLSA L3, Iron Bank, FedRAMP, or CMMC
   claims.
-- The cosign **transparency-log** entries are real (Rekor); the package signature in
-  §3 uses a box key-pair, not keyless — production should move to keyless CI.
+- The cosign **transparency-log** entries are real (Rekor). The original
+  `0.3.1-upstream` package signature used an ephemeral box key-pair; current
+  releases are signed **keyless** in CI (`zarf-package-sign.yml` now publishes the
+  package to GHCR and `cosign sign`s the published OCI ref), so no private key is
+  stored and no public key is committed.
 - Version-consistency (package `uds-v0.4.0` ref vs GHCR `uds-v0.3.1`) is **out of
   scope** and tracked elsewhere; it does not affect this self-contained round-trip.
