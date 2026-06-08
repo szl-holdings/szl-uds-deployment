@@ -92,8 +92,13 @@ A UDS add-on that attaches cryptographic governance receipts to every Kubernetes
 ## Quick Start
 
 ```bash
-# Prerequisites: Docker, k3d, uds CLI, zarf CLI
-# See docs/INSTALL.md for one-liner installs
+# Prerequisites: Docker, k3d, uds CLI, zarf CLI,
+#   + a (free) Defense Unicorns registry login — UDS Core is pulled from
+#     registry.defenseunicorns.com/public/core (HTTP Basic, not anonymous):
+#       zarf tools registry login registry.defenseunicorns.com -u <user> --password-stdin
+#   Without it, `uds run start` / `uds run bundle` fail at `uds create` with
+#     "... core/manifests/1.5.0-upstream: basic credential not found".
+# See docs/INSTALL.md for one-liner installs + the registry-login walkthrough.
 
 uds run start           # bootstrap k3d + deploy bundle (~90 seconds)
 uds run demo:workload   # apply sample workload → receipt appears in feed

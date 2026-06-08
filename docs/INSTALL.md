@@ -12,6 +12,15 @@
 | k3d | 5.6+ | https://k3d.io/v5.6.0/#installation |
 | uds CLI | 0.19+ | https://github.com/defenseunicorns/uds-cli/releases |
 | zarf CLI | 0.43+ | https://github.com/zarf-dev/zarf/releases |
+| Defense Unicorns registry account | (free) | https://registry.defenseunicorns.com — see "UDS Core registry login" below |
+
+> **Required before `uds run start` / `uds run bundle`.** The bundle pulls UDS Core
+> from `registry.defenseunicorns.com/public/core:1.5.0-upstream`. That registry is
+> **not anonymous** — it answers `WWW-Authenticate: Basic` and an unauthenticated
+> pull returns `401` (`uds create` then fails with
+> `GET .../core/manifests/1.5.0-upstream: basic credential not found`). A **free**
+> Defense Unicorns registry account is an environment prerequisite, the same way
+> Docker/k3d/uds/zarf are. See **UDS Core registry login** below.
 
 **Quick install (macOS/Linux):**
 
@@ -36,12 +45,51 @@ uds run install-deps
 
 ---
 
+## UDS Core registry login (required)
+
+The bundle pulls UDS Core from `registry.defenseunicorns.com/public/core`, which
+requires a **free** Defense Unicorns registry account (HTTP Basic auth — there is
+no anonymous pull). Do this **once per build box**, before `uds run start` or
+`uds run bundle`:
+
+1. Create a free account at https://registry.defenseunicorns.com (use the
+   "Sign in / Sign up" flow). Generate a CLI / robot token if the registry offers
+   one; otherwise use your account username + password.
+2. Log the build box in. Either tool works (both write `~/.docker/config.json`,
+   which `zarf`/`uds` read):
+
+   ```bash
+   # via zarf (recommended — same credential store uds uses)
+   echo "$DU_REGISTRY_TOKEN" | zarf tools registry login registry.defenseunicorns.com \
+     -u "$DU_REGISTRY_USERNAME" --password-stdin
+
+   # …or via docker
+   echo "$DU_REGISTRY_TOKEN" | docker login registry.defenseunicorns.com \
+     -u "$DU_REGISTRY_USERNAME" --password-stdin
+   ```
+
+3. Verify the credential resolves the core manifest:
+
+   ```bash
+   zarf tools registry digest registry.defenseunicorns.com/public/core:1.5.0-upstream
+   # prints a sha256:… digest on success; a 401 means the login did not take
+   ```
+
+> Without this login, `uds run start` / `uds run bundle` fail at the `uds create`
+> step with `... core/manifests/1.5.0-upstream: basic credential not found`. This
+> is an environment prerequisite, not a repo defect — the bundle ref is correct.
+
+---
+
 ## Deploy
 
 ```bash
 # Clone the repo
 git clone https://github.com/szl-holdings/szl-uds-deployment.git
 cd szl-uds-deployment
+
+# One-time: log in to the Defense Unicorns registry (see section above)
+# zarf tools registry login registry.defenseunicorns.com -u <user> --password-stdin
 
 # Bootstrap + deploy everything (k3d cluster + uds-core + szl-receipts)
 uds run start

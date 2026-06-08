@@ -16,6 +16,24 @@
 | cosign | 2.4.3 | `brew install cosign` or https://docs.sigstore.dev/system_config/installation/ |
 | jq | 1.7 | `brew install jq` |
 | curl | 7.88 | pre-installed on most systems |
+| Defense Unicorns registry account | (free) | https://registry.defenseunicorns.com (see "UDS Core registry login" below) |
+
+### UDS Core registry login (required before `uds run start` / `uds run bundle`)
+
+The UDS bundle pulls UDS Core from `registry.defenseunicorns.com/public/core:1.5.0-upstream`.
+That registry is **not anonymous** (it answers `WWW-Authenticate: Basic`); an
+unauthenticated pull returns `401` and `uds create` fails with
+`GET .../core/manifests/1.5.0-upstream: basic credential not found`. Create a
+**free** account, then log the build box in once:
+
+```bash
+echo "$DU_REGISTRY_TOKEN" | zarf tools registry login registry.defenseunicorns.com \
+  -u "$DU_REGISTRY_USERNAME" --password-stdin
+# verify: zarf tools registry digest registry.defenseunicorns.com/public/core:1.5.0-upstream
+```
+
+This is an environment prerequisite (like the tools above), not a repo defect — the
+bundle ref is correct. Full walkthrough: `docs/INSTALL.md` → "UDS Core registry login".
 
 Verify all tools are present:
 
