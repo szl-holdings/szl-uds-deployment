@@ -6,3 +6,9 @@ __pycache__/
 /szl-receipts
 sbom/
 zarf-sbom/
+
+# Warhacker demo subsystem — rehearsal script + deliverables/proof docs.
+# Intentionally not part of the receipts deployment (canonical home is the
+# warhacker-demo repo); ignored here so the deployment tree stays clean.
+rehearse.sh
+warhacker-deliverables/
