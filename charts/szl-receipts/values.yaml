@@ -32,10 +32,10 @@ server:
   resources:
     requests:
       cpu: "50m"
-      memory: "128Mi"
+      memory: "256Mi"
     limits:
       cpu: "500m"
-      memory: "256Mi"
+      memory: "512Mi"
 
   # Volume for persisting receipts across pod restarts.
   # v0.3.1: PVC-backed by default so the receipt chain survives reschedule.
