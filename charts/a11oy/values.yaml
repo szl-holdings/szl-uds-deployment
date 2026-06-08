@@ -1,24 +1,43 @@
 # Copyright 2026 SZL Holdings — SPDX-License-Identifier: Apache-2.0
 # a11oy Helm values — STIG-aligned securityContext, default-deny NetworkPolicy,
 # STRICT mTLS via Istio (managed by UDS Operator / uds-core).
+#
+# Task 301 — run a11oy itself INSIDE UDS Core behind Keycloak SSO, exposed via a
+# UDS Core Istio gateway. The UDS Package CR (templates/uds-package.yaml) is
+# value-driven: SSO gating (udsPackage.sso.enabled) + gateway exposure
+# (udsPackage.expose) mirror the proven szl-receipts pattern.
+
+# Cluster domain — MUST match UDS Core DOMAIN.
+global:
+  domain: "uds.dev"
+
 namespace: szl-a11oy
 replicas: 1
 
 image:
+  # Canonical (CI / production) image. On the single-node uds-szl-demo box the
+  # live deploy overrides this to the k3d-imported local image:
+  #   --set image.repository=a11oy --set image.tag=local --set zarfAgentIgnore=true
   repository: ghcr.io/szl-holdings/a11oy
   tag: "uds-v0.2.0"
   pullPolicy: IfNotPresent
 
+# a11oy (FastAPI + React SPA) listens on 7860 (HF Space app port).
 service:
-  port: 8080
+  port: 7860
 
-healthPath: "/api/a11oy/healthz"
+healthPath: "/healthz"
 
-# Receipt-signing key (Ed25519). Provisioned by the szl-key-init pre-install hook
-# into Secret `receiptKeySecret` unless it already exists (BYOK supported).
-receiptKeySecret: szl-receipts-ed25519
+# When deploying with a k3d-imported local image (no Zarf in the loop), set true
+# so the Zarf mutating webhook does NOT rewrite the image to the internal
+# registry. Leave false for the canonical Zarf/uds-bundle deploy path.
+zarfAgentIgnore: false
 
-# Cross-organ DSSE receipt sink (amaru/killinchu courier targets this).
+# Receipt-signing key (Ed25519). Provisioned by the receipt-key-init pre-install
+# hook into Secret `receiptKeySecret` unless it already exists (BYOK supported).
+receiptKeySecret: szl-a11oy-receipts-ed25519
+
+# Cross-organ DSSE receipt sink (a11oy emits decision-time receipts here).
 receiptsSink:
   namespace: szl-receipts
   service: szl-receipts-server
@@ -27,6 +46,9 @@ receiptsSink:
 istio:
   enabled: true
   strictMtls: true   # PeerAuthentication STRICT
+  # Keep the injected sidecar small so a11oy schedules on the ~2-vCPU node.
+  proxyCPU: "10m"
+  proxyMemory: "64Mi"
 
 monitoring:
   enabled: true
@@ -37,9 +59,27 @@ networkPolicy:
   enabled: true
   defaultDeny: true
 
+# ── UDS Package CR knobs ──────────────────────────────────────────────────────
+udsPackage:
+  enabled: true
+  # Exposure surface. On the single-node uds-szl-demo only the ADMIN gateway has
+  # an LB IP (the tenant gateway stays <pending> — Ceiling 2), so we publish on
+  # admin -> endpoint a11oy.admin.<domain>. Multi-node/HA clusters set tenant.
+  expose:
+    host: a11oy
+    gateway: admin
+  # SSO (Keycloak OIDC client) registration + authservice gating of a11oy's
+  # human UI. Default OFF: when disabled the template emits NO `sso` key at all
+  # (an empty `sso: []` still trips the UDS authservice gate and forces an
+  # unsatisfiable waypoint). Flip true only after Keycloak is up.
+  sso:
+    enabled: false
+
 securityContext:
   runAsNonRoot: true
-  runAsUser: 10001
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
   allowPrivilegeEscalation: false
   readOnlyRootFilesystem: true
   seccompProfile:
@@ -48,5 +88,11 @@ securityContext:
     drop: ["ALL"]
 
 resources:
-  requests: {cpu: 50m, memory: 128Mi}
+  requests: {cpu: 20m, memory: 192Mi}
   limits: {cpu: "1", memory: 1Gi}
+
+# Optional BYOK pre-install keygen hook. a11oy signs receipts with its own
+# in-process key, so this is OFF by default (and the alpine+kubectl hook is not
+# airgap-friendly). Enable for BYOK Secret provisioning on internet clusters.
+receiptKeyInit:
+  enabled: false

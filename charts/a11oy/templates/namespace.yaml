@@ -6,5 +6,20 @@ metadata:
   labels:
     app.kubernetes.io/name: a11oy
     app.kubernetes.io/part-of: szl-uds-mesh
-    istio-injection: enabled
+    # UDS Core runs Istio in AMBIENT mode (ztunnel, no per-pod sidecar / init
+    # container) — mirrors the proven szl-receipts namespace. Sidecar injection
+    # would add an istio-init container that violates restricted PodSecurity.
+    istio.io/dataplane-mode: ambient
     szl.ai/doctrine-version: "v11"
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+  {{- if .Values.zarfAgentIgnore }}
+    # Local-image (k3d import) deploy path: the Zarf mutating webhook's
+    # namespaceSelector skips namespaces carrying this LABEL, so it won't rewrite
+    # a11oy's image ref to the internal Zarf registry.
+    zarf.dev/agent: ignore
+  {{- end }}

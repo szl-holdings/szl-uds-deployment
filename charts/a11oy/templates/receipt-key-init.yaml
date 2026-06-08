@@ -1,3 +1,4 @@
+{{- if .Values.receiptKeyInit.enabled }}
 # Copyright 2026 SZL Holdings — SPDX-License-Identifier: Apache-2.0
 #
 # Receipt-key init — Helm PRE-INSTALL hook (weight -5, runs before workload).
@@ -89,3 +90,4 @@ subjects:
   - kind: ServiceAccount
     name: a11oy-receipt-key-init
     namespace: {{ .Values.namespace }}
+{{- end }}

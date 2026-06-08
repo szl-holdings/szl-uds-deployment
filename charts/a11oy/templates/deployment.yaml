@@ -17,12 +17,14 @@ spec:
     metadata:
       labels:
         app: a11oy
-      annotations:
-        sidecar.istio.io/inject: "true"
+        app.kubernetes.io/name: a11oy
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
         runAsUser: {{ .Values.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.securityContext.runAsGroup }}
+        fsGroup: {{ .Values.securityContext.fsGroup }}
         seccompProfile:
           type: {{ .Values.securityContext.seccompProfile.type }}
       containers:
@@ -36,6 +38,9 @@ spec:
             - configMapRef:
                 name: a11oy-doctrine
           volumeMounts:
+            # a11oy writes runtime state under /tmp (read-only root filesystem).
+            - name: tmp
+              mountPath: /tmp
             - name: receipt-key
               mountPath: /etc/szl/receipt-key
               readOnly: true
@@ -50,8 +55,16 @@ spec:
               port: {{ .Values.service.port }}
             initialDelaySeconds: 5
             periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.healthPath }}
+              port: {{ .Values.service.port }}
+            initialDelaySeconds: 20
+            periodSeconds: 20
           resources: {{ .Values.resources | toYaml | nindent 12 }}
       volumes:
+        - name: tmp
+          emptyDir: {}
         - name: receipt-key
           secret:
             secretName: {{ .Values.receiptKeySecret }}

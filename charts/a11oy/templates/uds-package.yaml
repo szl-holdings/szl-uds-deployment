@@ -1,0 +1,115 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# UDS Package CR — a11oy (the flagship app, run INSIDE UDS Core behind SSO)
+#
+# Task 301 — "connect a11oy to UDS" (Andrew Greene stretch goal): the flagship
+# a11oy app runs as a UDS workload, exposed through a UDS Core Istio gateway,
+# with its human-facing UI gated by Keycloak SSO via the authservice sidecar —
+# while a11oy's machine-to-machine receipt-emission path stays unbroken.
+#
+# SSO model (mirrors the proven, live szl-receipts Package):
+#   - enableAuthserviceSelector binds the authservice sidecar in front of the
+#     a11oy workload's HTTP ingress (browser/gateway traffic) when SSO is on.
+#   - a11oy is a *client* of szl-receipts: it emits DSSE receipts via EGRESS,
+#     which authservice never intercepts. So a single-workload authservice
+#     selector keeps the machine-to-machine path unbroken — no nginx reverse
+#     proxy split is needed (that split only matters for a server that RECEIVES
+#     in-mesh machine POSTs, e.g. receipts' Pepr webhook).
+#   - Prometheus metrics scraping is preserved via the always-on monitor block
+#     and an explicit ingress allow, independent of SSO state.
+#   - Gated on .Values.udsPackage.sso.enabled (default false). When disabled we
+#     emit NO `sso` key at all — an empty `sso: []` still trips the UDS
+#     authservice gate and forces an unsatisfiable waypoint. Flip true only
+#     after Keycloak is up (live login is the on-site stretch; on the ~2-vCPU
+#     uds-szl-demo box Keycloak is scaled to 0, so SSO-on is validated by
+#     helm render + server-side dry-run).
+#
+# UDS Package CRD: https://uds.defenseunicorns.com/reference/configuration/custom-resources/packages-v1alpha1-cr/
+apiVersion: uds.dev/v1alpha1
+kind: Package
+metadata:
+  name: a11oy
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: a11oy
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/version: {{ .Chart.AppVersion }}
+    szl.io/component: uds-package
+  annotations:
+    szl.io/doc: "Task 301 — run a11oy itself inside UDS behind Keycloak SSO"
+spec:
+  {{- if .Values.udsPackage.sso.enabled }}
+  # ── SSO — Keycloak OIDC client + authservice gating of a11oy's human UI ──────
+  {{- $exposeHost := .Values.udsPackage.expose.host }}
+  {{- if eq .Values.udsPackage.expose.gateway "admin" }}
+  {{- $exposeHost = printf "%s.admin" .Values.udsPackage.expose.host }}
+  {{- end }}
+  sso:
+    - name: SZL a11oy
+      clientId: szl-a11oy
+      redirectUris:
+        # Login host = the gateway-qualified endpoint (admin gw -> <host>.admin.<domain>).
+        - "https://{{ $exposeHost }}.{{ .Values.global.domain }}/oauth2/callback"
+      # authservice sidecar intercepts a11oy's HTTP ingress -> Keycloak login.
+      enableAuthserviceSelector:
+        app: a11oy
+      secretName: szl-a11oy-sso
+  {{- end }}
+
+  # ── Network — ingress + egress (UDS generates Istio + K8s NetworkPolicy) ─────
+  network:
+    expose:
+      # Publish a11oy on the UDS Core Istio gateway -> https://<host>.<gw>.<domain>
+      - service: szl-a11oy
+        selector:
+          app: a11oy
+        gateway: {{ .Values.udsPackage.expose.gateway }}
+        host: {{ .Values.udsPackage.expose.host }}
+        port: {{ .Values.service.port }}
+        targetPort: {{ .Values.service.port }}
+        description: "a11oy flagship UI/API — {{ .Values.udsPackage.expose.gateway }} gateway"
+
+    allow:
+      # a11oy -> Kubernetes API / DNS resolution
+      - direction: Egress
+        selector:
+          app: a11oy
+        remoteGenerated: KubeAPI
+        description: "Kubernetes API / DNS"
+
+      # a11oy -> szl-receipts : decision-time DSSE receipt emission (MACHINE,
+      # egress). authservice on a11oy's ingress never touches this, so turning
+      # SSO on does not break the receipt path.
+      - direction: Egress
+        selector:
+          app: a11oy
+        remoteNamespace: {{ .Values.receiptsSink.namespace }}
+        remoteSelector:
+          app: szl-receipts-server
+        port: {{ .Values.receiptsSink.port }}
+        description: "a11oy emits signed receipts to the szl-receipts chain authority"
+
+      {{- if .Values.monitoring.enabled }}
+      # monitoring -> a11oy : Prometheus metrics scrape (MACHINE, always on,
+      # independent of SSO).
+      - direction: Ingress
+        selector:
+          app: a11oy
+        remoteNamespace: monitoring
+        remoteSelector:
+          app.kubernetes.io/name: prometheus
+        port: {{ .Values.service.port }}
+        description: "Prometheus scrape of a11oy {{ .Values.monitoring.path }}"
+      {{- end }}
+
+  {{- if .Values.monitoring.enabled }}
+  # ── Monitor — UDS generates the ServiceMonitor / scrape config ───────────────
+  monitor:
+    - portName: http
+      selector:
+        app: a11oy
+      targetPort: {{ .Values.service.port }}
+      path: {{ .Values.monitoring.path }}
+      description: "a11oy metrics scrape"
+  {{- end }}
