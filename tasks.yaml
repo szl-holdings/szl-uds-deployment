@@ -362,3 +362,207 @@ tasks:
     description: "Run static validation: yamllint + helm lint (no cluster needed)"
     actions:
       - task: test:lint
+
+  # ── Full safe-recreate (one command) ──────────────────────────────────────
+  # `uds run recreate-full`: tear the cluster down and rebuild the COMPLETE
+  # pre-recreate workload set — not just the base bundle. The live uds-szl-demo
+  # cluster carries more than init + UDS Core + szl-receipts:
+  #   * the persistent HashiCorp Vault (ns `vault`) that backs szl-receipts
+  #     Tier-2 (Transit) key custody,
+  #   * the pepr-szl receipt-on-deploy admission webhook (ns `pepr-system`) plus
+  #     its Ed25519 signing-key Secret,
+  #   * an (empty) szl-receipts-demo scratch namespace and an (empty)
+  #     monitoring namespace.
+  # A literal `uds run teardown` + `uds run start` does NOT bring Vault or the
+  # pepr-szl module back (start's WITH_PEPR governs only the szl-governance
+  # capability, which is NOT what the live cluster runs), so after a plain
+  # teardown the cluster comes back missing those. This task restores all of it
+  # in one command.
+  #
+  # SAFETY:
+  #   * Destructive by design — it deletes the cluster, which drops the
+  #     local-path PVs. That means the Vault file-store (the Transit signing
+  #     key) and the in-cluster receipt chain are WIPED: Vault comes back
+  #     FRESH/UNINITIALIZED and a NEW signing key must be created (old receipt
+  #     signatures will not verify against the new pubkey). It therefore refuses
+  #     to run while the cluster shows in-flight work (same idle-check as
+  #     `teardown`); override with `--set FORCE=true` only after you have
+  #     confirmed a genuine idle window with no sibling work in flight.
+  #   * Coexistence-safe — the cluster is recreated PORT-GUARDED: host ports
+  #     80/443 are published to the k3d serverlb ONLY if they are free, so a
+  #     coexisting public nginx site (e.g. a11oy.net) keeps owning them and
+  #     stays up. The serverlb is born clean (kube-API + 8443 only). On a normal
+  #     laptop where 80/443 are free this behaves exactly like `start`'s create.
+  #
+  # Restoring Tier-2 (Vault) signing after a recreate needs a one-time,
+  # off-cluster operator step (the unseal-key shares live OFF git/etcd by design
+  # and cannot be scripted into the repo) — the final step prints the exact
+  # commands. See docs/operations/VAULT_PERSISTENT_RUNBOOK.md. On box
+  # 167.233.50.75 the vault-auto-unseal systemd timer keeps Vault unsealed once
+  # /root/vault-init/init.json is refreshed with the NEW shares.
+  - name: recreate-full
+    description: "SAFE one-command full recreate: teardown + port-guarded rebuild + Vault + pepr-szl webhook (the complete pre-recreate workload set, not just the base bundle)"
+    actions:
+      - description: "Refuse to recreate while the cluster has in-flight work (override with --set FORCE=true)"
+        cmd: |
+          if [ "${FORCE}" = "true" ]; then
+            echo "WARNING: FORCE=true -> skipping the in-flight activity check."
+          else
+            CLUSTER_NAME="${CLUSTER_NAME}" IDLE_WINDOW_MINUTES="${IDLE_WINDOW_MINUTES}" \
+              sh ./scripts/idle-check.sh || {
+                echo ""
+                echo "Refusing to recreate '${CLUSTER_NAME}' -- a sibling task may be mid-deploy."
+                echo "Re-run with --set FORCE=true once you have confirmed a genuine idle window:"
+                echo "    uds run recreate-full --set FORCE=true"
+                exit 1
+              }
+          fi
+
+      - description: "Record the namespaces present BEFORE recreate (for the after-comparison)"
+        cmd: |
+          echo "Namespaces present BEFORE recreate:"
+          kubectl get ns -o name 2>/dev/null | sed 's#namespace/#  - #' || echo "  (no reachable cluster)"
+
+      - description: "Tear down the existing cluster"
+        cmd: |
+          if k3d cluster list 2>/dev/null | grep -q "${CLUSTER_NAME}"; then
+            k3d cluster delete "${CLUSTER_NAME}" && echo "Cluster ${CLUSTER_NAME} deleted."
+          else
+            echo "No existing ${CLUSTER_NAME} cluster — nothing to delete."
+          fi
+
+      - description: "Create the k3d cluster PORT-GUARDED (publish host 80/443 only if free) [coexist-portguard]"
+        cmd: |
+          # coexist-portguard: where nginx already owns host 80/443 (a public
+          # site like a11oy.net) we must NOT let the k3d serverlb grab them or
+          # the site goes offline. Publish 80/443 to the loadbalancer ONLY when
+          # the host port is free; always publish 8443. On a laptop where 80/443
+          # are free this is identical to the base `start` create.
+          PORTS=( --port "8443:8443@loadbalancer" )
+          for P in 80 443; do
+            if ss -ltnH "sport = :$P" 2>/dev/null | grep -q .; then
+              echo "host port $P is busy (nginx?) — NOT publishing it to the serverlb (coexist)."
+            else
+              PORTS+=( --port "$P:$P@loadbalancer" )
+            fi
+          done
+          k3d cluster create "${CLUSTER_NAME}" \
+            --k3s-arg "--disable=traefik@server:0" \
+            "${PORTS[@]}" \
+            --wait
+          echo "Cluster ${CLUSTER_NAME} created (port-guarded)."
+
+      - description: "Re-apply the persistent Vault (ns + ServiceAccount + PVC + ConfigMap + Deployment + Service) BEFORE receipts"
+        cmd: |
+          kubectl apply -f manifests/vault-namespace.yaml
+          kubectl apply -f k8s/vault/vault-persistent.yaml
+          kubectl -n vault rollout status deploy/vault --timeout=120s || \
+            echo "WARN: vault not Ready yet — it is intentionally Ready-while-sealed; continuing."
+
+      - description: "Build + load the szl-receipts-server image into the cluster (mirrors start; bundle also bakes it)"
+        cmd: |
+          REF="${RECEIPTS_IMAGE}:${RECEIPTS_IMAGE_TAG}"
+          if [ "${BUILD_RECEIPTS_LOCAL}" = "true" ]; then
+            echo "Building ${REF} from services/szl-receipts-server ..."
+            docker build -t "${REF}" services/szl-receipts-server
+            k3d image import "${REF}" -c "${CLUSTER_NAME}"
+            echo "receipts-server image present in-cluster."
+          else
+            echo "BUILD_RECEIPTS_LOCAL=false — relying on the image baked into the bundle / GHCR."
+          fi
+
+      - description: "Build the UDS bundle (init + core + szl-receipts) from a clean checkout"
+        task: bundle
+
+      - description: "Deploy the UDS bundle (init + UDS Core + szl-receipts)"
+        cmd: |
+          # Deploy whatever bundle `uds create .` produced. We detect the newest
+          # tarball rather than hard-coding the bundle name (the legacy `start`
+          # glob `uds-bundle-szl-warhacker-demo-*` is stale vs the current
+          # `szl-receipts-bundle` metadata — see the box-drift task).
+          BUNDLE=$(ls -t uds-bundle-*.tar.zst 2>/dev/null | head -1)
+          if [ -z "${BUNDLE}" ]; then
+            echo "ERROR: no uds-bundle-*.tar.zst found after build." >&2; exit 1
+          fi
+          echo "Deploying bundle: ${BUNDLE}"
+          uds deploy "${BUNDLE}" \
+            --set DOMAIN=${DOMAIN} \
+            --set INSECURE_ADMIN_PASSWORD_GENERATION=true \
+            --confirm \
+            --no-progress
+
+      - description: "Ensure the empty scratch namespaces present pre-recreate (szl-receipts-demo, monitoring)"
+        cmd: |
+          # szl-receipts-demo is a hands-on scratch namespace (ephemeral, no
+          # zarf/helm/UDS owner) and `monitoring` is an empty placeholder on this
+          # box (no Prometheus/Grafana fits the 2-vCPU node). Neither has a
+          # managed source to redeploy, so we just recreate the empty namespaces
+          # (idempotent) to match the pre-recreate namespace set. Real scratch
+          # workloads are re-applied by hand as needed.
+          for NS in szl-receipts-demo monitoring; do
+            kubectl create namespace "${NS}" --dry-run=client -o yaml | kubectl apply -f -
+          done
+          echo "scratch namespaces ensured."
+
+      - description: "Deploy the pepr-szl receipt-on-deploy webhook + Ed25519 signing key (WITH_PEPR=true)"
+        cmd: |
+          if [ "${WITH_PEPR}" != "true" ]; then
+            echo "WITH_PEPR=false — skipping the pepr-szl webhook (set WITH_PEPR=true to enable)."
+            exit 0
+          fi
+          echo "Building + deploying the pepr-szl module from pepr/ ..."
+          ( cd pepr && npm ci && npm run deploy )
+          echo "Ensuring the Ed25519 signing-key Secret in pepr-system ..."
+          if kubectl -n pepr-system get secret szl-receipts-ed25519 >/dev/null 2>&1; then
+            echo "  signing-key Secret already present — leaving it in place."
+          else
+            TMPK=$(mktemp)
+            bash scripts/generate-receipt-key.sh > "${TMPK}"
+            kubectl apply -f "${TMPK}"
+            shred -u "${TMPK}" 2>/dev/null || rm -f "${TMPK}"
+            echo "  signing-key Secret created."
+          fi
+          # Pepr regenerates its Deployment on deploy and drops the key mount; on
+          # the box the pepr-key-mount timer re-attaches it (and forces
+          # strategy=Recreate so the 2-vCPU node never surge-deadlocks). Run it
+          # now if installed.
+          [ -x /usr/local/sbin/pepr-key-mount ] && /usr/local/sbin/pepr-key-mount || true
+          echo "pepr-szl webhook deployed."
+
+      - description: "Coexistence safety net + Vault re-init guidance"
+        cmd: |
+          # Belt-and-suspenders in case anything re-grabbed host 80/443.
+          [ -x /usr/local/sbin/a11oy-serverlb-deconflict ] && /usr/local/sbin/a11oy-serverlb-deconflict || true
+          echo ""
+          echo "NOTE: the teardown dropped the Vault PV, so Vault is now FRESH/UNINITIALIZED."
+          echo "      A NEW Transit signing key must be created — OLD receipt signatures will"
+          echo "      NOT verify against the new pubkey. Initialize it once (off-cluster):"
+          echo "        kubectl -n vault exec deploy/vault -- vault operator init -key-shares=1 -key-threshold=1 -format=json   # store OFF-cluster"
+          echo "        kubectl -n vault exec deploy/vault -- vault operator unseal <unseal-key>"
+          echo "        VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=<root> scripts/setup-vault-transit.sh --k8s-auth --k8s-namespace szl-receipts --k8s-sa szl-receipts"
+          echo "      On box 167.233.50.75, refresh /root/vault-init/init.json with the new"
+          echo "      shares so the vault-auto-unseal timer keeps Vault unsealed across restarts,"
+          echo "      then delete the receipts pod so it re-inits its Vault signer."
+
+      - description: "Verify: full workload set present + Ready, serverlb clean, a11oy.net reachable"
+        cmd: |
+          echo "Namespaces present AFTER recreate:"
+          kubectl get ns -o name 2>/dev/null | sed 's#namespace/#  - #'
+          echo ""
+          echo "Key workloads:"
+          kubectl -n vault rollout status deploy/vault --timeout=60s || echo "WARN: vault not Ready"
+          kubectl -n szl-receipts rollout status deploy/szl-receipts-server --timeout=180s || echo "WARN: szl-receipts-server not Ready"
+          if kubectl get mutatingwebhookconfigurations pepr-szl >/dev/null 2>&1; then
+            echo "pepr-szl admission webhook present."
+          else
+            echo "WARN: pepr-szl webhook missing (WITH_PEPR=${WITH_PEPR})."
+          fi
+          echo ""
+          echo "serverlb published host ports (expect kube-API + 8443, NO 80/443):"
+          docker ps --filter "name=${CLUSTER_NAME}-serverlb" --format '{{.Ports}}' 2>/dev/null || true
+          if command -v curl >/dev/null 2>&1; then
+            code=$(curl -s -o /dev/null -w '%{http_code}' https://a11oy.net/ 2>/dev/null || echo "n/a")
+            echo "a11oy.net HTTPS status: ${code}"
+          fi
+          echo ""
+          echo "recreate-full complete."
