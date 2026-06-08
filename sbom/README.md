@@ -63,7 +63,10 @@ zarf package pull oci://ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream
 > The receipts **image** is signed the same keyless way:
 > `cosign verify ghcr.io/szl-holdings/szl-receipts-server:uds-v0.4.0 --certificate-identity-regexp 'receipts-server-image.yml' --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
 >
-> **Legacy key-pair (deprecated).** The earlier `0.3.1-upstream` artifact was signed
-> with an ephemeral box key-pair whose public half was committed at
-> `cosign/szl-receipts-package.pub`. That key is retained only to verify that old
-> artifact and is **not** used for current releases — see `cosign/README.md`.
+> **Retired internal artifact (do not use as a verification path).** The earlier
+> internal package `ghcr.io/szl-holdings/packages/szl-receipts:0.3.1-upstream` is
+> **RETIRED** (`internal` visibility, kept only as a frozen historical record). It
+> was signed with an ephemeral box key-pair whose private half is gone; its public
+> half at `cosign/szl-receipts-package.pub` verifies that retired artifact **only**
+> and is **not** a verification path for any current release — see
+> `cosign/README.md` for the retirement decision and rationale.

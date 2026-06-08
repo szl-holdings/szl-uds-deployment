@@ -4,6 +4,17 @@
 #
 # sbom-sign-publish-receipts.sh
 #
+# RETIRED FLOW — DO NOT USE FOR RELEASES.
+#   This script published the now-RETIRED internal artifact
+#   `ghcr.io/szl-holdings/packages/szl-receipts:0.3.1-upstream` using an ephemeral
+#   key-pair (private half gone). The authoritative artifact is the keyless package
+#   `ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream`, built and signed keyless via
+#   GitHub OIDC in CI (.github/workflows/zarf-package-sign.yml). Kept only as a
+#   historical record of the original publish; see cosign/README.md for the
+#   retirement decision.
+#
+# sbom-sign-publish-receipts.sh
+#
 # End-to-end supply-chain pipeline for the szl-receipts Zarf package:
 #   1. Generate Syft SBOMs (SPDX + CycloneDX) for the receipts image.
 #   2. Publish the (self-contained, image+SBOM-embedded) package to GHCR as OCI.

@@ -27,16 +27,17 @@ cosign verify ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream \
 zarf package pull oci://ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream
 ```
 
-<details><summary>Legacy key-pair verify (original 0.3.1-upstream artifact only)</summary>
+<details><summary>RETIRED — original 0.3.1-upstream internal artifact (historical record, NOT a verification path)</summary>
 
-```bash
-# Legacy: ephemeral box key-pair, public half committed at cosign/szl-receipts-package.pub
-curl -fsSL -o szl-receipts-package.pub \
-  https://raw.githubusercontent.com/szl-holdings/szl-uds-deployment/main/cosign/szl-receipts-package.pub
-cosign verify --key szl-receipts-package.pub \
-  ghcr.io/szl-holdings/packages/szl-receipts:0.3.1-upstream
-# => "The signatures were verified against the specified public key"  (Rekor logIndex 1752638899)
-```
+> The internal package `ghcr.io/szl-holdings/packages/szl-receipts:0.3.1-upstream`
+> is **RETIRED** and `internal` visibility on GHCR. It was an off-CI artifact signed
+> with an **ephemeral box key-pair whose private half is gone**, so nothing further
+> will ever be signed with it. It is **not** authoritative and **not** a verification
+> path — use the keyless `0.4.0-upstream` command above. The decision and rationale
+> for keeping it as a frozen historical record (rather than deleting it) are in
+> `cosign/README.md`. For the historical record only, it was signed with the
+> ephemeral key whose public half is `cosign/szl-receipts-package.pub`
+> (Rekor logIndex 1752638899).
 </details>
 
 ---
@@ -113,10 +114,16 @@ cosign verify-blob \
 # => Verified OK   ✅
 ```
 
-<details><summary>Legacy — original key-pair publish (0.3.1-upstream only, deprecated)</summary>
+<details><summary>RETIRED — original key-pair publish (0.3.1-upstream internal artifact, historical record only)</summary>
+
+> **Do not use this as a verification path.** The internal `0.3.1-upstream` package
+> is RETIRED; the current, authoritative artifact is the keyless `0.4.0-upstream`
+> above. The block below is preserved only as a record of how the retired artifact
+> was originally signed.
 
 The original `0.3.1-upstream` artifact was signed with an ephemeral box key-pair
-whose public half is committed at `cosign/szl-receipts-package.pub`:
+whose public half is committed at `cosign/szl-receipts-package.pub`. It was
+historically checkable with (kept for the record, not for current use):
 
 ```bash
 cosign verify --key cosign/szl-receipts-package.pub \
@@ -129,7 +136,7 @@ cosign verify-blob --key cosign/szl-receipts-package.pub \
 # => Verified OK   ✅
 ```
 
-Legacy public key (box run, 2026-06-07):
+Retired public key (box run, 2026-06-07; private half ephemeral and gone):
 
 ```
 -----BEGIN PUBLIC KEY-----

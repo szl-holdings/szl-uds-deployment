@@ -1,18 +1,47 @@
-# cosign signing keys — LEGACY (kept for back-compat verification only)
+# cosign signing keys — RETIRED legacy material
 
 > **Canonical signing is KEYLESS (no key file).** Both the receipts **image**
 > (`.github/workflows/receipts-server-image.yml`) and the published **package**
 > (`.github/workflows/zarf-package-sign.yml`) are signed keyless via GitHub OIDC
 > (Sigstore Fulcio + Rekor). Verifiers need **no committed key** — they use
 > `--certificate-identity-regexp` + `--certificate-oidc-issuer`. The two public
-> keys in this directory are **legacy**: they verify older artifacts only and are
-> not used for current releases.
+> keys in this directory are **retired legacy material**: they relate to older
+> artifacts only and are **not** a verification path for any current release.
 
-## Legacy files in this directory
+## Authoritative artifact
 
-| File | Status | What it verifies |
+The single authoritative receipts package is the keyless one:
+`ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream` (public, repo-linked, signed
+keyless in CI). Verify it with the keyless command below — **no key file**.
+
+## Retirement decision — internal `packages/szl-receipts` (0.3.1-upstream)
+
+The earlier internal package
+`ghcr.io/szl-holdings/packages/szl-receipts:0.3.1-upstream` was an off-CI artifact
+built and published from the box and signed with an **ephemeral key-pair whose
+private half is gone**. It is **RETIRED**: it is not authoritative, it is not a
+verification path for any release, and nothing further will ever be signed with
+its key.
+
+**Decision (org owner):** the internal package is **kept as a frozen historical
+record — NOT deleted.** Rationale:
+- It is already `internal` visibility on GHCR (not publicly pullable), so it does
+  not create public confusion about which artifact is authoritative.
+- It backs a published, Rekor-logged supply-chain deliverable
+  (`warhacker-deliverables/SIGNED-SBOMED-PACKAGE-PUBLISH-2026-06-07.md`); deleting
+  it would make that documented round-trip non-reproducible and weaken the
+  provenance record.
+- Deletion is an irreversible one-shot; keeping the artifact frozen costs nothing.
+
+The confusion the retirement guards against is resolved by docs (this file and the
+deliverable) marking 0.4.0-upstream keyless as the **sole** authoritative artifact
+and 0.3.1 as retired — not by destroying the historical artifact.
+
+## Retired / legacy files in this directory
+
+| File | Status | What it relates to |
 | --- | --- | --- |
-| `szl-receipts-package.pub` | **LEGACY** | The ephemeral box key-pair that signed the original published package `ghcr.io/szl-holdings/packages/szl-receipts:0.3.1-upstream`. Its private half was ephemeral and is gone — kept only so that old artifact still verifies. **Current packages are keyless.** |
+| `szl-receipts-package.pub` | **RETIRED** | Public half of the ephemeral box key-pair that signed the **retired internal artifact `ghcr.io/szl-holdings/packages/szl-receipts:0.3.1-upstream` only**. Its private half is gone. Kept solely so the frozen historical artifact remains independently checkable; it is **not** a verification path for any current release. **Current packages are keyless.** |
 | `cosign.pub` | **LEGACY / OPTIONAL** | The optional image key-pair. Only used if `COSIGN_PRIVATE_KEY` (+ `COSIGN_PASSWORD`) repo secrets are provisioned; they are not, so the image is signed keyless. |
 | `cosign.key` | **NEVER committed** | Encrypted private key. `.gitignore` blocks it. |
 
