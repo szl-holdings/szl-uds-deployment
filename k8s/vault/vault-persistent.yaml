@@ -1,0 +1,207 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# Persistent HashiCorp Vault for szl-receipts Tier-2 key custody.
+#
+# This REPLACES the throwaway `vault server -dev` deployment (in-memory storage,
+# fixed root token `root`, auto-unsealed). In dev mode a Vault pod restart wipes
+# the Transit key, so receipt signing silently regresses. This manifest gives
+# Vault:
+#   * durable file storage on a PersistentVolumeClaim  -> the Transit key
+#     survives a pod restart / reschedule;
+#   * a real Shamir unseal flow (operator runs `vault operator init` once and
+#     `vault operator unseal` after each start — the unseal key shares are held
+#     OUTSIDE the cluster, never in etcd, never in git);
+#   * a ServiceAccount with `system:auth-delegator` so Vault can validate pod
+#     ServiceAccount JWTs via the TokenReview API — this is what makes the
+#     Vault **Kubernetes auth** method work, so szl-receipts authenticates with
+#     its short-lived, auto-renewing pod SA token and NO static Vault-token
+#     Secret is required.
+#
+# Bootstrap after applying this manifest:
+#   kubectl -n vault rollout status deploy/vault
+#   kubectl -n vault exec deploy/vault -- vault operator init \
+#       -key-shares=1 -key-threshold=1 -format=json   # store output OFF-cluster
+#   kubectl -n vault exec deploy/vault -- vault operator unseal <unseal-key>
+#   VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=<root> \
+#       scripts/setup-vault-transit.sh --k8s-auth \
+#       --k8s-namespace szl-receipts-demo --k8s-sa szl-receipts
+# See docs/operations/VAULT_PERSISTENT_RUNBOOK.md for the full runbook.
+#
+# NOTE: file storage + Shamir is the honest single-node demo posture. For HA /
+# production use Integrated Storage (raft) across >=3 replicas and auto-unseal
+# (cloud KMS / Transit) so unseal is not a manual step — see the runbook.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/component: server
+---
+# Vault must call the Kubernetes TokenReview API to validate the ServiceAccount
+# JWTs that szl-receipts presents at `auth/kubernetes/login`. With no
+# token_reviewer_jwt configured (and disable_local_ca_jwt=false, the default),
+# Vault uses ITS OWN pod ServiceAccount token for the review, so that SA needs
+# the built-in system:auth-delegator ClusterRole.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vault-auth-delegator
+  labels:
+    app.kubernetes.io/name: vault
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: vault
+    namespace: vault
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vault-data
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  # Empty storageClassName => cluster default StorageClass (k3d: local-path).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-config
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault
+data:
+  vault.hcl: |
+    ui            = false
+    # disable_mlock is required because the pod drops ALL Linux capabilities
+    # (no IPC_LOCK). The file storage backend is the durable store; secrets are
+    # encrypted at rest by Vault's own barrier (sealed until unsealed).
+    disable_mlock = true
+
+    storage "file" {
+      path = "/vault/data"
+    }
+
+    listener "tcp" {
+      address     = "0.0.0.0:8200"
+      tls_disable = 1
+    }
+
+    # Single-node, file-backed: API address Vault advertises to clients/itself.
+    api_addr = "http://0.0.0.0:8200"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/component: server
+spec:
+  replicas: 1
+  # A single ReadWriteOnce PVC must never have two writers; Recreate guarantees
+  # the old pod is gone before the new one mounts the volume.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vault
+    spec:
+      serviceAccountName: vault
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 1000
+        # fsGroup makes the PVC group-writable so the non-root vault user (uid
+        # 100 / gid 1000 in the upstream image) can write the file store.
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: vault
+          image: hashicorp/vault:1.18
+          imagePullPolicy: IfNotPresent
+          command: ["vault", "server", "-config=/vault/config/vault.hcl"]
+          env:
+            - name: VAULT_ADDR
+              value: "http://127.0.0.1:8200"
+            - name: SKIP_SETCAP
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 8200
+          volumeMounts:
+            - name: data
+              mountPath: /vault/data
+            - name: config
+              mountPath: /vault/config
+              readOnly: true
+          # The health endpoint returns 501 (uninitialised) / 503 (sealed) by
+          # default. Override those to 200 so the pod becomes Ready and the
+          # Service gets endpoints BEFORE init/unseal — otherwise you cannot
+          # reach Vault to unseal it. A persistent Vault is intentionally Ready
+          # while sealed; signing simply fails closed until an operator unseals.
+          readinessProbe:
+            httpGet:
+              path: "/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200"
+              port: 8200
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8200
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          # No CPU/memory requests: this single-node demo box (2 vCPU) runs the
+          # full UDS Core mesh and is already at its CPU-request ceiling, so a
+          # request here leaves the pod Pending ("Insufficient cpu"). Vault is
+          # idle most of the time; a memory limit caps its footprint without
+          # reserving scarce CPU. Production should set real requests/limits.
+          resources:
+            limits:
+              memory: "256Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: vault-data
+        - name: config
+          configMap:
+            name: vault-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault
+spec:
+  selector:
+    app.kubernetes.io/name: vault
+  ports:
+    - name: http
+      port: 8200
+      targetPort: 8200

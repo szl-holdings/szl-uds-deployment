@@ -38,6 +38,10 @@ K8S_ROLE="szl-receipts"
 K8S_NS="szl-receipts"
 K8S_SA="szl-receipts"
 K8S_AUTH_MOUNT="kubernetes"
+# In-cluster Kubernetes API address Vault validates SA JWTs against. The default
+# works for any in-cluster Vault; override for an external Vault.
+K8S_HOST="https://kubernetes.default.svc"
+ROLE_TTL="20m"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -49,6 +53,8 @@ while [[ $# -gt 0 ]]; do
     --k8s-namespace) K8S_NS="$2"; shift 2;;
     --k8s-sa) K8S_SA="$2"; shift 2;;
     --k8s-auth-mount) K8S_AUTH_MOUNT="$2"; shift 2;;
+    --k8s-host) K8S_HOST="$2"; shift 2;;
+    --role-ttl) ROLE_TTL="$2"; shift 2;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
@@ -96,20 +102,30 @@ path "${MOUNT}/keys/${KEY}" {
 }
 EOF
 
-# 4) Optional Kubernetes auth role
+# 4) Optional Kubernetes auth (the tokenless, recommended path)
 if [[ "$DO_K8S" == "1" ]]; then
   if ! vault auth list -format=json | grep -q "\"${K8S_AUTH_MOUNT}/\""; then
     echo "==> Enabling kubernetes auth at ${K8S_AUTH_MOUNT}/"
     vault auth enable -path="${K8S_AUTH_MOUNT}" kubernetes
-    echo "    NOTE: configure auth/${K8S_AUTH_MOUNT}/config (kubernetes_host, CA, "
-    echo "    token reviewer JWT) for your cluster — see Vault k8s-auth docs."
+  else
+    echo "==> kubernetes auth already enabled at ${K8S_AUTH_MOUNT}/"
   fi
-  echo "==> Binding role ${K8S_ROLE} -> SA ${K8S_NS}/${K8S_SA} -> policy ${POLICY}"
+
+  # Configure the auth method. We deliberately set ONLY kubernetes_host: with no
+  # token_reviewer_jwt and disable_local_ca_jwt left at its default (false),
+  # Vault uses its OWN pod ServiceAccount token + the in-cluster CA bundle to
+  # call the TokenReview API. That requires the Vault SA to hold the
+  # system:auth-delegator ClusterRole (see k8s/vault/vault-persistent.yaml).
+  # This avoids minting and storing a long-lived reviewer JWT.
+  echo "==> Configuring auth/${K8S_AUTH_MOUNT}/config (kubernetes_host=${K8S_HOST})"
+  vault write "auth/${K8S_AUTH_MOUNT}/config" kubernetes_host="${K8S_HOST}"
+
+  echo "==> Binding role ${K8S_ROLE} -> SA ${K8S_NS}/${K8S_SA} -> policy ${POLICY} (ttl=${ROLE_TTL})"
   vault write "auth/${K8S_AUTH_MOUNT}/role/${K8S_ROLE}" \
     bound_service_account_names="${K8S_SA}" \
     bound_service_account_namespaces="${K8S_NS}" \
     policies="${POLICY}" \
-    ttl=20m
+    ttl="${ROLE_TTL}"
 fi
 
 cat <<EOF
