@@ -30,7 +30,12 @@ metadata:
   description: >-
     SZL Killinchu maritime + drone C2 — UDS Package bundle (mesh-ready).
     Deploys on UDS Core (AGPL-3.0). Not affiliated with Defense Unicorns.
-    Doctrine v11 LOCKED. Lambda=Conjecture 1. SLSA Build L2 on organ images (roadmap — not yet earned).
+    Doctrine v11 LOCKED. Lambda=Conjecture 1. SLSA L1 honest on organ images; L2 verification on roadmap.
+    Current organ capabilities (uds-v0.2.0 image): 27 warhacker demos (25 baseline + 2 novel:
+    cross-domain-deconfliction, sensor-denied-attest), live USGS quake-forecast endpoint
+    (/api/killinchu/v1/quake/forecast), gov/chapaq-verdict receipt gate, and live operational feeds
+    (adsb.lol ADS-B, Digitraffic maritime AIS, USGS seismic, NVD/CISA-KEV vulnerability feeds).
+    killinchu.courier.* OTEL spans: dispatch/verify/deliver.
   version: "0.5.0"
   architecture: amd64
   authors: "SZL Holdings <eng@szlholdings.com>"
