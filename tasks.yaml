@@ -136,19 +136,11 @@ tasks:
             echo "  gh workflow run receipts-server-image.yml -f version=${RECEIPTS_IMAGE_TAG}"
           fi
 
-      - description: "Build SZL receipts Zarf package (flavor=${FLAVOR})"
-        cmd: |
-          zarf package create . \
-            --set DOMAIN=${DOMAIN} \
-            --flavor ${FLAVOR} \
-            --confirm \
-            --no-progress
-
-      - description: "Create UDS bundle"
-        cmd: |
-          uds create . \
-            --confirm \
-            --no-progress
+      # The bundle build (zarf package pre-build into packages/szl-receipts/ +
+      # uds create --skip-signature-validation) is encapsulated in the `bundle`
+      # task below so `uds run bundle` and `uds run start` share one code path and
+      # both build from a CLEAN CHECKOUT with no manual zarf invocations.
+      - task: bundle
 
       - description: "Deploy the SZL Warhacker bundle (uds deploy core is layer 2 of the bundle)"
         cmd: |
@@ -204,6 +196,35 @@ tasks:
           echo "║  Then open:  http://localhost:8443                      ║"
           echo "╚══════════════════════════════════════════════════════════╝"
           echo ""
+
+  # ── Build-only: airgap UDS bundle ──────────────────────────
+  # `uds run bundle`: build the self-contained UDS bundle tarball (init + core +
+  # szl-receipts) from a CLEAN CHECKOUT with no manual zarf invocations. Two
+  # uds-cli (v0.32.0) gotchas are encapsulated here:
+  #   1. For the local `path: ./packages/szl-receipts` package, uds-cli does NOT
+  #      build it for you — it looks for
+  #      packages/szl-receipts/zarf-package-szl-receipts-amd64-<ver>.tar.zst and
+  #      errors "no such file" if absent. So we build the zarf package INTO that
+  #      directory first.
+  #   2. `uds create` itself needs --skip-signature-validation (not just
+  #      `uds deploy`): the init/core OCI packages are cosign-keyless-signed by
+  #      different OIDC identities, which strict validation rejects.
+  - name: bundle
+    description: "Build the airgap UDS bundle tarball from a clean checkout (no manual zarf steps)"
+    actions:
+      - description: "Pre-build the szl-receipts Zarf package into packages/szl-receipts/ (flavor=${FLAVOR})"
+        cmd: |
+          zarf package create packages/szl-receipts \
+            --flavor ${FLAVOR} \
+            --output packages/szl-receipts \
+            --confirm \
+            --no-progress
+      - description: "Create the UDS bundle (--skip-signature-validation: init/core are keyless-signed by different identities)"
+        cmd: |
+          uds create . \
+            --skip-signature-validation \
+            --confirm \
+            --no-progress
 
   # ── Teardown ──────────────────────────────────────────────────────────────
   - name: teardown
