@@ -1,0 +1,101 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# receipts-image-digest-guard.yml — Keep the receipts-server image pinned to a
+# content digest.
+#
+# Task #272 pinned the szl-receipts-server image to its content digest
+# (@sha256:...) so a re-pushed tag can't silently change a clean install. A tag
+# alone is MOVABLE: if a future edit drops the digest and reverts to a tag-only
+# reference, a later force-push of that tag would quietly alter what gets
+# deployed — re-opening the drift hole Task #272 closed.
+#
+# This workflow fails any PR/push where the receipts-server image reference in
+# any of these three places is NOT pinned to an @sha256: digest:
+#   1. zarf.yaml                        — top-level bundle package images: list
+#   2. packages/szl-receipts/zarf.yaml  — component images: list
+#   3. charts/szl-receipts/values.yaml  — server.image.digest field
+#
+# It is a pure grep/awk text check — no cluster needed (mirrors the existing
+# clean-deploy-guard.yml / chart-guard.yml workflows).
+
+name: Receipts Image Digest Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Assert receipts-server image is digest-pinned
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: "Guard 1 — zarf packages pin the server image by @sha256 digest"
+        run: |
+          set -euo pipefail
+          # Both zarf packages reference the server image inline as
+          #   ghcr.io/szl-holdings/szl-receipts-server:<tag>@sha256:<64 hex>
+          # The digest after @sha256: is what makes a re-pushed tag harmless.
+          for F in zarf.yaml packages/szl-receipts/zarf.yaml; do
+            test -f "$F" || { echo "::error file=$F::missing — required for digest guard"; exit 1; }
+            LINES="$(grep -nE 'szl-receipts-server:' "$F" || true)"
+            if [ -z "$LINES" ]; then
+              echo "::error file=$F::REGRESSION — no szl-receipts-server image reference found."
+              exit 1
+            fi
+            BAD=0
+            while IFS= read -r l; do
+              [ -z "$l" ] && continue
+              # Skip pure comment lines (e.g. a "# v0.4.0: built ..." note).
+              TEXT="${l#*:}"               # drop the leading "<lineno>:"
+              case "$(printf '%s' "$TEXT" | sed 's/^[[:space:]-]*//')" in
+                \#*) continue ;;
+              esac
+              if ! printf '%s\n' "$l" | grep -Eq 'szl-receipts-server:[^[:space:]]+@sha256:[0-9a-f]{64}'; then
+                echo "::error file=$F::REGRESSION — server image not pinned to an @sha256: digest:"
+                echo "    ${l}"
+                BAD=1
+              fi
+            done <<< "$LINES"
+            if [ "$BAD" -ne 0 ]; then
+              echo "::error file=$F::A tag-only reference is movable; a re-pushed tag could silently change a clean install."
+              exit 1
+            fi
+            echo "OK: $F pins szl-receipts-server by @sha256: digest"
+          done
+
+      - name: Guard 2 — chart values pin server.image by a sha256 digest
+        run: |
+          set -euo pipefail
+          F="charts/szl-receipts/values.yaml"
+          test -f "$F" || { echo "::error file=$F::missing — required for digest guard"; exit 1; }
+          # Capture just the server.image block: from the szl-receipts-server
+          # repository line through the closing pullPolicy line of that block.
+          BLOCK="$(awk '
+            /repository:[[:space:]]*ghcr\.io\/szl-holdings\/szl-receipts-server/ { cap=1 }
+            cap { print }
+            cap && /pullPolicy:/ { exit }
+          ' "$F")"
+          if [ -z "$BLOCK" ]; then
+            echo "::error file=$F::REGRESSION — server.image block (szl-receipts-server) not found."
+            exit 1
+          fi
+          if ! printf '%s\n' "$BLOCK" | grep -Eq 'digest:[[:space:]]*"?sha256:[0-9a-f]{64}"?'; then
+            echo "::error file=$F::REGRESSION — server.image has no sha256 digest field."
+            echo "::error file=$F::Without a pinned digest a re-pushed tag could silently change a clean install."
+            echo "----- current server.image block -----"
+            printf '%s\n' "$BLOCK"
+            exit 1
+          fi
+          echo "OK: $F pins server.image by a sha256 digest"
+
+      - name: Receipts image is digest-pinned everywhere
+        run: echo "All receipts-server image references are pinned to a content digest."
