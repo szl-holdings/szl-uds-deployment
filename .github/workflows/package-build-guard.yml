@@ -205,13 +205,19 @@ jobs:
           fi
           echo "OK: built $(basename "${PKG}") ($(du -h "${PKG}" | cut -f1))"
 
-      # Inspect the BUILT package definition to confirm the clean-deploy
-      # structure survived packaging: the exemption is the first component and the
-      # server image is pinned uds-v0.4.0. This asserts the property on the actual
-      # build output, not just the source file the grep guard reads. The zarf.yaml
-      # baked into the tarball is extracted directly (tar/zstd) so the check does
-      # not depend on a version-specific `zarf package inspect` subcommand form.
-      - name: Assert built package keeps exemption-first + uds-v0.4.0 image
+      # Inspect the BUILT package definition to confirm the clean-deploy structure
+      # survived packaging: the RequireNonRootUser exemption is present and ordered
+      # BEFORE the szl-key-init keygen component (so the root keygen pod is admitted
+      # rather than DENIED -> UNSIGNED server), and the server image is pinned
+      # uds-v0.4.0. This asserts the property on the actual build output, not just
+      # the source file the grep guard reads. The zarf.yaml baked into the tarball
+      # is extracted directly (tar/zstd) so the check does not depend on a
+      # version-specific `zarf package inspect` subcommand form.
+      #
+      # NOTE: the absolute-first component is szl-core-rightsize (small-server CPU
+      # posture); the invariant that matters for signing is exemption-BEFORE-keygen,
+      # which is what is asserted here.
+      - name: Assert built package keeps exemption-before-keygen + uds-v0.4.0 image
         run: |
           set -euo pipefail
           PKG="$(ls /tmp/zarf-out/zarf-package-szl-receipts-*.tar.zst | head -1)"
@@ -225,15 +231,20 @@ jobs:
           pkg = next((d for d in docs if d.get("kind") == "ZarfPackageConfig"), docs[0] if docs else None)
           if not pkg:
               sys.exit("::error::could not parse built package definition")
-          comps = pkg.get("components", [])
-          names = [c.get("name") for c in comps]
-          if not names or names[0] != "szl-key-init-exemption":
-              sys.exit(f"::error::built package first component is {names[:1]}, "
-                       "expected 'szl-key-init-exemption' (root keygen pod would be DENIED -> UNSIGNED)")
+          names = [c.get("name") for c in pkg.get("components", [])]
+          if "szl-key-init-exemption" not in names:
+              sys.exit("::error::built package dropped the szl-key-init-exemption "
+                       "component (root keygen pod would be DENIED -> UNSIGNED server)")
+          if "szl-key-init" not in names:
+              sys.exit("::error::built package dropped the szl-key-init keygen component")
+          if names.index("szl-key-init-exemption") >= names.index("szl-key-init"):
+              sys.exit(f"::error::szl-key-init-exemption must come BEFORE szl-key-init; "
+                       f"component order is {names}")
           blob = yaml.safe_dump(pkg)
           if "ghcr.io/szl-holdings/szl-receipts-server:uds-v0.4.0" not in blob:
               sys.exit("::error::built package no longer pins szl-receipts-server:uds-v0.4.0")
-          print("OK: built package keeps szl-key-init-exemption first and pins uds-v0.4.0")
+          print("OK: built package keeps szl-key-init-exemption before szl-key-init "
+                "and pins uds-v0.4.0")
           PY
 
       - name: Package build guard passed
