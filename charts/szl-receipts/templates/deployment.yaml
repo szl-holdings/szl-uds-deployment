@@ -53,7 +53,7 @@ spec:
         - name: receipts-server
           # OCI image built from services/szl-receipts-server/Dockerfile.
           # ENTRYPOINT runs /app/server.py; no command override needed.
-          image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag }}"
+          image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag }}{{ if .Values.server.image.digest }}@{{ .Values.server.image.digest }}{{ end }}"
           imagePullPolicy: {{ .Values.server.image.pullPolicy }}
           ports:
             - name: http

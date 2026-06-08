@@ -72,7 +72,7 @@ components:
     images:
       # v0.4.0: built OCI image (services/szl-receipts-server/Dockerfile),
       # replacing the prior ConfigMap-on-python:3.12-slim approach.
-      - ghcr.io/szl-holdings/szl-receipts-server:uds-v0.4.0
+      - ghcr.io/szl-holdings/szl-receipts-server:uds-v0.4.0@sha256:5c99e5073835f1dbf9ceca4da950be05b235d99427595df74225d498e0d1da01
       # NGINX for the dashboard UI
       - docker.io/library/nginx:1.27-alpine
     actions:

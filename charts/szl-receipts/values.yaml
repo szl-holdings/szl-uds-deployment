@@ -15,6 +15,10 @@ server:
   image:
     repository: ghcr.io/szl-holdings/szl-receipts-server
     tag: "uds-v0.4.0"
+    # Immutable content digest for uds-v0.4.0. Pinning here makes a clean
+    # install bit-for-bit reproducible: even if the uds-v0.4.0 tag is later
+    # re-pushed with different contents, this digest is what gets deployed.
+    digest: "sha256:5c99e5073835f1dbf9ceca4da950be05b235d99427595df74225d498e0d1da01"
     pullPolicy: IfNotPresent
 
   replicas: 1
