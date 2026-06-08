@@ -27,9 +27,59 @@ Setup script: [`scripts/setup-vault-transit.sh`](../../scripts/setup-vault-trans
 
 ---
 
-## 1. Deploy persistent Vault
+## 0. Reproducible deploy from the chart (committed — no hand-patching)
+
+> **Read this first.** The Tier-2 vault posture is fully committed; you do **not**
+> hand-edit the live Deployment. Two committed artifacts make a from-scratch
+> deploy land on `backend=vault` with the correct env, ServiceAccount and Vault
+> egress, with **zero** `kubectl set env` / `helm --set`:
+>
+> - **[`charts/szl-receipts/values-vault.yaml`](../../charts/szl-receipts/values-vault.yaml)**
+>   — the committed overlay that flips the chart to `signing.backend=vault` +
+>   kubernetes-auth and opens the Vault egress NetworkPolicy / UDS Package rule.
+> - **`packages/szl-receipts` zarf component `szl-vault-persistent`**
+>   (`required: false`) — deploys persistent Vault + the `vault` namespace as part
+>   of the package instead of an ad-hoc `kubectl apply`.
+>
+> The default `values.yaml` stays `backend=file` on purpose (the airgap
+> clean-deploy demo); nothing here changes a default deploy.
+
+End-to-end, from scratch:
 
 ```bash
+# (a) Persistent Vault via the OPT-IN zarf component (creates ns `vault` first):
+zarf package deploy <szl-receipts-package> --components szl-vault-persistent --confirm
+#     ...or, outside a packaged flow, the same manifests directly:
+#     kubectl apply -f manifests/vault-namespace.yaml -f k8s/vault/vault-persistent.yaml
+
+# (b) One-time init + unseal + transit/k8s-auth bootstrap  -> see sections 2-3.
+
+# (c) Deploy the receipts chart WITH the committed vault overlay (no --set / set env):
+helm upgrade --install szl-receipts charts/szl-receipts -n szl-receipts-demo \
+  -f charts/szl-receipts/values.yaml \
+  -f charts/szl-receipts/values-vault.yaml
+```
+
+Confirm the render is reproducible before deploying:
+
+```bash
+helm template t charts/szl-receipts -f charts/szl-receipts/values.yaml \
+  -f charts/szl-receipts/values-vault.yaml \
+  | grep -E 'SZL_SIGNING_BACKEND|VAULT_ADDR|SZL_VAULT_|serviceAccountName: szl-receipts'
+# -> backend=vault + all 7 vault env vars + the szl-receipts ServiceAccount.
+```
+
+Sections 1-6 below document each step (Vault infra, init/unseal, transit/k8s-auth,
+pointing the chart at Vault, verification, production hardening).
+
+## 1. Deploy persistent Vault
+
+Preferred (packaged, reproducible) path is the `szl-vault-persistent` zarf
+component (§0), which applies `manifests/vault-namespace.yaml` then
+`k8s/vault/vault-persistent.yaml`. The equivalent direct apply:
+
+```bash
+kubectl apply -f manifests/vault-namespace.yaml
 kubectl apply -f k8s/vault/vault-persistent.yaml
 kubectl -n vault rollout status deploy/vault
 ```
@@ -91,21 +141,33 @@ calling the TokenReview API **with its own pod SA token**. That is why
 
 ## 4. Point szl-receipts at Vault (no static token)
 
-The chart already renders the correct env when `signing.backend=vault` and
-`signing.vault.auth.method=kubernetes`, and it does **not** mount any token
-Secret in that mode. Helm-managed installs:
+**Committed path (do this).** Deploy the chart with the committed
+[`values-vault.yaml`](../../charts/szl-receipts/values-vault.yaml) overlay. It
+renders `backend=vault`, the 7 vault/k8s-auth env vars, the `szl-receipts`
+ServiceAccount and the Vault egress rule, and mounts **no** token Secret — a
+from-scratch deploy needs no further patching:
 
 ```bash
+helm upgrade --install szl-receipts charts/szl-receipts -n szl-receipts-demo \
+  -f charts/szl-receipts/values.yaml \
+  -f charts/szl-receipts/values-vault.yaml
+```
+
+<details>
+<summary>Legacy one-off paths (avoid — not reproducible)</summary>
+
+These predate `values-vault.yaml` and are kept only for adopting a pre-existing
+release. Prefer the overlay above; do not introduce new hand-patching.
+
+```bash
+# Helm --set (use --reuse-values only when adopting an existing release):
 helm upgrade szl-receipts charts/szl-receipts -n szl-receipts-demo --reuse-values \
   --set signing.backend=vault \
   --set signing.vault.address=http://vault.vault.svc.cluster.local:8200 \
   --set signing.vault.auth.method=kubernetes \
   --set signing.vault.auth.role=szl-receipts
-```
 
-For a kubectl-applied (non-Helm) live deployment, set the same env in-place:
-
-```bash
+# kubectl set env on a kubectl-applied (non-Helm) live Deployment:
 kubectl -n szl-receipts-demo set env deploy/szl-receipts-server \
   SZL_SIGNING_BACKEND=vault \
   VAULT_ADDR=http://vault.vault.svc.cluster.local:8200 \
@@ -117,6 +179,8 @@ kubectl -n szl-receipts-demo set env deploy/szl-receipts-server \
 # Delete any leftover static token Secret — it is no longer referenced:
 kubectl -n szl-receipts-demo delete secret szl-receipts-vault-token --ignore-not-found
 ```
+
+</details>
 
 The server reads its SA JWT from
 `/var/run/secrets/kubernetes.io/serviceaccount/token`, logs in at

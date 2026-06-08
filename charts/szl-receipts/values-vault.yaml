@@ -1,0 +1,48 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# values-vault.yaml — Tier-2 HashiCorp Vault Transit custody overlay.
+#
+# Layer this file ON TOP of the default values.yaml to deploy szl-receipts with
+# managed-KMS key custody (signing.backend=vault) instead of the default file
+# backend. It is the COMMITTED, reproducible replacement for the previous
+# hand-applied `kubectl set env` / `helm --set ...` flow: a from-scratch deploy
+# with this overlay renders the receipts Deployment with the full vault +
+# kubernetes-auth env block and the szl-receipts ServiceAccount, plus the Vault
+# egress NetworkPolicy and UDS Package egress rule — with zero manual patching.
+#
+# Helm:
+#   helm upgrade --install szl-receipts charts/szl-receipts -n <ns> \
+#     -f charts/szl-receipts/values.yaml \
+#     -f charts/szl-receipts/values-vault.yaml
+#
+# Prerequisites (see docs/operations/VAULT_PERSISTENT_RUNBOOK.md):
+#   1. Persistent Vault deployed (packages/szl-receipts zarf component
+#      `szl-vault-persistent`, or `kubectl apply -f k8s/vault/vault-persistent.yaml`).
+#   2. Vault initialised + unsealed (manual Shamir — unavoidable for file
+#      storage; auto-unseal is the production path).
+#   3. Transit engine + Ed25519 key + kubernetes auth role bootstrapped via
+#      scripts/setup-vault-transit.sh --k8s-auth --k8s-namespace <ns> \
+#      --k8s-sa szl-receipts --k8s-role szl-receipts
+#
+# NOTE: the default values.yaml keeps backend=file ON PURPOSE — that is the
+# airgap clean-deploy demo posture. This overlay is the opt-in vault posture and
+# is never auto-applied; nothing here changes a default deploy.
+signing:
+  backend: vault
+  vault:
+    # In-cluster persistent Vault (k8s/vault/vault-persistent.yaml).
+    address: "http://vault.vault.svc.cluster.local:8200"
+    transitMount: transit
+    transitKey: szl-receipts
+    auth:
+      # Pod ServiceAccount JWT -> auth/kubernetes/login (no static token Secret).
+      method: kubernetes
+      role: szl-receipts
+      mount: kubernetes
+    egress:
+      # In-cluster Vault lives in the `vault` namespace.
+      remoteNamespace: vault
+      remoteSelector:
+        app.kubernetes.io/name: vault
+      port: 8200
