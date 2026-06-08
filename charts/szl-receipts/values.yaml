@@ -137,10 +137,27 @@ networkPolicy:
   # Allow egress to the K8s API server (for Pepr to annotate resources)
   allowToAPIServer: true
 
+# ── Resource governance (ResourceQuota + LimitRange) ─────────────────────────
+# Default OFF. When enabled, the chart renders a namespace ResourceQuota and
+# LimitRange from the sub-values below (resourceQuota.hard, limitRange.*). This
+# key MUST exist so the template's `if .Values.resourceGovernance.enabled` guard
+# renders with defaults. Ceiling sizing (the CPU posture) is intentionally left
+# unset here and supplied by the deploy bundle when this is turned on.
+resourceGovernance:
+  enabled: false
+
 # ── UDS Package custom resource ───────────────────────────────────────────────
 # Deployed alongside the chart so uds-core network policies apply correctly.
 udsPackage:
   enabled: true
+  # SSO (Keycloak OIDC client) registration via the UDS Package CR.
+  # Default OFF: when disabled the template emits NO `sso` key at all, because an
+  # empty `sso: []` still trips the UDS authservice gate and forces an
+  # unsatisfiable waypoint (the receipts route would never serve). Flip
+  # enabled=true only after Keycloak is up (FA-002). This key MUST exist so the
+  # template's `if .Values.udsPackage.sso.enabled` guard renders with defaults.
+  sso:
+    enabled: false
   monitor:
     - portName: http-metrics
       selector:

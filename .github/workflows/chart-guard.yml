@@ -1,0 +1,177 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# chart-guard.yml — Catch a broken receipt-deploy chart before it ships.
+#
+# The szl-receipts signing-key reliability fix lives entirely in two Helm charts
+# plus a shell script embedded in the keygen Job. Nothing else guards them, so a
+# typo in the keygen script or a bad template would only surface during a live
+# cluster deploy (minutes-to-hours later, on a customer cluster). This workflow
+# turns that into a seconds-long CI failure.
+#
+# It does four things, all without a cluster:
+#   1. helm lint  + helm template  on charts/szl-key-init AND charts/szl-receipts
+#      so any render error (missing value, bad template) fails the build.
+#   2. Extracts the rendered keygen Job's shell script and runs `sh -n` +
+#      `shellcheck` so a script syntax error fails the build.
+#   3. Asserts the keygen script still creates the Secret with a single
+#      ed25519.pem key file and keeps its fail-loud guard (set -e + fail()).
+#   4. Asserts signing.requireKey=true renders the ed25519-key Secret mount with
+#      optional:false (pod refuses to start unsigned) and requireKey=false
+#      renders optional:true — the core "fail loud, never sign nothing" contract.
+#
+# This complements test.yaml (which lints szl-receipts only); it adds szl-key-init
+# coverage, the keygen-script syntax check, and the requireKey contract assertion.
+
+name: Chart Guard
+
+on:
+  pull_request:
+    paths:
+      - "charts/**"
+      - ".github/workflows/chart-guard.yml"
+  push:
+    branches: [main]
+    paths:
+      - "charts/**"
+      - ".github/workflows/chart-guard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  chart-guard:
+    name: Render + lint receipt-deploy charts
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Install shellcheck + PyYAML
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          python3 -m pip install --quiet pyyaml
+
+      # ── 1. Lint + render both charts (fails on any render error) ──────────────
+      - name: helm lint — szl-key-init
+        run: helm lint charts/szl-key-init/ --strict
+
+      - name: helm lint — szl-receipts
+        run: helm lint charts/szl-receipts/ --strict
+
+      - name: helm template — szl-key-init (default values)
+        run: |
+          set -euo pipefail
+          helm template ki charts/szl-key-init/ > /tmp/key-init.yaml
+          echo "szl-key-init rendered OK"
+
+      - name: helm template — szl-receipts (default values)
+        run: |
+          set -euo pipefail
+          helm template r charts/szl-receipts/ > /tmp/receipts-default.yaml
+          echo "szl-receipts rendered OK"
+
+      # ── 2 + 3. Extract the keygen script and check its syntax + invariants ────
+      - name: Extract rendered keygen Job script
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys, yaml
+          docs = [d for d in yaml.safe_load_all(open("/tmp/key-init.yaml")) if d]
+          jobs = [d for d in docs
+                  if d.get("kind") == "Job"
+                  and d.get("metadata", {}).get("name") == "szl-key-init"]
+          if not jobs:
+              sys.exit("::error::keygen Job 'szl-key-init' not found in rendered output")
+          containers = jobs[0]["spec"]["template"]["spec"]["containers"]
+          keygen = [c for c in containers if c.get("name") == "keygen"]
+          if not keygen:
+              sys.exit("::error::keygen container not found in szl-key-init Job")
+          args = keygen[0].get("args") or []
+          if not args or not isinstance(args[0], str) or not args[0].strip():
+              sys.exit("::error::keygen container has no inline shell script in args[0]")
+          with open("/tmp/keygen.sh", "w") as f:
+              f.write(args[0])
+          print(f"Extracted keygen script ({args[0].count(chr(10))} lines)")
+          PY
+
+      - name: keygen script — POSIX sh syntax check (sh -n)
+        run: |
+          set -euo pipefail
+          if ! sh -n /tmp/keygen.sh; then
+            echo "::error file=charts/szl-key-init/templates/keygen-job.yaml::keygen script failed 'sh -n' syntax check"
+            exit 1
+          fi
+          echo "OK: keygen script passes 'sh -n'"
+
+      - name: keygen script — shellcheck
+        run: |
+          set -euo pipefail
+          # SC2086 (word splitting) is acceptable for this controlled script; the
+          # rest must pass. Fail on any error-severity finding.
+          if ! shellcheck --shell=sh --severity=error /tmp/keygen.sh; then
+            echo "::error file=charts/szl-key-init/templates/keygen-job.yaml::shellcheck found error-level issues in keygen script"
+            exit 1
+          fi
+          echo "OK: keygen script passes shellcheck (severity=error)"
+
+      - name: keygen script — fail-loud + single-key invariants
+        run: |
+          set -euo pipefail
+          S=/tmp/keygen.sh
+          # Must fail loud: set -e (abort on error) + a fail() helper that exits 1.
+          grep -Eq 'set -[a-z]*e' "$S" \
+            || { echo "::error::keygen script lost 'set -e' (would exit 0 with no Secret)"; exit 1; }
+          grep -Eq '^[[:space:]]*fail\(\)' "$S" \
+            || { echo "::error::keygen script lost its fail() helper"; exit 1; }
+          # Must create the Secret with a single ed25519.pem key file (the name the
+          # receipts-server Deployment mounts). Reject the old two-file scheme.
+          grep -Eq -- '--from-file=' "$S" \
+            || { echo "::error::keygen script no longer creates the Secret (no --from-file)"; exit 1; }
+          if grep -Eq -- 'key\.priv|key\.pub' "$S"; then
+            echo "::error::keygen script uses the old two-file key.priv/key.pub scheme"
+            exit 1
+          fi
+          echo "OK: keygen script is fail-loud and uses a single ed25519.pem key file"
+
+      # ── 4. signing.requireKey controls the Secret mount's optional flag ───────
+      - name: Assert signing.requireKey toggles Secret mount optional flag
+        run: |
+          set -euo pipefail
+          helm template r charts/szl-receipts/ --set signing.requireKey=true  > /tmp/req-true.yaml
+          helm template r charts/szl-receipts/ --set signing.requireKey=false > /tmp/req-false.yaml
+          python3 - <<'PY'
+          import sys, yaml
+          def optional(path):
+              docs = [d for d in yaml.safe_load_all(open(path)) if d]
+              deps = [d for d in docs if d.get("kind") == "Deployment"]
+              if not deps:
+                  sys.exit(f"::error::no Deployment rendered in {path}")
+              vols = deps[0]["spec"]["template"]["spec"].get("volumes", [])
+              ek = [v for v in vols if v.get("name") == "ed25519-key"]
+              if not ek:
+                  sys.exit(f"::error::ed25519-key volume not found in {path}")
+              return ek[0]["secret"]["optional"]
+          t = optional("/tmp/req-true.yaml")
+          f = optional("/tmp/req-false.yaml")
+          print(f"requireKey=true  -> optional: {t}")
+          print(f"requireKey=false -> optional: {f}")
+          if t is not False:
+              sys.exit("::error::signing.requireKey=true must render optional:false "
+                       "(pod must refuse to start without the signing key)")
+          if f is not True:
+              sys.exit("::error::signing.requireKey=false must render optional:true "
+                       "(legacy unsigned demo mode)")
+          print("OK: requireKey correctly drives the Secret mount optional flag")
+          PY
+
+      - name: All chart guards passed
+        run: echo "Receipt-deploy charts render, the keygen script is sound, and requireKey holds."
