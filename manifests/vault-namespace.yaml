@@ -1,0 +1,20 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# Namespace for the persistent HashiCorp Vault that backs szl-receipts Tier-2
+# (signing.backend=vault) key custody. Applied as the FIRST file of the
+# packages/szl-receipts `szl-vault-persistent` zarf component so a from-scratch
+# deploy creates the namespace before k8s/vault/vault-persistent.yaml lands its
+# ServiceAccount, PVC, ConfigMap, Deployment and Service into it.
+#
+# The `zarf.dev/agent: ignore` label keeps the Zarf mutating webhook from
+# rewriting the Vault pod image to the internal registry path; Vault is pulled
+# from its declared image and is not part of the szl-receipts app mesh.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vault
+  labels:
+    kubernetes.io/metadata.name: vault
+    app.kubernetes.io/name: vault
+    zarf.dev/agent: ignore

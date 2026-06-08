@@ -140,6 +140,30 @@ components:
       # alpine:3.21 used in the keygen Job (replaces cgr.dev/chainguard/openssl — no public auth)
       - docker.io/library/alpine:3.21
 
+  # ── Persistent Vault for Tier-2 key custody (OPTIONAL) ──────────────────
+  # OPT-IN (required: false): a default \`uds deploy\` / \`zarf package deploy --confirm\`
+  # SKIPS this component, so the airgap file-backend clean-deploy demo is unchanged.
+  # Select it for the managed-KMS (signing.backend=vault) posture:
+  #   zarf package deploy <pkg> --components szl-vault-persistent --confirm
+  # It creates the \`vault\` namespace and applies the persistent Vault (file-storage
+  # PVC + Shamir unseal + system:auth-delegator for Kubernetes auth), REPLACING the
+  # previous ad-hoc \`kubectl apply -f k8s/vault/vault-persistent.yaml\`. Vault is pulled
+  # from its upstream image (the \`vault\` namespace carries zarf.dev/agent: ignore, so
+  # the Zarf mutating webhook does not rewrite it) — matching the live deployment.
+  #
+  # Vault still needs a ONE-TIME manual init/unseal + scripts/setup-vault-transit.sh
+  # (file storage cannot auto-unseal), and the receipts chart must then be deployed
+  # with charts/szl-receipts/values-vault.yaml to flip the server to backend=vault.
+  # Full runbook: docs/operations/VAULT_PERSISTENT_RUNBOOK.md.
+  - name: szl-vault-persistent
+    required: false
+    description: "OPTIONAL Tier-2 custody: persistent HashiCorp Vault (Transit KMS) + namespace"
+    manifests:
+      - name: vault-persistent
+        files:
+          - ../../manifests/vault-namespace.yaml
+          - ../../k8s/vault/vault-persistent.yaml
+
   - name: szl-receipts-server
     required: true
     description: "Deploy the SZL receipts MCP server and dashboard"
