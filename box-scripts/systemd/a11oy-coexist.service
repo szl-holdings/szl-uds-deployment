@@ -1,0 +1,13 @@
+[Unit]
+Description=Ensure the public a11oy.net site owns ports 80/443 (deconflict k3d serverlb)
+After=docker.service network-online.target nginx.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/a11oy-mode ensure
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+#
+# a11oy-serverlb-deconflict — idempotently ensure the k3d serverlb does NOT
+# publish host ports 80/443, so the public nginx site can own them while the
+# UDS demo cluster keeps running. Preserves every OTHER published port exactly
+# as k3d assigned it (e.g. the dynamic kube-API port for 6443, plus 8443), so
+# kubectl / port-forward for Task #103 keep working across cluster restarts.
+#
+# Safe to run anytime: it is a no-op if the serverlb is absent or already free
+# of host 80/443.
+set -uo pipefail
+
+LB=k3d-uds-szl-demo-serverlb
+NET=k3d-uds-szl-demo
+IMG=ghcr.io/k3d-io/k3d-proxy:5.9.0
+
+log() { printf '\033[1;36m[deconflict]\033[0m %s\n' "$*"; }
+
+docker inspect "$LB" >/dev/null 2>&1 || { log "no serverlb present; nothing to do."; exit 0; }
+
+PB=$(docker inspect "$LB" --format '{{json .HostConfig.PortBindings}}' 2>/dev/null)
+if ! printf '%s' "$PB" | grep -qE '"(80|443)/tcp"'; then
+  log "serverlb already free of host 80/443; no-op."; exit 0
+fi
+
+log "serverlb publishes host 80/443; rebinding it off (keeping all other ports)..."
+
+# Preserve the proxy's generated config inputs.
+rm -rf /tmp/lb-confd
+docker cp "$LB:/etc/confd" /tmp/lb-confd >/dev/null || { echo "confd copy failed" >&2; exit 1; }
+
+# Keep the same network IP if we can.
+LBIP=$(docker inspect "$LB" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null)
+
+# Rebuild the -p list from the CURRENT bindings, dropping only 80 and 443.
+PARGS=()
+while read -r cport hip hostport; do
+  [ -z "$cport" ] && continue
+  cnum=${cport%/tcp}
+  case "$cnum" in 80|443) continue ;; esac
+  hip=${hip:-0.0.0.0}
+  PARGS+=( -p "${hip}:${hostport}:${cnum}" )
+done < <(docker inspect "$LB" --format '{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{println $p .HostIp .HostPort}}{{end}}{{end}}')
+
+if [ "${#PARGS[@]}" -eq 0 ]; then
+  echo "refusing to recreate serverlb with zero host ports (would orphan kube-API)" >&2
+  exit 1
+fi
+log "preserved host port maps: ${PARGS[*]}"
+
+docker rm -f "$LB" >/dev/null
+IPARG=(); [ -n "${LBIP:-}" ] && IPARG=(--ip "$LBIP")
+
+docker create --name "$LB" \
+  --network "$NET" "${IPARG[@]}" \
+  --restart no \
+  "${PARGS[@]}" \
+  -v k3d-uds-szl-demo-images:/k3d/images \
+  -e K3S_KUBECONFIG_OUTPUT=/output/kubeconfig.yaml \
+  --label app=k3d \
+  --label k3d.cluster=uds-szl-demo \
+  --label k3d.role=loadbalancer \
+  --label k3d.cluster.url=https://k3d-uds-szl-demo-server-0:6443 \
+  --label k3d.server.loadbalancer=k3d-uds-szl-demo-serverlb \
+  --label k3d.version=v5.9.0 \
+  "$IMG" >/dev/null
+
+docker cp /tmp/lb-confd/. "$LB:/etc/confd" >/dev/null
+docker start "$LB" >/dev/null
+log "serverlb rebound; host 80/443 are free for nginx."

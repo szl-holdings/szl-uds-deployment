@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+#
+# a11oy-port-guard — periodic safety net for the public a11oy.net site.
+#
+# The public site (nginx) and the UDS k3d demo cluster coexist on this box:
+# nginx owns host 80/443 and the k3d serverlb is kept off them. But a raw
+# `k3d cluster start uds-szl-demo` (instead of `a11oy-mode coexist`) makes the
+# serverlb re-grab host 80/443 and silently knock the public site offline.
+#
+# This guard runs on a short systemd timer. It is a TRUE no-op when the
+# serverlb is already clear of 80/443 and nginx is up; only when it detects the
+# port grab (or nginx down) does it call the proven recovery `a11oy-mode ensure`
+# (which deconflicts the serverlb and brings nginx back). Idempotent.
+set -uo pipefail
+
+LB=k3d-uds-szl-demo-serverlb
+ENSURE=/usr/local/sbin/a11oy-mode
+
+tag() { printf '[port-guard] %s\n' "$*"; }
+
+# Does the k3d serverlb currently publish host 80 or 443?
+grabbed=0
+if docker inspect "$LB" >/dev/null 2>&1; then
+  pb=$(docker inspect "$LB" --format '{{json .HostConfig.PortBindings}}' 2>/dev/null)
+  if printf '%s' "$pb" | grep -qE '"(80|443)/tcp"'; then
+    grabbed=1
+  fi
+fi
+
+# Is nginx (which should own 80/443) active?
+nginx_active=1
+systemctl is-active --quiet nginx || nginx_active=0
+
+# Common, healthy case: serverlb clear AND nginx up -> nothing to do.
+if [ "$grabbed" -eq 0 ] && [ "$nginx_active" -eq 1 ]; then
+  exit 0
+fi
+
+tag "intervening (serverlb_grabbed_80_443=$grabbed nginx_active=$nginx_active) -> a11oy-mode ensure"
+exec "$ENSURE" ensure

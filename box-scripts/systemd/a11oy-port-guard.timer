@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically guard a11oy.net's 80/443 against the k3d serverlb
+
+[Timer]
+# First check shortly after boot, then every 2 minutes thereafter.
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Unit=a11oy-port-guard.service
+
+[Install]
+WantedBy=timers.target

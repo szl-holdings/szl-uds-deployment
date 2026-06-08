@@ -1,0 +1,9 @@
+[Unit]
+Description=a11oy.net port guard — recover 80/443 if the k3d serverlb grabs them mid-session
+After=docker.service network-online.target nginx.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/a11oy-port-guard
