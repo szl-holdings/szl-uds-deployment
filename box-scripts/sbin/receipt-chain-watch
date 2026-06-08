@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+#
+# receipt-chain-watch — alarm when signed deploy receipts stop being recorded on
+# the k3d uds-szl-demo cluster (box 167.233.50.75), so a silently-stalled receipt
+# chain reaches a human instead of waiting for a manual log inspection.
+#
+# WHY: the Pepr admission controller (pepr-szl, ns pepr-system) signs a DSSE
+# deploy receipt for every Deployment/Job and POSTs it to the layer-2
+# receipts-server (Deployment szl-receipts-server, ns szl-receipts). That POST is
+# FAIL-OPEN: if the server is down or its Service is unresolvable, the deploy is
+# still admitted and the signed receipt is silently dropped — the chain stops
+# advancing with NO notification. That is exactly the failure that took down
+# receipt recording before; it was only caught by manual log inspection. This
+# guard turns that silent failure into a real push alert.
+#
+# WHAT IT DETECTS (any one -> ALERT):
+#   (c) the receipts-server SINK is unhealthy: Deployment has no available
+#       replica, OR its Service has no ready endpoints (nothing to POST to).
+#   (a) the Pepr controller logged a dropped receipt in the recent window:
+#       "Failed to POST receipt" / ENOTFOUND / getaddrinfo / ECONNREFUSED.
+#   (b) the chain is NOT advancing despite signing activity: Pepr signed >=1
+#       receipt in the window but the server accepted ZERO ("Receipt accepted by
+#       server" absent) — i.e. signing works but nothing lands in the chain.
+#
+# It is EDGE-triggered and de-duped via a state file: it fires the notifier only
+# on the healthy->problem edge and once on RECOVERED, never every cycle (honours
+# the "recurring alerts = one ping" policy). Every run still appends to the log
+# + status file, so a broken notifier can never hide a stall.
+#
+# Cluster intentionally stopped (k3d down) or receipts module not deployed = a
+# true no-op (exit 0, no alert) — we only alarm when the chain SHOULD be working.
+#
+# NOTIFY: pipes the alert text on STDIN to NOTIFY_CMD (default the box's working
+# push channel /usr/local/sbin/a11oy-uptime-notify -> ntfy/Telegram/webhook).
+# This box has NO Gmail/nodemailer transport and outbound TCP 465 is firewalled,
+# so SMS/email is not used here (see memory sms-alerts-on-hetzner.md /
+# a11oy-uptime-channel-restore.md); the ntfy push IS the existing alert path.
+#
+# Driven by receipt-chain-watch.timer (every 5 min). Mirrors the
+# szl-core-rightsize / pepr-key-mount / istiod-fit-strategy self-heal pattern.
+set -uo pipefail
+
+CLUSTER="${CLUSTER:-uds-szl-demo}"
+RNS="${RNS:-szl-receipts}"
+RDEPLOY="${RDEPLOY:-szl-receipts-server}"
+PNS="${PNS:-pepr-system}"
+PDEPLOY="${PDEPLOY:-pepr-szl}"
+PCONTAINER="${PCONTAINER:-server}"
+# Log scan window — must be >= the timer interval so back-to-back runs overlap
+# and no failure can slip through the gap between runs.
+SINCE="${SINCE:-8m}"
+
+STATE_DIR="${STATE_DIR:-/var/lib/receipt-chain-watch}"
+LOG_DIR="${LOG_DIR:-/var/log/receipt-chain-watch}"
+LAST_FILE="${LAST_FILE:-$STATE_DIR/last_status}"
+STATUS="${STATUS:-$STATE_DIR/status.json}"
+LOG="${LOG:-$LOG_DIR/receipt-chain-watch.log}"
+
+# Notifier: stdin = message. Default to the box's working push channel.
+NOTIFY_CMD="${NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
+ALERT_PREFIX="${ALERT_PREFIX:-}"
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
+
+log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$1" >>"$LOG" 2>/dev/null; }
+
+notify() {
+  # $1 = message. Fail-soft: log a warning if the notifier is missing/fails.
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed (alert was logged only)"
+}
+
+write_status() {
+  # $1 = overall (OK|ALERT|UNKNOWN)  $2 = reason
+  printf '{"overall":"%s","reason":"%s","checked_at":"%s","cluster":"%s"}\n' \
+    "$1" "$(printf '%s' "$2" | sed 's/"/\\"/g')" "$(date -u +%FT%TZ)" "$CLUSTER" \
+    >"$STATUS" 2>/dev/null
+}
+
+# ---- Resolve cluster; no-op if it is down (intentionally stopped) -----------
+KC="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" || { log "INFO cluster '$CLUSTER' absent — skip"; write_status UNKNOWN "cluster absent"; exit 0; }
+export KUBECONFIG="$KC"
+kubectl --request-timeout=20s get --raw='/readyz' >/dev/null 2>&1 \
+  || { log "INFO cluster '$CLUSTER' not reachable — skip"; write_status UNKNOWN "cluster unreachable"; exit 0; }
+
+# Receipts module deployed at all? If pepr-szl is absent there is nothing that
+# could be producing receipts — no-op (don't alarm on a cluster without the
+# receipts module installed).
+kubectl --request-timeout=20s -n "$PNS" get deploy "$PDEPLOY" >/dev/null 2>&1 \
+  || { log "INFO $PNS/$PDEPLOY absent — receipts module not deployed, skip"; write_status UNKNOWN "pepr-szl absent"; exit 0; }
+
+reasons=""
+add_reason() { reasons="${reasons:+$reasons; }$1"; }
+
+# ---- (c) Sink health: receipts-server available + Service has endpoints -----
+if ! kubectl --request-timeout=20s -n "$RNS" get deploy "$RDEPLOY" >/dev/null 2>&1; then
+  add_reason "receipts-server Deployment $RNS/$RDEPLOY missing"
+else
+  avail="$(kubectl --request-timeout=20s -n "$RNS" get deploy "$RDEPLOY" -o jsonpath='{.status.availableReplicas}' 2>/dev/null)"
+  [ -z "$avail" ] && avail=0
+  if [ "$avail" -lt 1 ] 2>/dev/null; then
+    add_reason "receipts-server has 0 available replicas (pod not Running)"
+  fi
+  eps="$(kubectl --request-timeout=20s -n "$RNS" get endpoints "$RDEPLOY" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null)"
+  if [ -z "$eps" ]; then
+    add_reason "receipts-server Service has no ready endpoints"
+  fi
+fi
+
+# ---- (a)+(b) Pepr log window: dropped POSTs and chain-not-advancing ---------
+plog="$(kubectl --request-timeout=25s -n "$PNS" logs deploy/"$PDEPLOY" -c "$PCONTAINER" --since="$SINCE" --tail=4000 2>/dev/null)"
+failed=$(printf '%s\n' "$plog" | grep -c -E 'Failed to POST receipt|ENOTFOUND|getaddrinfo|ECONNREFUSED|ECONNRESET' 2>/dev/null)
+signed=$(printf '%s\n' "$plog" | grep -c -E 'Receipt signed with Ed25519' 2>/dev/null)
+accepted=$(printf '%s\n' "$plog" | grep -c -E 'Receipt accepted by server' 2>/dev/null)
+failed=${failed:-0}; signed=${signed:-0}; accepted=${accepted:-0}
+
+if [ "$failed" -gt 0 ] 2>/dev/null; then
+  add_reason "Pepr logged $failed dropped receipt POST(s) in last $SINCE"
+fi
+# Chain fully stalled: signing happening but nothing landing.
+if [ "$signed" -gt 0 ] 2>/dev/null && [ "$accepted" -eq 0 ] 2>/dev/null && [ "$failed" -eq 0 ] 2>/dev/null; then
+  add_reason "chain not advancing: Pepr signed $signed receipt(s) but server accepted 0 in last $SINCE"
+fi
+
+# ---- Decide + edge-trigger --------------------------------------------------
+prev="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
+
+if [ -n "$reasons" ]; then
+  overall="ALERT"
+  write_status ALERT "$reasons"
+  log "STATE ALERT signed=$signed accepted=$accepted failed=$failed :: $reasons"
+  if [ "$prev" != "ALERT" ]; then
+    notify "ALERT: signed deploy receipts stopped being recorded on $CLUSTER. $reasons. (signed=$signed accepted=$accepted failed=$failed, window $SINCE). Investigate $RNS/$RDEPLOY + pepr-szl logs."
+    log "EDGE OK->ALERT notified"
+  else
+    log "DEDUP still ALERT — no re-notify"
+  fi
+  echo ALERT >"$LAST_FILE" 2>/dev/null
+else
+  overall="OK"
+  write_status OK "receipts chain recording (signed=$signed accepted=$accepted failed=$failed, window $SINCE)"
+  log "STATE OK signed=$signed accepted=$accepted failed=$failed"
+  if [ "$prev" = "ALERT" ]; then
+    notify "RECOVERED: deploy receipts are being recorded again on $CLUSTER (signed=$signed accepted=$accepted failed=0, window $SINCE)."
+    log "EDGE ALERT->OK recovered, notified"
+  fi
+  echo OK >"$LAST_FILE" 2>/dev/null
+fi
+
+exit 0

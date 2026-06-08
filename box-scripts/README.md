@@ -168,3 +168,85 @@ kubectl -n pepr-system get deploy               # pepr-* / watcher all 1 replica
 - A chart-level pin of these values is a good belt-and-suspenders follow-up but
   only helps fresh deploys; the guards cover every drift path (cold restart,
   helm/zarf reset, manual edits).
+
+---
+
+# box-scripts (part 3) — deploy-receipt recording alarm (uds-szl-demo)
+
+A third host-level guard on box `167.233.50.75` raises a **real alarm** when
+signed deploy receipts stop being recorded, instead of letting a stalled receipt
+chain go unnoticed until a manual log inspection. Like the scripts above it lives
+ONLY at `/usr/local/sbin` + `/etc/systemd/system` on the box and is **not**
+otherwise under version control, so restore it from here after a rebuild.
+
+## The problem it solves
+
+The Pepr admission controller (`pepr-szl`, ns `pepr-system`) signs a DSSE deploy
+receipt for every Deployment/Job and POSTs it to the layer-2 receipts-server
+(Deployment `szl-receipts-server`, ns `szl-receipts`). That POST is **fail-open**:
+if the server is down or its Service is unresolvable, the deploy is still admitted
+and the signed receipt is **silently dropped** — the chain stops advancing with no
+notification. That exact failure took down receipt recording before and was only
+caught by manual log inspection. This guard turns it into an edge-triggered push
+alert.
+
+## Files
+
+```
+sbin/
+  receipt-chain-watch          # detect stalled/failing receipt recording, alert on the edge
+systemd/
+  receipt-chain-watch.service  # oneshot: runs receipt-chain-watch
+  receipt-chain-watch.timer    # every 5 min: triggers receipt-chain-watch.service
+```
+
+## What it detects (any one → ALERT)
+
+- **(c) sink unhealthy** — `szl-receipts-server` has 0 available replicas, OR its
+  Service has no ready endpoints (nothing to POST to).
+- **(a) dropped POSTs** — `pepr-szl` logged `Failed to POST receipt` / `ENOTFOUND`
+  / `getaddrinfo` / `ECONNREFUSED` in the recent window.
+- **(b) chain not advancing** — Pepr signed ≥1 receipt in the window but the
+  server accepted **zero** (`Receipt accepted by server` absent) — signing works
+  but nothing lands in the chain.
+
+It is **edge-triggered**: it fires the notifier only on the healthy→problem edge
+and once on RECOVERED, never every cycle (de-duped via `/var/lib/receipt-chain-watch/last_status`).
+Every run still appends to `/var/log/receipt-chain-watch/receipt-chain-watch.log`
+and writes `/var/lib/receipt-chain-watch/status.json`, so a broken notifier can
+never hide a stall. A stopped cluster or a cluster without the receipts module is
+a true no-op (no alarm).
+
+## Notification channel
+
+It pipes the alert text on STDIN to `NOTIFY_CMD` (default the box's working push
+channel `/usr/local/sbin/a11oy-uptime-notify` → ntfy/Telegram/webhook configured
+in `/etc/a11oy-uptime.env`). This box has **no Gmail/nodemailer transport** and
+outbound TCP 465 is firewalled, so SMS/email is not used here — the ntfy push IS
+the existing alert path (see memory `sms-alerts-on-hetzner.md` /
+`a11oy-uptime-channel-restore.md`).
+
+## Reinstall
+
+The top-level `./install.sh` installs and enables this guard along with the
+others. To (re)install just this guard manually:
+
+```bash
+sudo install -m 0755 sbin/receipt-chain-watch /usr/local/sbin/receipt-chain-watch
+sudo install -m 0644 systemd/receipt-chain-watch.service /etc/systemd/system/
+sudo install -m 0644 systemd/receipt-chain-watch.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now receipt-chain-watch.timer
+```
+
+## Verify
+
+```bash
+systemctl is-enabled receipt-chain-watch.timer
+/usr/local/sbin/receipt-chain-watch && cat /var/lib/receipt-chain-watch/status.json
+# Force an alert (safe, reversible): scale the sink to 0, run with a test prefix,
+# confirm the push fires, then restore.
+kubectl -n szl-receipts scale deploy szl-receipts-server --replicas=0 && sleep 12
+ALERT_PREFIX="[TEST-ignore] " /usr/local/sbin/receipt-chain-watch
+kubectl -n szl-receipts scale deploy szl-receipts-server --replicas=1
+```

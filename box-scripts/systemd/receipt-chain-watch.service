@@ -1,0 +1,9 @@
+[Unit]
+Description=Alarm when signed deploy receipts stop being recorded on uds-szl-demo (receipts-server sink down / Pepr POST drops / chain not advancing)
+Documentation=file:///usr/local/sbin/receipt-chain-watch
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/receipt-chain-watch
