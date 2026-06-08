@@ -10,8 +10,13 @@
 # turns that into a seconds-long CI failure.
 #
 # It does four things, all without a cluster:
-#   1. helm lint  + helm template  on charts/szl-key-init AND charts/szl-receipts
-#      so any render error (missing value, bad template) fails the build.
+#   1. helm lint --strict + helm template on EVERY chart under charts/* (a11oy,
+#      amaru, killinchu, rosie, sentra, szl-full-stack, szl-key-init,
+#      szl-receipts) so any render error (missing value, bad template) fails the
+#      build — for any chart, not just the receipt ones. (szl-receipts itself was
+#      shipping a NOTES.txt that nil-pointered on a missing values key; the older
+#      "render the two receipt charts only" guard would not have caught the same
+#      class of breakage in the other six charts.)
 #   2. Extracts the rendered keygen Job's shell script and runs `sh -n` +
 #      `shellcheck` so a script syntax error fails the build.
 #   3. Asserts the keygen script still creates the Secret with a single
@@ -20,8 +25,14 @@
 #      optional:false (pod refuses to start unsigned) and requireKey=false
 #      renders optional:true — the core "fail loud, never sign nothing" contract.
 #
-# This complements test.yaml (which lints szl-receipts only); it adds szl-key-init
-# coverage, the keygen-script syntax check, and the requireKey contract assertion.
+# Umbrella charts (e.g. szl-full-stack) declare subcharts that are STAGED — their
+# OCI charts are not published yet — and Helm refuses to render a chart while any
+# declared dependency is missing. .github/scripts/stub_missing_deps.py drops a
+# template-less placeholder for each unvendored dependency so the umbrella's OWN
+# templates still get render-tested. It is a no-op for the leaf charts.
+#
+# This complements test.yaml (which lints szl-receipts only); it adds whole-fleet
+# render coverage, the keygen-script syntax check, and the requireKey contract.
 
 name: Chart Guard
 
@@ -60,24 +71,34 @@ jobs:
           sudo apt-get install -y -qq shellcheck
           python3 -m pip install --quiet pyyaml
 
-      # ── 1. Lint + render both charts (fails on any render error) ──────────────
-      - name: helm lint — szl-key-init
-        run: helm lint charts/szl-key-init/ --strict
-
-      - name: helm lint — szl-receipts
-        run: helm lint charts/szl-receipts/ --strict
-
-      - name: helm template — szl-key-init (default values)
+      # ── 1. Lint + render EVERY chart (fails on any render error) ──────────────
+      # Iterate charts/* so a render bug in ANY chart — not just the two receipt
+      # charts — fails the build. Umbrella charts get template-less placeholders
+      # for their unvendored (staged) dependencies first, so their own templates
+      # are still render-tested. szl-key-init / szl-receipts are also rendered to
+      # the fixed paths the later receipt-specific steps consume.
+      - name: helm lint --strict + helm template — every chart
         run: |
           set -euo pipefail
-          helm template ki charts/szl-key-init/ > /tmp/key-init.yaml
-          echo "szl-key-init rendered OK"
-
-      - name: helm template — szl-receipts (default values)
-        run: |
-          set -euo pipefail
-          helm template r charts/szl-receipts/ > /tmp/receipts-default.yaml
-          echo "szl-receipts rendered OK"
+          shopt -s nullglob
+          charts=(charts/*/)
+          if [ ${#charts[@]} -eq 0 ]; then
+            echo "::error::no charts found under charts/"
+            exit 1
+          fi
+          for chart in "${charts[@]}"; do
+            name="$(basename "$chart")"
+            echo "::group::${name}"
+            python3 .github/scripts/stub_missing_deps.py "$chart"
+            helm lint "$chart" --strict
+            helm template "$name" "$chart" > "/tmp/render-${name}.yaml"
+            echo "OK: ${name} — lint --strict + template (default values)"
+            echo "::endgroup::"
+          done
+          # Fixed paths the keygen-script + requireKey steps below read.
+          cp /tmp/render-szl-key-init.yaml /tmp/key-init.yaml
+          cp /tmp/render-szl-receipts.yaml /tmp/receipts-default.yaml
+          echo "All ${#charts[@]} charts under charts/* rendered OK"
 
       # ── 2 + 3. Extract the keygen script and check its syntax + invariants ────
       - name: Extract rendered keygen Job script

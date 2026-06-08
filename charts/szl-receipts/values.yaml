@@ -237,6 +237,13 @@ resourceGovernance:
 # Deployed alongside the chart so uds-core network policies apply correctly.
 udsPackage:
   enabled: true
+  # Exposure surface — host + gateway the receipts-server is published on. These
+  # MUST exist so templates that reference them (e.g. NOTES.txt's offline-verify
+  # URL) render with default values; they mirror the values hard-set in the UDS
+  # Package CR's network.expose block (host: receipts, gateway: tenant).
+  expose:
+    host: receipts
+    gateway: tenant
   # SSO (Keycloak OIDC client) registration via the UDS Package CR.
   # Default OFF: when disabled the template emits NO `sso` key at all, because an
   # empty `sso: []` still trips the UDS authservice gate and forces an
