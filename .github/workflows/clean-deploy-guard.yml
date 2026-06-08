@@ -1,0 +1,146 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# clean-deploy-guard.yml — Guard the four szl-receipts clean-deploy invariants.
+#
+# The "clean from-scratch deploy" property of szl-receipts (a single
+# `zarf package deploy` that comes up Ready + signed with ZERO manual kubectl)
+# lives in exactly four files. They were once found SILENTLY REGRESSED on
+# origin/main (ns pepr-system, two-file key.priv/key.pub, no exemption manifest,
+# image uds-v0.3.1) while a correct copy only existed on the box working tree —
+# a fresh clone would have reintroduced the unsigned-server / ErrImagePull
+# failures.
+#
+# This workflow fails the build (loudly) if any PR or push regresses one of the
+# four invariants below. It is a pure grep/text check — no cluster needed.
+#
+# The four invariants:
+#   1. charts/szl-key-init/values.yaml          -> namespace: szl-receipts
+#   2. charts/szl-key-init/templates/keygen-job.yaml
+#                                               -> single --from-file=ed25519.pem=
+#                                                  (NOT the old two-file
+#                                                   key.priv / key.pub)
+#   3. manifests/key-init-exemption.yaml         -> a UDS Exemption scoped to
+#                                                  RequireNonRootUser, matcher
+#                                                  ^szl-key-init.* in ns
+#                                                  szl-receipts
+#   4. packages/szl-receipts/zarf.yaml           -> szl-key-init-exemption is the
+#                                                  FIRST component AND the server
+#                                                  image tag is uds-v0.4.0
+
+name: Clean Deploy Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Assert clean-deploy invariants
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Invariant 1 — key-init Secret lands in ns szl-receipts
+        run: |
+          set -euo pipefail
+          F="charts/szl-key-init/values.yaml"
+          test -f "$F" || { echo "::error file=$F::missing — required for clean deploy"; exit 1; }
+          if ! grep -Eq '^[[:space:]]*namespace:[[:space:]]*szl-receipts[[:space:]]*$' "$F"; then
+            echo "::error file=$F::REGRESSION — 'namespace: szl-receipts' not found."
+            echo "::error file=$F::The Ed25519 Secret is namespace-local; if key-init lands it"
+            echo "::error file=$F::anywhere but szl-receipts the server boots UNSIGNED (no error)."
+            echo "----- current namespace lines -----"
+            grep -nE '^[[:space:]]*namespace:' "$F" || echo "(none)"
+            exit 1
+          fi
+          echo "OK: $F sets namespace: szl-receipts"
+
+      - name: Invariant 2 — keygen Secret uses a single ed25519.pem key file
+        run: |
+          set -euo pipefail
+          F="charts/szl-key-init/templates/keygen-job.yaml"
+          test -f "$F" || { echo "::error file=$F::missing — required for clean deploy"; exit 1; }
+          # Must create the Secret with a single --from-file=ed25519.pem= entry,
+          # matching the key file the receipts-server Deployment mounts.
+          if ! grep -Eq -- '--from-file="?\$\{?KEY_FILE\}?=|--from-file="?ed25519\.pem=' "$F"; then
+            echo "::error file=$F::REGRESSION — single --from-file=ed25519.pem= not found."
+            echo "::error file=$F::The server mounts ed25519.pem; a wrong/extra key name = UNSIGNED server."
+            grep -nE -- '--from-file' "$F" || echo "(no --from-file lines)"
+            exit 1
+          fi
+          # KEY_FILE must default to ed25519.pem (the name the server mounts).
+          if ! grep -Eq 'KEY_FILE=.*default[[:space:]]+"ed25519\.pem"|KEY_FILE="ed25519\.pem"' "$F"; then
+            echo "::error file=$F::REGRESSION — KEY_FILE no longer defaults to ed25519.pem."
+            grep -nE 'KEY_FILE=' "$F" || echo "(no KEY_FILE assignment)"
+            exit 1
+          fi
+          # Reject the OLD two-file scheme outright.
+          if grep -Eq -- '--from-file="?key\.priv|--from-file="?key\.pub|key\.priv=|key\.pub=' "$F"; then
+            echo "::error file=$F::REGRESSION — old two-file key.priv/key.pub scheme detected."
+            grep -nE 'key\.priv|key\.pub' "$F"
+            exit 1
+          fi
+          echo "OK: $F creates the Secret with a single ed25519.pem key file"
+
+      - name: Invariant 3 — UDS Exemption (RequireNonRootUser) for the keygen pod
+        run: |
+          set -euo pipefail
+          F="manifests/key-init-exemption.yaml"
+          test -f "$F" || {
+            echo "::error file=$F::REGRESSION — exemption manifest is MISSING."
+            echo "::error file=$F::Without it pepr-uds-core DENIES the root keygen pod -> UNSIGNED server."
+            exit 1
+          }
+          grep -Eq '^kind:[[:space:]]*Exemption[[:space:]]*$' "$F" \
+            || { echo "::error file=$F::REGRESSION — not a 'kind: Exemption'."; exit 1; }
+          grep -Eq 'RequireNonRootUser' "$F" \
+            || { echo "::error file=$F::REGRESSION — RequireNonRootUser policy not exempted."; exit 1; }
+          grep -Eq 'namespace:[[:space:]]*szl-receipts' "$F" \
+            || { echo "::error file=$F::REGRESSION — matcher not scoped to ns szl-receipts."; exit 1; }
+          grep -Eq 'name:[[:space:]]*"?\^szl-key-init' "$F" \
+            || { echo "::error file=$F::REGRESSION — matcher name not '^szl-key-init.*'."; exit 1; }
+          echo "OK: $F is a UDS Exemption (RequireNonRootUser, ^szl-key-init.* in ns szl-receipts)"
+
+      - name: Invariant 4 — exemption is the FIRST component & image tag is uds-v0.4.0
+        run: |
+          set -euo pipefail
+          F="packages/szl-receipts/zarf.yaml"
+          test -f "$F" || { echo "::error file=$F::missing — required for clean deploy"; exit 1; }
+          # The first component (first `- name:` under the top-level `components:`
+          # block) must be szl-key-init-exemption, so the Exemption is admitted
+          # BEFORE the root keygen Job runs.
+          FIRST_COMPONENT="$(awk '
+            /^components:[[:space:]]*$/ { in_c=1; next }
+            in_c && /^[^[:space:]#]/   { exit }          # left the components block
+            in_c && /^[[:space:]]*-[[:space:]]*name:/ {
+              line=$0
+              sub(/^[[:space:]]*-[[:space:]]*name:[[:space:]]*/, "", line)
+              gsub(/[[:space:]"\x27]/, "", line)
+              print line
+              exit
+            }
+          ' "$F")"
+          echo "First component: '${FIRST_COMPONENT}'"
+          if [ "$FIRST_COMPONENT" != "szl-key-init-exemption" ]; then
+            echo "::error file=$F::REGRESSION — first component is '${FIRST_COMPONENT}', expected 'szl-key-init-exemption'."
+            echo "::error file=$F::If the Exemption is not first, the root keygen pod is DENIED -> UNSIGNED server."
+            exit 1
+          fi
+          # The server image tag must be uds-v0.4.0 (chart tag & zarf images: list
+          # must stay in lockstep, else ErrImagePull after a registry cold-restart).
+          if ! grep -Eq 'ghcr\.io/szl-holdings/szl-receipts-server:uds-v0\.4\.0' "$F"; then
+            echo "::error file=$F::REGRESSION — server image tag is not uds-v0.4.0."
+            grep -nE 'szl-receipts-server:' "$F" || echo "(no szl-receipts-server image line)"
+            exit 1
+          fi
+          echo "OK: $F lists szl-key-init-exemption first and pins uds-v0.4.0"
+
+      - name: All clean-deploy invariants hold
+        run: echo "All four szl-receipts clean-deploy invariants are intact."
