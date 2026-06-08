@@ -160,6 +160,157 @@ jobs:
             | kubeconform -strict -summary -verbose - \
             && echo "kustomize manifests valid"
 
+  # ── End-to-end signing test (real running server — no cluster needed) ────────
+  receipts-e2e:
+    name: Receipts E2E (sign + verify)
+    runs-on: ubuntu-24.04
+    # Exercises the REAL server end-to-end, closing the gap left by the unit-level
+    # dsse_scheme_regression_test.py: it boots services/szl-receipts-server/server.py
+    # with a freshly generated Ed25519 key, POSTs a receipt, asserts the server
+    # actually signed it (valid:true + non-empty /pubkey + signed:true), then runs
+    # the SAME offline verifier the demo ships (scripts/verify_receipts.sh) and
+    # asserts every receipt VERIFIED. A wiring break — server booting unsigned
+    # because the key path/secret is wrong, or verify_receipts.sh drifting — passes
+    # the unit test but fails loudly here, so broken "provable receipts" never ship.
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install cryptography (server signer + offline verifier)
+        run: pip install cryptography
+
+      - name: Generate an Ed25519 signing key
+        run: |
+          mkdir -p "${RUNNER_TEMP}/szl-receipts"
+          openssl genpkey -algorithm ED25519 \
+            -out "${RUNNER_TEMP}/szl-receipts/ed25519.pem"
+          echo "Generated Ed25519 key at ${RUNNER_TEMP}/szl-receipts/ed25519.pem"
+
+      - name: Start szl-receipts-server (signed mode)
+        env:
+          SZL_ED25519_KEY_PATH: ${{ runner.temp }}/szl-receipts/ed25519.pem
+          SZL_RECEIPT_STORE: ${{ runner.temp }}/szl-receipts/store
+          SZL_PORT: "8080"
+        run: |
+          python3 services/szl-receipts-server/server.py \
+            > "${RUNNER_TEMP}/server.log" 2>&1 &
+          echo "SERVER_PID=$!" >> "$GITHUB_ENV"
+          # Wait for the server to answer /health (max ~15s).
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health >/dev/null 2>&1; then
+              echo "Server is up."
+              break
+            fi
+            sleep 0.5
+          done
+          curl -sf http://localhost:8080/health >/dev/null \
+            || { echo "::error::receipts server never became healthy"; \
+                 cat "${RUNNER_TEMP}/server.log"; exit 1; }
+
+      - name: Fail loudly if the server booted UNSIGNED
+        run: |
+          # The whole point of this job: a server that boots without its key still
+          # accepts receipts (honest degraded mode) but cannot sign them. That must
+          # NEVER reach a release, so we hard-fail here.
+          if grep -qiE "running unsigned|cryptography unavailable" "${RUNNER_TEMP}/server.log"; then
+            echo "::error::server booted in UNSIGNED mode — signing setup is broken"
+            cat "${RUNNER_TEMP}/server.log"
+            exit 1
+          fi
+          PUBKEY_JSON=$(curl -sf http://localhost:8080/pubkey)
+          echo "GET /pubkey -> ${PUBKEY_JSON}"
+          PUBKEY_JSON="${PUBKEY_JSON}" python3 - << 'PYEOF'
+          import os, sys, json
+          d = json.loads(os.environ["PUBKEY_JSON"])
+          pub = d.get("public_key_b64u")
+          if not d.get("signed"):
+              print("::error::/pubkey reports signed=false - server is not signing")
+              sys.exit(1)
+          if not pub:
+              print("::error::/pubkey returned an empty public key")
+              sys.exit(1)
+          print(f"Server is signing. pubkey={pub[:24]} keyid={d.get('keyid')}")
+          PYEOF
+
+      - name: POST a receipt and assert valid:true
+        run: |
+          RESP=$(curl -sf -X POST http://localhost:8080/receipt \
+            -H "Content-Type: application/json" \
+            -d '{"action":"deploy","subject":"ci-e2e","ts":"'"$(date -u +%FT%TZ)"'"}')
+          echo "POST /receipt -> ${RESP}"
+          RESP="${RESP}" python3 - << 'PYEOF'
+          import os, sys, json
+          r = json.loads(os.environ["RESP"])
+          if r.get("valid") is not True:
+              print("::error::server did NOT sign the receipt (valid != true) - "
+                    "signing wiring is broken")
+              sys.exit(1)
+          print(f"Receipt signed and valid: id={r.get('id','?')[:16]}")
+          PYEOF
+
+      - name: Verify all receipts with the shipped offline verifier
+        env:
+          SZL_RECEIPTS_URL: http://localhost:8080
+        run: |
+          # Runs the exact public-key-only verifier the demo ships (uds run
+          # demo:verify). Exits non-zero if ANY receipt fails Ed25519 sig or
+          # hash-chain verification.
+          bash scripts/verify_receipts.sh
+
+      - name: Tamper a stored receipt and assert the verifier REJECTS it
+        run: |
+          # NEGATIVE path. The step above only proves a clean chain is ACCEPTED.
+          # That alone is hollow: a regression that swallows InvalidSignature (an
+          # always-pass verifier) would still print "all VERIFIED". Here we flip a
+          # single byte in a stored receipt and require verify_receipts.sh to exit
+          # non-zero AND name a FAILED receipt — so "all VERIFIED" keeps meaning
+          # "tampering would have been caught."
+          mkdir -p "${RUNNER_TEMP}/tamper"
+          # Snapshot the real signed chain + the public key (offline verify needs
+          # only the public key — never the private one).
+          curl -sf http://localhost:8080/receipts > "${RUNNER_TEMP}/tamper/chain.json"
+          curl -sf http://localhost:8080/pubkey \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['public_key_b64u'])" \
+            > "${RUNNER_TEMP}/tamper/pub.b64"
+          # Flip one bit of the first stored receipt's signed payload. This breaks
+          # both its Ed25519 signature (signed over the DSSE PAE of the payload)
+          # and its SHA-256 hash-chain link — exactly like on-disk tampering of a
+          # receipt under SZL_RECEIPT_STORE.
+          python3 - << 'PYEOF'
+          import os, json, base64
+          p = os.path.join(os.environ["RUNNER_TEMP"], "tamper", "chain.json")
+          with open(p) as f:
+              receipts = json.load(f)
+          assert receipts, "no receipts to tamper"
+          env = receipts[0]["envelope"]
+          raw = bytearray(base64.b64decode(env["payload"]))
+          raw[0] ^= 0x01
+          env["payload"] = base64.b64encode(bytes(raw)).decode()
+          with open(p, "w") as f:
+              json.dump(receipts, f)
+          print("Flipped one byte in receipt #1 payload.")
+          PYEOF
+          # Feed the doctored chain to the SHIPPED verifier (offline file mode).
+          # It MUST fail; if it passes, the negative path is broken.
+          if SZL_CHAIN_FILE="${RUNNER_TEMP}/tamper/chain.json" \
+             SZL_PUBKEY_FILE="${RUNNER_TEMP}/tamper/pub.b64" \
+             bash scripts/verify_receipts.sh > "${RUNNER_TEMP}/tamper/verify.log" 2>&1; then
+            echo "::error::verifier ACCEPTED a tampered receipt — the negative path is broken (always-pass verifier?)"
+            cat "${RUNNER_TEMP}/tamper/verify.log"
+            exit 1
+          fi
+          if ! grep -q "FAILED" "${RUNNER_TEMP}/tamper/verify.log"; then
+            echo "::error::verifier exited non-zero but never reported a FAILED receipt"
+            cat "${RUNNER_TEMP}/tamper/verify.log"
+            exit 1
+          fi
+          echo "Tamper correctly detected — verifier rejected the doctored chain:"
+          grep -E "FAILED|Summary" "${RUNNER_TEMP}/tamper/verify.log"
+
+      - name: Stop the server
+        if: always()
+        run: |
+          [ -n "${SERVER_PID:-}" ] && kill "${SERVER_PID}" 2>/dev/null || true
+
   # ── Full install test (requires cluster — manual dispatch or scheduled) ────
   test-install:
     name: Test Install
