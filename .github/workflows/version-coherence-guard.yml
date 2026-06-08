@@ -1,0 +1,122 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# version-coherence-guard.yml — Keep the szl-receipts version metadata in lockstep.
+#
+# WHY THIS EXISTS
+# ---------------
+# origin/main once drifted: the chart still pointed at the OLD v0.3.1 server
+# while the real fixed source/image was v0.4.0, so a fresh clone installed the
+# wrong thing. Nothing automatically asserted that the in-repo version metadata
+# stays internally coherent, so the same silent drift could happen on the next
+# version bump.
+#
+# This guard derives the expected tag from the chart's appVersion and asserts,
+# in lockstep, that every place the version is written agrees:
+#
+#   1. charts/szl-receipts/Chart.yaml   -> version == appVersion
+#   2. charts/szl-receipts/values.yaml  -> server.image.tag == uds-v<appVersion>
+#   3. packages/szl-receipts/zarf.yaml  -> images: references
+#        ghcr.io/szl-holdings/szl-receipts-server:uds-v<appVersion>
+#
+# It is distinct from clean-deploy-guard.yml, which HARDCODES uds-v0.4.0 as a
+# clean-deploy invariant. This guard is version-agnostic: bump appVersion to
+# 0.5.0 and it requires every other site to follow, instead of having to hand-
+# edit a literal in the guard. Pure grep/awk — no cluster, no network.
+
+name: Version Coherence Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Assert receipts version metadata is coherent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Assert Chart/values/zarf versions are in lockstep
+        run: |
+          set -euo pipefail
+
+          CHART="charts/szl-receipts/Chart.yaml"
+          VALUES="charts/szl-receipts/values.yaml"
+          ZARF="packages/szl-receipts/zarf.yaml"
+
+          for f in "$CHART" "$VALUES" "$ZARF"; do
+            test -f "$f" || { echo "::error file=$f::missing — required for version-coherence check"; exit 1; }
+          done
+
+          # Strip surrounding quotes/whitespace from a scalar value.
+          unquote() { sed -E 's/^[[:space:]]*//; s/[[:space:]]*$//; s/^"(.*)"$/\1/; s/^'\''(.*)'\''$/\1/'; }
+
+          # ── 1. Chart.yaml: version == appVersion ──────────────────────────────
+          VERSION="$(grep -E '^version:' "$CHART" | head -1 | cut -d: -f2- | unquote)"
+          APPVERSION="$(grep -E '^appVersion:' "$CHART" | head -1 | cut -d: -f2- | unquote)"
+          echo "Chart.yaml version='${VERSION}' appVersion='${APPVERSION}'"
+          if [ -z "$VERSION" ] || [ -z "$APPVERSION" ]; then
+            echo "::error file=$CHART::could not read both 'version:' and 'appVersion:'."
+            exit 1
+          fi
+          if [ "$VERSION" != "$APPVERSION" ]; then
+            echo "::error file=$CHART::DRIFT — version ('${VERSION}') != appVersion ('${APPVERSION}')."
+            echo "::error file=$CHART::These must be bumped together so the chart and the app it ships agree."
+            exit 1
+          fi
+
+          EXPECTED_TAG="uds-v${APPVERSION}"
+          EXPECTED_REF="ghcr.io/szl-holdings/szl-receipts-server:${EXPECTED_TAG}"
+          echo "Expected image tag: ${EXPECTED_TAG}"
+
+          # ── 2. values.yaml: server.image.tag == uds-v<appVersion> ─────────────
+          # Capture ONLY the top-level `server:` block (until the next top-level
+          # key) so we never match the separate nginx `ui.image.tag`.
+          SERVER_TAG="$(awk '
+            /^server:[[:space:]]*$/ { in_s=1; next }
+            in_s && /^[^[:space:]#]/ { exit }          # left the server: block
+            in_s {
+              if ($0 ~ /^[[:space:]]+image:[[:space:]]*$/) {
+                match($0, /^[[:space:]]*/); img_indent=RLENGTH; in_img=1; next
+              }
+              if (in_img) {
+                if ($0 ~ /^[[:space:]]*$/) next         # skip blank lines
+                match($0, /^[[:space:]]*/); ind=RLENGTH
+                if (ind <= img_indent) { in_img=0 }     # dedented out of image:
+                else if ($0 ~ /^[[:space:]]+tag:/) {
+                  line=$0
+                  sub(/^[[:space:]]+tag:[[:space:]]*/, "", line)
+                  print line
+                  exit
+                }
+              }
+            }
+          ' "$VALUES" | unquote)"
+          echo "values.yaml server.image.tag='${SERVER_TAG}'"
+          if [ -z "$SERVER_TAG" ]; then
+            echo "::error file=$VALUES::could not read server.image.tag."
+            exit 1
+          fi
+          if [ "$SERVER_TAG" != "$EXPECTED_TAG" ]; then
+            echo "::error file=$VALUES::DRIFT — server.image.tag ('${SERVER_TAG}') != expected '${EXPECTED_TAG}' (from appVersion '${APPVERSION}')."
+            echo "::error file=$VALUES::Bump the image tag in lockstep with Chart.yaml appVersion, or a clean install pulls the wrong server."
+            exit 1
+          fi
+
+          # ── 3. zarf.yaml: images: references the same tag ─────────────────────
+          if ! grep -Fq "${EXPECTED_REF}" "$ZARF"; then
+            echo "::error file=$ZARF::DRIFT — no reference to '${EXPECTED_REF}' (expected from appVersion '${APPVERSION}')."
+            echo "::error file=$ZARF::The zarf images: list must reference the same server tag as the chart, or a fresh deploy bakes the wrong image."
+            echo "----- current szl-receipts-server image lines -----"
+            grep -nE 'szl-receipts-server:' "$ZARF" || echo "(none)"
+            exit 1
+          fi
+
+          echo "OK: Chart version==appVersion=='${APPVERSION}', values server.image.tag=='${EXPECTED_TAG}', zarf references '${EXPECTED_REF}'."
