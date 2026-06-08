@@ -52,6 +52,18 @@ variables:
   - name: WITH_PEPR
     default: "true"
 
+  # Safety override for `uds run teardown`. Teardown REFUSES to destroy the
+  # cluster while it shows in-flight activity (see the idle-check task) unless
+  # this is set: `uds run teardown --set FORCE=true`.
+  - name: FORCE
+    default: "false"
+
+  # How recently a ReplicaSet must have been created for the cluster to count as
+  # "still settling" (a fresh RS hash = a recent rollout a pod-phase glance
+  # misses). Used by idle-check / teardown.
+  - name: IDLE_WINDOW_MINUTES
+    default: "10"
+
 includes:
   - test: ./tasks/test.yaml
   - demo: ./tasks/demo.yaml
@@ -226,10 +238,41 @@ tasks:
             --confirm \
             --no-progress
 
-  # ── Teardown ──────────────────────────────────────────────────────────────
-  - name: teardown
-    description: "Destroy the k3d demo cluster"
+  # ── Idle / in-flight activity check ─────────────────────────────
+  # "Idle" is NOT "all pods Running". A Deployment can be mid-rollout while every
+  # pod still reads Running (the new ReplicaSet hash is spinning up while the old
+  # one drains) -- exactly the grafana/image-renderer window from task #228 that a
+  # pod-phase glance missed. scripts/idle-check.sh therefore judges idleness by
+  # rollout state (ReplicaSet hash/age + Deployment rollout status) and live
+  # deploy processes, not by pod phase. Run standalone to inspect the cluster:
+  #   uds run idle-check
+  # Exit 0 = idle, exit 1 = busy. Tune the window with --set IDLE_WINDOW_MINUTES=N.
+  - name: idle-check
+    description: "Report whether the demo cluster is idle (safe to tear down) or has in-flight churn"
     actions:
+      - description: "Inspect ${CLUSTER_NAME} for in-flight activity"
+        cmd: |
+          CLUSTER_NAME="${CLUSTER_NAME}" IDLE_WINDOW_MINUTES="${IDLE_WINDOW_MINUTES}" \
+            sh ./scripts/idle-check.sh
+
+  # ── Teardown ────────────────────────────────────────────────────────
+  - name: teardown
+    description: "Destroy the k3d demo cluster (refuses while work is in flight; override with --set FORCE=true)"
+    actions:
+      - description: "Refuse to tear down while the cluster has in-flight work"
+        cmd: |
+          if [ "${FORCE}" = "true" ]; then
+            echo "WARNING: FORCE=true -> skipping the in-flight activity check."
+          else
+            CLUSTER_NAME="${CLUSTER_NAME}" IDLE_WINDOW_MINUTES="${IDLE_WINDOW_MINUTES}" \
+              sh ./scripts/idle-check.sh || {
+                echo ""
+                echo "Refusing to destroy '${CLUSTER_NAME}' -- a sibling task may be mid-deploy."
+                echo "Re-run with --set FORCE=true once you have confirmed it is safe:"
+                echo "    uds run teardown --set FORCE=true"
+                exit 1
+              }
+          fi
       - description: "Delete k3d cluster"
         cmd: |
           k3d cluster delete "${CLUSTER_NAME}" && echo "Cluster deleted."
