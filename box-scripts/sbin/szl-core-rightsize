@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+#
+# szl-core-rightsize — keep the shared UDS-core HA components single-replica on
+# the 2-vCPU uds-szl-demo k3d node so a cold restart / core redeploy never
+# strands szl-receipts, the admin gateway, or the operator watcher in Pending.
+#
+# WHY: the node has only 2 allocatable CPU and sits at ~1810m/2000m (~90%)
+# requested with everything at ONE replica. The shared UDS-core admission
+# components ship HA defaults that DO NOT fit this box:
+#   - pepr-uds-core  (HA admission webhook) defaults to 2 replicas (+200m)
+#   - zarf agent-hook (image-rewrite webhook) defaults to 2 replicas (+100m)
+# and their default rolling-update strategy (maxSurge=25%) brings up a transient
+# SURGE pod before terminating the old one. On a ~90%-requested 2-CPU node any of
+# those extra pods cannot schedule -> Pending. The operator watcher
+# (pepr-uds-core-watcher) is the pod that processes the Package finalizer AND
+# creates the szl-receipts admin-gateway VirtualService, so when CPU is starved
+# the receipts route never comes up and the Package can stick Terminating.
+#
+# A plain `k3d cluster stop/start` preserves replicas in etcd, but a
+# `zarf package deploy` of UDS core (helm upgrade) RESETS these back to their HA
+# defaults (2) + surge strategy — re-creating the Pending storm and forcing the
+# old manual `kubectl scale ... --replicas=1` dance. This guard re-applies the
+# single-replica + no-surge posture so no human has to remember it.
+#
+# It is idempotent and a TRUE no-op once every target already conforms
+# (replicas<=1 AND maxSurge=0). Driven by szl-core-rightsize.timer (every 2 min)
+# and called once at the end of `a11oy-mode coexist` for instant effect when the
+# cluster is brought up on demand. Mirrors the istiod-fit-strategy /
+# a11oy-port-guard self-healing pattern already used on this box (167.233.50.75).
+set -uo pipefail
+
+CLUSTER="uds-szl-demo"
+
+# ns/deploy targets that must stay single-replica + no-surge on this box.
+# Format: "<namespace>/<deployment>"
+TARGETS=(
+  "pepr-system/pepr-uds-core"
+  "pepr-system/pepr-szl"
+  "pepr-system/pepr-uds-core-watcher"
+  "zarf/agent-hook"
+)
+
+# Resolve the cluster kubeconfig; if k3d/cluster is absent (e.g. cluster stopped
+# after a reboot — k3d nodes are --restart no), do nothing.
+KC="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" || exit 0
+export KUBECONFIG="$KC"
+
+# Cluster reachable at all? If not, no-op (cluster down / migrating).
+kubectl --request-timeout=20s get --raw='/readyz' >/dev/null 2>&1 || exit 0
+
+changed=0
+for t in "${TARGETS[@]}"; do
+  ns="${t%%/*}"; name="${t##*/}"
+
+  # Target present? (agent-hook only exists while zarf is installed.) Skip if not.
+  kubectl --request-timeout=20s -n "$ns" get deploy "$name" >/dev/null 2>&1 || continue
+
+  reps="$(kubectl --request-timeout=20s -n "$ns" get deploy "$name" \
+    -o jsonpath='{.spec.replicas}' 2>/dev/null)"
+  stype="$(kubectl --request-timeout=20s -n "$ns" get deploy "$name" \
+    -o jsonpath='{.spec.strategy.type}' 2>/dev/null)"
+  surge="$(kubectl --request-timeout=20s -n "$ns" get deploy "$name" \
+    -o jsonpath='{.spec.strategy.rollingUpdate.maxSurge}' 2>/dev/null)"
+
+  reps_ok=0
+  { [ "$reps" = "1" ] || [ "$reps" = "0" ]; } && reps_ok=1
+
+  if [ "$stype" = "Recreate" ]; then
+    # Recreate terminates all pods before creating new ones -> no surge pod, so
+    # there is no CPU-headroom risk from the strategy; only pin replicas.
+    [ "$reps_ok" = "1" ] && continue
+    echo "[szl-core-rightsize] $t replicas=${reps:-<unset>} (Recreate) -> replicas=1"
+    kubectl --request-timeout=30s -n "$ns" patch deploy "$name" --type=merge \
+      -p '{"spec":{"replicas":1}}' 2>&1
+    changed=1
+    continue
+  fi
+
+  # RollingUpdate (or unset/default): pin replicas AND kill the surge pod so a
+  # rollout terminates-then-recreates within the existing 2-CPU headroom.
+  if [ "$reps_ok" = "1" ] && [ "$surge" = "0" ]; then
+    continue
+  fi
+  echo "[szl-core-rightsize] $t replicas=${reps:-<unset>} maxSurge=${surge:-<unset>} -> replicas=1 maxSurge=0/maxUnavailable=1"
+  kubectl --request-timeout=30s -n "$ns" patch deploy "$name" --type=merge \
+    -p '{"spec":{"replicas":1,"strategy":{"rollingUpdate":{"maxSurge":0,"maxUnavailable":1}}}}' 2>&1
+  changed=1
+done
+
+[ "$changed" = "0" ] && exit 0
+exit 0

@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically pin UDS-core HA components to single-replica so szl-receipts fits the 2-vCPU uds-szl-demo node
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

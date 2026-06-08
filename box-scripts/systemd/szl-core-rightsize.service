@@ -1,0 +1,8 @@
+[Unit]
+Description=Keep UDS-core HA components single-replica on uds-szl-demo (2-vCPU headroom guard for szl-receipts)
+Documentation=file:///usr/local/sbin/szl-core-rightsize
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/szl-core-rightsize

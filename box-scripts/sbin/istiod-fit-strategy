@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+#
+# istiod-fit-strategy — keep istiod's rolling-update strategy single-replica-safe
+# AND its HorizontalPodAutoscaler from ever requesting a replica count the
+# 2-vCPU uds-szl-demo k3d node can't satisfy, so control-plane upgrades complete
+# and no autoscale event can strand a permanently Pending istiod pod.
+#
+# WHY (rollout strategy): the node has ~190m free CPU and istiod requests 500m.
+# Istio's default pilot strategy (maxSurge=100%, maxUnavailable=25%) creates a
+# transient SECOND istiod BEFORE terminating the old one -> the surge pod (500m)
+# cannot schedule on a ~90%-requested 2-CPU node -> the rollout hangs with a
+# permanently Pending istiod, and `zarf package deploy` of core hangs on the
+# istiod rollout health check. Setting maxSurge=0 / maxUnavailable=1 makes the
+# single-replica istiod terminate-THEN-recreate, freeing its own 500m first, so
+# the new pod fits and the rollout completes.
+#
+# WHY (HPA scale-up): istiod ships a HorizontalPodAutoscaler (min 1 / max 5,
+# cpu 80%). On this 2-vCPU node a SECOND istiod (another 500m) can never be
+# scheduled, so if the autoscaler ever scales to >1 (e.g. metrics-server starts
+# returning data and istiod briefly exceeds 80% CPU) the extra replica goes
+# permanently Pending — a stranded pod that looks like a failure. Clamping
+# maxReplicas to 1 means the autoscaler can never request a count the node can't
+# satisfy. (A 2nd istiod can't fit anyway, so this loses nothing on this box.)
+#
+# A `helm upgrade` (i.e. a `zarf package deploy` of UDS core) resets BOTH the
+# istiod strategy back to the surge default AND the HPA back to min1/max5, so
+# this guard re-applies both. It is idempotent and a TRUE no-op once the strategy
+# is already maxSurge=0 and the HPA is already maxReplicas=1 (no API writes, no
+# log spam). Running on a short timer also rescues an in-progress core deploy
+# hanging on a surge istiod: once the strategy flips, the controller drops the
+# Pending surge pod and proceeds terminate-then-recreate.
+#
+# Installed at /usr/local/sbin/istiod-fit-strategy on box 167.233.50.75,
+# driven by istiod-fit-strategy.timer (every 2 min). Mirrors the
+# a11oy-port-guard / szl-core-rightsize self-healing pattern on this box.
+set -uo pipefail
+
+CLUSTER="uds-szl-demo"
+NS="istio-system"
+DEPLOY="istiod"
+HPA="istiod"
+
+# Resolve the cluster kubeconfig; if k3d/cluster is absent (e.g. cluster stopped
+# after a reboot since k3d nodes are --restart no), do nothing.
+KC="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" || exit 0
+export KUBECONFIG="$KC"
+
+# --- Rolling-update strategy guard ---
+# Only act if istiod is present; otherwise no-op (cluster down / migrating).
+if kubectl --request-timeout=20s -n "$NS" get deploy "$DEPLOY" >/dev/null 2>&1; then
+  SURGE="$(kubectl --request-timeout=20s -n "$NS" get deploy "$DEPLOY" \
+    -o jsonpath='{.spec.strategy.rollingUpdate.maxSurge}' 2>/dev/null)"
+  if [ "$SURGE" != "0" ]; then
+    echo "[istiod-fit-strategy] maxSurge=${SURGE:-<unset>} -> patching to maxSurge=0/maxUnavailable=1"
+    kubectl --request-timeout=30s -n "$NS" patch deploy "$DEPLOY" --type=merge \
+      -p '{"spec":{"strategy":{"rollingUpdate":{"maxSurge":0,"maxUnavailable":1}}}}' 2>&1
+  fi
+fi
+
+# --- HPA scale-up guard ---
+# Only act if the HPA is present; otherwise no-op.
+if kubectl --request-timeout=20s -n "$NS" get hpa "$HPA" >/dev/null 2>&1; then
+  MAXR="$(kubectl --request-timeout=20s -n "$NS" get hpa "$HPA" \
+    -o jsonpath='{.spec.maxReplicas}' 2>/dev/null)"
+  if [ "$MAXR" != "1" ]; then
+    echo "[istiod-fit-strategy] hpa maxReplicas=${MAXR:-<unset>} -> patching to maxReplicas=1 (2-vCPU node can't fit a 2nd istiod)"
+    kubectl --request-timeout=30s -n "$NS" patch hpa "$HPA" --type=merge \
+      -p '{"spec":{"minReplicas":1,"maxReplicas":1}}' 2>&1
+  fi
+fi
+
+exit 0
