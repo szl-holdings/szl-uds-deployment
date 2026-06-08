@@ -69,6 +69,78 @@ jobs:
       - name: helm template — dry run render
         run: helm template test-release charts/szl-receipts/ > /dev/null && echo "helm template OK"
 
+      - name: helm template — Vault custody preset guard
+        # Guards charts/szl-receipts/values-vault.yaml (the committed Vault-custody
+        # overlay that replaced the hand-applied `kubectl set env` flow). The other
+        # CI renders use DEFAULT values only, so a future edit could silently break
+        # the reproducible Vault path with no test failing. This step renders the
+        # chart WITH the overlay and asserts the full vault posture is present, then
+        # renders the DEFAULT values and asserts it stays backend=file (the
+        # clean-deploy / airgap invariant).
+        run: |
+          set -euo pipefail
+          chart=charts/szl-receipts
+          values=$chart/values.yaml
+          overlay=$chart/values-vault.yaml
+
+          echo "== Rendering Vault-custody overlay =="
+          helm template test-release "$chart/" -f "$values" -f "$overlay" > /tmp/vault-render.yaml
+
+          fail=0
+          assert() {  # $1 = label, $2 = grep -E pattern
+            if grep -qE -- "$2" /tmp/vault-render.yaml; then
+              echo "  ok   $1"
+            else
+              echo "  FAIL $1  (missing pattern: $2)"
+              fail=1
+            fi
+          }
+
+          # backend flipped to vault (env name + value on adjacent lines)
+          if grep -A1 'name: SZL_SIGNING_BACKEND' /tmp/vault-render.yaml | grep -q 'value: "vault"'; then
+            echo "  ok   SZL_SIGNING_BACKEND=vault"
+          else
+            echo "  FAIL SZL_SIGNING_BACKEND is not set to vault"
+            fail=1
+          fi
+
+          # the remaining 6 vault env vars (vault-only — absent from the file backend)
+          assert "VAULT_ADDR env var"              'name: VAULT_ADDR'
+          assert "SZL_VAULT_TRANSIT_MOUNT env var" 'name: SZL_VAULT_TRANSIT_MOUNT'
+          assert "SZL_VAULT_TRANSIT_KEY env var"   'name: SZL_VAULT_TRANSIT_KEY'
+          assert "SZL_VAULT_AUTH_METHOD env var"   'name: SZL_VAULT_AUTH_METHOD'
+          assert "SZL_VAULT_K8S_ROLE env var"      'name: SZL_VAULT_K8S_ROLE'
+          assert "SZL_VAULT_K8S_AUTH_MOUNT env var" 'name: SZL_VAULT_K8S_AUTH_MOUNT'
+
+          # pod runs under the szl-receipts ServiceAccount (its Vault k8s-auth identity)
+          assert "serviceAccountName: szl-receipts" 'serviceAccountName: szl-receipts'
+
+          # vault egress NetworkPolicy + UDS Package egress rule
+          assert "vault egress NetworkPolicy"    'name: szl-receipts-allow-egress-vault'
+          assert "UDS Package vault egress rule" 'remoteNamespace: vault'
+
+          if [ "$fail" -ne 0 ]; then
+            echo "Vault-custody preset render is missing required pieces (see FAIL lines)." >&2
+            exit 1
+          fi
+          echo "Vault-custody preset render OK"
+
+          echo "== Asserting DEFAULT render stays backend=file (clean-deploy invariant) =="
+          helm template test-release "$chart/" -f "$values" > /tmp/default-render.yaml
+          if grep -A1 'name: SZL_SIGNING_BACKEND' /tmp/default-render.yaml | grep -q 'value: "file"'; then
+            echo "  ok   default backend=file"
+          else
+            echo "  FAIL default render is not backend=file" >&2
+            exit 1
+          fi
+          # the vault posture must NOT leak into a default (file-backend) deploy
+          if grep -qE 'name: szl-receipts-allow-egress-vault|remoteNamespace: vault' /tmp/default-render.yaml; then
+            echo "  FAIL vault egress leaked into the default (file-backend) render" >&2
+            exit 1
+          fi
+          echo "  ok   no vault egress in default render"
+          echo "Default clean-deploy invariant OK"
+
       - name: Validate kustomize manifests (offline schema check)
         run: |
           # Install kubectl (for `kubectl kustomize` rendering only)
