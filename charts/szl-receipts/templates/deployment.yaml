@@ -149,7 +149,7 @@ spec:
             readOnlyRootFilesystem: true
       {{- if .Values.dashboard.enabled }}
         - name: dashboard
-          image: "{{ .Values.dashboard.image.repository }}:{{ .Values.dashboard.image.tag }}"
+          image: "{{ .Values.dashboard.image.repository }}:{{ .Values.dashboard.image.tag }}{{ if .Values.dashboard.image.digest }}@{{ .Values.dashboard.image.digest }}{{ end }}"
           imagePullPolicy: {{ .Values.dashboard.image.pullPolicy }}
           ports:
             - name: dashboard

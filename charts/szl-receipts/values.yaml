@@ -185,6 +185,12 @@ dashboard:
   image:
     repository: docker.io/library/nginx
     tag: "1.27-alpine"
+    # Immutable content digest for nginx:1.27-alpine (linux/amd64). Pinning here
+    # makes a clean install reproducible: even if the 1.27-alpine tag is later
+    # re-pushed with different contents, this digest is what gets deployed. The
+    # SAME digest is pinned in the zarf images: lists so the chart-rendered image
+    # reference byte-matches the baked image for airgap (zarf) deploy rewrites.
+    digest: "sha256:62223d644fa234c3a1cc785ee14242ec47a77364226f1c811d2f669f96dc2ac8"
     pullPolicy: IfNotPresent
 
   replicas: 1
