@@ -24,6 +24,7 @@ metadata:
     szl.io/mesh-version: v0.4.0
   annotations:
     szl.io/role: "deployment fabric / skeleton (vessels.szl-vessels.svc.cluster.local:8080)"
+    # yamllint disable-line rule:line-length
     szl.io/blocked-by: "FA-001 — ghcr.io/szl-holdings/vessels:uds-v0.3.0 build fixed + CI-ready (vessels-image.yml), NOT yet published: first push of the new org package returns 403; org must permit/link package creation for szl-holdings/platform, then one gh workflow run publishes it"
 spec:
   # vessels has an optional read-only maritime-fleet dashboard. It is exposed

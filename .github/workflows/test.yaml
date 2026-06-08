@@ -51,9 +51,11 @@ jobs:
           yamllint -c .yamllint.yml $(find . -name "*.yaml" -o -name "*.yml" \
             | grep -v "node_modules" \
             | grep -v ".git" \
-            | grep -v "charts/.*/templates/") 2>&1
-          # NOTE: charts/*/templates/ are excluded because Go templating ({{ }}) is not valid
-          # standalone YAML. These are validated by 'helm lint' below instead.
+            | grep -vE "(charts|operator|capabilities)/.*/templates/") 2>&1
+          # NOTE: every chart's templates/ dir is excluded (charts/*/templates/,
+          # operator/chart/templates/, capabilities/*/chart/templates/) because Go
+          # templating ({{ }}) is not valid standalone YAML. These are validated by
+          # 'helm lint' / 'helm template' instead.
           # yamllint's ignore: config only works with directory args, not explicit file lists.
 
       - name: Install Helm

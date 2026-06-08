@@ -20,9 +20,14 @@
 extends: default
 
 # Helm renders these; yamllint must not parse them as plain YAML.
+# Covers every chart's templates/ dir: the receipts/vessel charts under
+# charts/, the UDS operator chart under operator/chart/, and the capability
+# charts under capabilities/*/chart/.
 ignore: |
   charts/*/templates/
   charts/**/templates/
+  operator/**/templates/
+  capabilities/**/templates/
   node_modules/
   .git/
 
