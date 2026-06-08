@@ -65,7 +65,7 @@ components:
             maxTotalSeconds: 90
             cmd: |
               set -uo pipefail
-              if [ "###ZARF_VAR_SMALL_SERVER_RIGHTSIZE###" != "true" ]; then
+              if [ "${ZARF_VAR_SMALL_SERVER_RIGHTSIZE:-true}" != "true" ]; then
                 echo "[szl-core-rightsize] SMALL_SERVER_RIGHTSIZE != true -> leaving upstream HA defaults in place"
                 exit 0
               fi
