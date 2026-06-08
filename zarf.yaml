@@ -91,7 +91,10 @@ components:
     required: false
     description: "Deploy the SZL Pepr policy that annotates Deployments/Jobs with receipt IDs"
     import:
-      name: szl-receipt-policy
+      # Pepr build emits a Zarf component named pepr-<uuid>; with the Pepr
+      # uuid "szl-receipt-policy" (see pepr/package.json) the built component
+      # is "pepr-szl-receipt-policy", so the import name must match that.
+      name: pepr-szl-receipt-policy
       path: dist/pepr
     actions:
       onDeploy:
