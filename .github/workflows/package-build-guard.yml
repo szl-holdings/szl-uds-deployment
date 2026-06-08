@@ -1,0 +1,236 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# package-build-guard.yml — Catch clean-deploy breakage a text scan can miss.
+#
+# clean-deploy-guard.yml verifies the four clean-deploy invariants with grep/awk.
+# That catches the KNOWN textual regressions, but it cannot catch subtler breakage
+# where each file individually still looks right yet the szl-receipts PACKAGE no
+# longer renders or builds — e.g. a chart value rename, a Helm template error, a
+# Chart.yaml/zarf.yaml version drift, or a broken manifest path reference in
+# packages/szl-receipts/zarf.yaml (a moved/renamed manifests/*.yaml). `helm
+# template` alone never sees the zarf-level file references; only an actual
+# package build does. This workflow closes that gap with a non-destructive
+# build/render dry-run — no cluster, no publish, no signing.
+#
+# Two jobs, both cluster-free:
+#   1. render-assert — render the key-init chart exactly as the package deploys it
+#      and assert (at the RENDERED level, complementing the grep guard) that the
+#      auto-generated Ed25519 Secret still targets ns szl-receipts with key file
+#      ed25519.pem. Catches a templating bug where values.yaml looks right but the
+#      rendered Job lands the Secret elsewhere (which boots the server UNSIGNED).
+#   2. zarf-build — `zarf package create packages/szl-receipts --flavor upstream`
+#      (mirrors zarf-package-sign.yml's build, minus publish/sign). A non-zero
+#      exit or a missing tarball fails the build, catching a broken manifest path,
+#      a chart localPath/version mismatch, or a bad image reference that renders
+#      fine in isolation but cannot actually be packaged.
+#
+# This complements (does not duplicate):
+#   - clean-deploy-guard.yml (grep of the four invariant files)
+#   - chart-guard.yml        (helm lint/template + keygen-script syntax/contract)
+#   - test.yaml              (lint + kustomize/kubeconform)
+# by adding the zarf PACKAGE build dry-run on PRs and a render-level Secret
+# namespace/keyfile assertion.
+
+name: Package Build Guard
+
+on:
+  pull_request:
+    paths:
+      - "charts/**"
+      - "packages/szl-receipts/**"
+      - "manifests/**"
+      - ".github/workflows/package-build-guard.yml"
+  push:
+    branches: [main]
+    paths:
+      - "charts/**"
+      - "packages/szl-receipts/**"
+      - "manifests/**"
+      - ".github/workflows/package-build-guard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read # pull the receipts-server image from GHCR during zarf build
+
+env:
+  ZARF_VERSION: "v0.77.0"
+
+jobs:
+  # ── 1. Render-level Secret invariant (fast, no images, no cluster) ──────────
+  render-assert:
+    name: Rendered key-init Secret -> ns szl-receipts / ed25519.pem
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      # Render the key-init chart EXACTLY as packages/szl-receipts/zarf.yaml
+      # deploys it: namespace szl-receipts, with the package's values file. This
+      # is the rendered output that actually runs on a clean deploy.
+      - name: helm template — szl-key-init (as the package deploys it)
+        run: |
+          set -euo pipefail
+          helm template szl-key-init charts/szl-key-init/ \
+            --namespace szl-receipts \
+            --values charts/szl-key-init/values.yaml \
+            > /tmp/key-init-rendered.yaml
+          echo "szl-key-init rendered OK"
+
+      - name: Assert rendered keygen Job lands the Secret in ns szl-receipts/ed25519.pem
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys, yaml
+          docs = [d for d in yaml.safe_load_all(open("/tmp/key-init-rendered.yaml")) if d]
+          jobs = [d for d in docs
+                  if d.get("kind") == "Job"
+                  and d.get("metadata", {}).get("name") == "szl-key-init"]
+          if not jobs:
+              sys.exit("::error::keygen Job 'szl-key-init' not found in rendered output")
+          job = jobs[0]
+
+          # (a) The Job object itself must render into ns szl-receipts. A Secret is
+          #     namespace-local; if key-init runs anywhere else the server cannot
+          #     mount the key and boots UNSIGNED with no error.
+          ns = job.get("metadata", {}).get("namespace")
+          if ns != "szl-receipts":
+              sys.exit(f"::error::rendered keygen Job namespace is '{ns}', expected 'szl-receipts'")
+
+          containers = job["spec"]["template"]["spec"]["containers"]
+          keygen = [c for c in containers if c.get("name") == "keygen"]
+          if not keygen:
+              sys.exit("::error::keygen container not found in rendered Job")
+          args = keygen[0].get("args") or []
+          if not args or not isinstance(args[0], str) or not args[0].strip():
+              sys.exit("::error::keygen container has no inline shell script in args[0]")
+          script = args[0]
+
+          # (b) The rendered script must resolve to the szl-receipts namespace,
+          #     the ed25519.pem key file, and the szl-receipts-ed25519 Secret name
+          #     the receipts-server Deployment mounts. These are the rendered
+          #     VALUES (not the values.yaml source the grep guard checks) — this is
+          #     the complement: it catches a template that ignores .Values.namespace
+          #     or hardcodes a different ns/key while values.yaml still reads right.
+          required = {
+              'NAMESPACE="szl-receipts"':        "namespace did not render to szl-receipts",
+              'KEY_FILE="ed25519.pem"':          "key file did not render to ed25519.pem",
+              'SECRET_NAME="szl-receipts-ed25519"': "secret name did not render to szl-receipts-ed25519",
+          }
+          for needle, why in required.items():
+              if needle not in script:
+                  sys.exit(f"::error::rendered keygen script: {why} (missing {needle!r})")
+
+          # (c) The Secret must be created from a single ed25519.pem file in the
+          #     resolved namespace (reject a stray hardcoded ns / two-file scheme).
+          if '--from-file="${KEY_FILE}=' not in script:
+              sys.exit("::error::keygen script no longer creates the Secret from "
+                       "a single --from-file=\"${KEY_FILE}=\" entry")
+          if 'key.priv' in script or 'key.pub' in script:
+              sys.exit("::error::keygen script reintroduced the old two-file "
+                       "key.priv/key.pub scheme")
+
+          print("OK: rendered keygen Job creates Secret szl-receipts-ed25519 "
+                "(ed25519.pem) in ns szl-receipts")
+          PY
+
+  # ── 2. Whole-package build dry-run (catches what a render cannot) ───────────
+  zarf-build:
+    name: zarf package create (build dry-run, no publish/sign)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Zarf
+        run: |
+          set -euo pipefail
+          curl -sLo /usr/local/bin/zarf \
+            "https://github.com/zarf-dev/zarf/releases/download/${ZARF_VERSION}/zarf_${ZARF_VERSION}_Linux_amd64"
+          chmod +x /usr/local/bin/zarf
+          zarf version
+
+      # The szl-receipts-server image (ghcr.io/szl-holdings/...) is private; the
+      # build bakes it into the package, so GHCR auth is required to pull it.
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Schema/structural lint first — fast, points at the offending field.
+      - name: zarf dev lint (schema + structure)
+        run: |
+          set -euo pipefail
+          zarf dev lint packages/szl-receipts --flavor upstream || {
+            echo "::error file=packages/szl-receipts/zarf.yaml::zarf dev lint failed — package definition is structurally invalid"
+            exit 1
+          }
+          echo "OK: zarf dev lint passed"
+
+      # Full non-destructive build. This is the step a pure text scan cannot do:
+      # zarf reads every referenced manifest/chart file and templates the charts,
+      # so a broken manifest path, a chart localPath/version mismatch, or a bad
+      # image reference fails here even when each file looks right on its own.
+      # --flavor upstream is REQUIRED: the szl-receipts-server component is gated
+      # `only.flavor: upstream`; without it the server (and its image) are dropped
+      # and the build would not exercise the real package.
+      - name: zarf package create — szl-receipts (build, no publish/sign)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/zarf-out
+          zarf package create packages/szl-receipts \
+            --flavor upstream \
+            --confirm \
+            --no-progress \
+            --output-directory /tmp/zarf-out
+          PKG="$(ls /tmp/zarf-out/zarf-package-szl-receipts-*.tar.zst 2>/dev/null | head -1)"
+          if [ -z "${PKG}" ]; then
+            echo "::error file=packages/szl-receipts/zarf.yaml::zarf package create produced no tarball — the package did not build"
+            exit 1
+          fi
+          echo "OK: built $(basename "${PKG}") ($(du -h "${PKG}" | cut -f1))"
+
+      # Inspect the BUILT package definition to confirm the clean-deploy
+      # structure survived packaging: the exemption is the first component and the
+      # server image is pinned uds-v0.4.0. This asserts the property on the actual
+      # build output, not just the source file the grep guard reads. The zarf.yaml
+      # baked into the tarball is extracted directly (tar/zstd) so the check does
+      # not depend on a version-specific `zarf package inspect` subcommand form.
+      - name: Assert built package keeps exemption-first + uds-v0.4.0 image
+        run: |
+          set -euo pipefail
+          PKG="$(ls /tmp/zarf-out/zarf-package-szl-receipts-*.tar.zst | head -1)"
+          rm -rf /tmp/pkgx && mkdir -p /tmp/pkgx
+          tar --use-compress-program=unzstd -xf "${PKG}" -C /tmp/pkgx zarf.yaml
+          test -s /tmp/pkgx/zarf.yaml \
+            || { echo "::error::built package has no zarf.yaml at root"; exit 1; }
+          python3 - <<'PY'
+          import sys, yaml
+          docs = [d for d in yaml.safe_load_all(open("/tmp/pkgx/zarf.yaml")) if d]
+          pkg = next((d for d in docs if d.get("kind") == "ZarfPackageConfig"), docs[0] if docs else None)
+          if not pkg:
+              sys.exit("::error::could not parse built package definition")
+          comps = pkg.get("components", [])
+          names = [c.get("name") for c in comps]
+          if not names or names[0] != "szl-key-init-exemption":
+              sys.exit(f"::error::built package first component is {names[:1]}, "
+                       "expected 'szl-key-init-exemption' (root keygen pod would be DENIED -> UNSIGNED)")
+          blob = yaml.safe_dump(pkg)
+          if "ghcr.io/szl-holdings/szl-receipts-server:uds-v0.4.0" not in blob:
+              sys.exit("::error::built package no longer pins szl-receipts-server:uds-v0.4.0")
+          print("OK: built package keeps szl-key-init-exemption first and pins uds-v0.4.0")
+          PY
+
+      - name: Package build guard passed
+        run: echo "szl-receipts package renders and builds; clean-deploy structure intact in the built artifact."
