@@ -20,7 +20,7 @@
 
 ```bash
 # Published package (OCI)
-cosign verify ghcr.io/szl-holdings/packages/szl-receipts:0.4.0-upstream \
+cosign verify ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream \
   --certificate-identity-regexp 'zarf-package-sign.yml' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 

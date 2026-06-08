@@ -165,19 +165,26 @@ jobs:
           if [ -z "${RECEIPTS_PKG}" ]; then
             echo "No szl-receipts package built; cannot publish/sign OCI ref"; exit 1
           fi
-          echo "Publishing ${RECEIPTS_PKG} -> oci://${REGISTRY}/${ORG}/packages"
+          echo "Publishing ${RECEIPTS_PKG} -> oci://${REGISTRY}/${ORG}"
 
+          # Publish to the org root so the package is ghcr.io/<org>/szl-receipts
+          # (standard form, same as the szl-receipts-server image). A package
+          # created by THIS repo's Actions is auto-linked to the repo, so the
+          # built-in GITHUB_TOKEN has packages:write on it (the old standalone
+          # ghcr.io/<org>/packages/szl-receipts was created off-CI, unlinked, and
+          # rejected the built-in token with 403 — it remains the legacy artifact).
+          #
           # zarf derives the published OCI tag from package metadata (version +
           # flavor), e.g. szl-receipts:0.4.0-upstream.
-          zarf package publish "${RECEIPTS_PKG}" "oci://${REGISTRY}/${ORG}/packages" \
+          zarf package publish "${RECEIPTS_PKG}" "oci://${REGISTRY}/${ORG}" \
             --no-progress 2>&1 | tee publish.log
 
           # Resolve the exact published reference from zarf's output. Fall back to
           # deriving it deterministically from metadata.version + the upstream flavor.
-          REF="$(grep -oE "${REGISTRY//./\\.}/${ORG}/packages/szl-receipts:[A-Za-z0-9._-]+" publish.log | tail -1 || true)"
+          REF="$(grep -oE "${REGISTRY//./\\.}/${ORG}/szl-receipts:[A-Za-z0-9._-]+" publish.log | tail -1 || true)"
           if [ -z "${REF}" ]; then
             VERSION="$(awk '/^metadata:/{m=1} m&&/^[[:space:]]+version:/{gsub(/[" ]/,"",$2);print $2;exit}' packages/szl-receipts/zarf.yaml)"
-            REF="${REGISTRY}/${ORG}/packages/szl-receipts:${VERSION}-upstream"
+            REF="${REGISTRY}/${ORG}/szl-receipts:${VERSION}-upstream"
           fi
           echo "Published reference: ${REF}"
 

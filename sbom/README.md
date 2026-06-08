@@ -50,12 +50,12 @@ signature. The published OCI package is signed **keyless via GitHub OIDC** in CI
 ```bash
 # 1. Verify the published package signature keyless (pulls only manifest + sig).
 #    No key file — identity is the signing workflow, issued by Fulcio, logged to Rekor.
-cosign verify ghcr.io/szl-holdings/packages/szl-receipts:0.4.0-upstream \
+cosign verify ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream \
   --certificate-identity-regexp 'zarf-package-sign.yml' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
 # 2. (optional) Pull the full self-contained airgap package (~220 MB) for offline deploy
-zarf package pull oci://ghcr.io/szl-holdings/packages/szl-receipts:0.4.0-upstream
+zarf package pull oci://ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream
 ```
 
 > **Keyless, not key-pair.** The published **package** (`packages/szl-receipts`) is

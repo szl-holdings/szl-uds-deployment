@@ -18,13 +18,13 @@ and a proven pull-back **and deploy** round-trip from the registry.
 > publish only). Verify the current package with **no key file**:
 
 ```bash
-cosign verify ghcr.io/szl-holdings/packages/szl-receipts:0.4.0-upstream \
+cosign verify ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream \
   --certificate-identity-regexp 'zarf-package-sign.yml' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 # => "signatures were verified against the certificate" (Rekor transparency log: Verified OK)
 
 # Full self-contained airgap package (~220 MB) for offline deploy:
-zarf package pull oci://ghcr.io/szl-holdings/packages/szl-receipts:0.4.0-upstream
+zarf package pull oci://ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream
 ```
 
 <details><summary>Legacy key-pair verify (original 0.3.1-upstream artifact only)</summary>
@@ -99,7 +99,7 @@ The published OCI package is signed **keyless** in GitHub Actions
 and `cosign sign`s the published OCI ref). Verify with **no key file**:
 
 ```bash
-cosign verify ghcr.io/szl-holdings/packages/szl-receipts:0.4.0-upstream \
+cosign verify ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream \
   --certificate-identity-regexp 'zarf-package-sign.yml' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 # => signatures verified against the cert; transparency log: Verified OK   ✅
@@ -218,7 +218,7 @@ These steps need credentials/secrets only Stephen holds; everything else is in
    Then confirm anonymous, **keyless** access works (no key file):
    ```bash
    docker logout ghcr.io
-   cosign verify ghcr.io/szl-holdings/packages/szl-receipts:0.4.0-upstream \
+   cosign verify ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream \
      --certificate-identity-regexp 'zarf-package-sign.yml' \
      --certificate-oidc-issuer https://token.actions.githubusercontent.com
    ```
