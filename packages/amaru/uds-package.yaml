@@ -24,7 +24,7 @@ metadata:
     szl.io/mesh-version: v0.4.0
   annotations:
     szl.io/role: "memory cortex (amaru.szl-amaru.svc.cluster.local:8080)"
-    szl.io/blocked-by: "FA-001 — ghcr.io/szl-holdings/amaru image not yet pushed"
+    szl.io/image-status: "PUBLISHED + cosign-signed — ghcr.io/szl-holdings/amaru:uds-v0.2.0@sha256:53301e26adcde49e73df28d8c3b790f2496da9d495307fe8587ffa7452b289ff (.sig + .att SLSA attestation present in GHCR; FA-001 resolved)"
 spec:
   # No human login UI; machine identity only. authservice protection is optional
   # for amaru since all callers are mTLS-authenticated peers gated by AuthorizationPolicy.
