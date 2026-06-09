@@ -13,6 +13,8 @@
 
 </div>
 
+> **Trademark / non-affiliation notice.** SZL Holdings' use of "UDS" references Defense Unicorns' Unified Defense Stack (USPTO Serial 99831122). SZL Holdings is **not affiliated with, endorsed by, or sponsored by Defense Unicorns**. SZL contributions to the UDS ecosystem are made through upstream PRs. Upstream **UDS Core** (AGPL-3.0) is followed as a **deployment pattern / dependency only — it is never forked, vendored, or adopted into this repository**. See https://defenseunicorns.com/uds
+
 ## 💡 Why it matters
 
 It is the live reference deployment used for the 2026 Warhacker demo — showing policy enforcement and signed audit receipts running on real infrastructure, the way a customer would actually operate it in an air-gapped environment.
