@@ -95,6 +95,20 @@ jobs:
               fail=1
             fi
           }
+          assert_value() {  # $1 = env var name, $2 = expected rendered value
+            # Assert the env var is present AND carries the exact value from the
+            # committed values-vault.yaml overlay. The value renders on the line
+            # immediately after the name line (helm: `value: "<v>"`); the trailing
+            # close-quote in the fixed-string match makes it effectively exact, so
+            # a wrong Vault address / transit mount / key / k8s role / auth mount
+            # fails here even though the env var is rendered by name.
+            if grep -A1 -- "name: $1$" /tmp/vault-render.yaml | grep -qF -- "value: \"$2\""; then
+              echo "  ok   $1=\"$2\""
+            else
+              echo "  FAIL $1 expected value \"$2\" (wrong or missing in render)"
+              fail=1
+            fi
+          }
 
           # backend flipped to vault (env name + value on adjacent lines)
           if grep -A1 'name: SZL_SIGNING_BACKEND' /tmp/vault-render.yaml | grep -q 'value: "vault"'; then
@@ -104,13 +118,19 @@ jobs:
             fail=1
           fi
 
-          # the remaining 6 vault env vars (vault-only — absent from the file backend)
-          assert "VAULT_ADDR env var"              'name: VAULT_ADDR'
-          assert "SZL_VAULT_TRANSIT_MOUNT env var" 'name: SZL_VAULT_TRANSIT_MOUNT'
-          assert "SZL_VAULT_TRANSIT_KEY env var"   'name: SZL_VAULT_TRANSIT_KEY'
-          assert "SZL_VAULT_AUTH_METHOD env var"   'name: SZL_VAULT_AUTH_METHOD'
-          assert "SZL_VAULT_K8S_ROLE env var"      'name: SZL_VAULT_K8S_ROLE'
-          assert "SZL_VAULT_K8S_AUTH_MOUNT env var" 'name: SZL_VAULT_K8S_AUTH_MOUNT'
+          # the remaining 6 vault env vars are vault-only (absent from the file
+          # backend). Assert each is present AND carries the exact value from the
+          # committed values-vault.yaml overlay — a wrong Vault address, transit
+          # mount/key, or k8s auth role/mount would still render the env var by
+          # name, so name-only checks could not catch the misconfiguration. These
+          # expected values are the canonical source of truth: if values-vault.yaml
+          # is edited to a wrong value, the render no longer matches and CI fails.
+          assert_value VAULT_ADDR               "http://vault.vault.svc.cluster.local:8200"
+          assert_value SZL_VAULT_TRANSIT_MOUNT  "transit"
+          assert_value SZL_VAULT_TRANSIT_KEY    "szl-receipts"
+          assert_value SZL_VAULT_AUTH_METHOD    "kubernetes"
+          assert_value SZL_VAULT_K8S_ROLE       "szl-receipts"
+          assert_value SZL_VAULT_K8S_AUTH_MOUNT "kubernetes"
 
           # pod runs under the szl-receipts ServiceAccount (its Vault k8s-auth identity)
           assert "serviceAccountName: szl-receipts" 'serviceAccountName: szl-receipts'
