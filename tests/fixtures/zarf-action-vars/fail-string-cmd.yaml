@@ -1,0 +1,24 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# FIXTURE (must FAIL): a ###ZARF_VAR_*### template form inside an action cmd given
+# as a single STRING. Zarf never substitutes the template form inside an
+# actions[].cmd, so this comparison is always wrong. The guard MUST flag it.
+#
+# NOTE: this file is deliberately NOT named zarf.yaml so the no-arg CI run (which
+# globs **/zarf.yaml) never picks it up; the self-test passes it explicitly.
+kind: ZarfPackageConfig
+metadata:
+  name: fixture-fail-string-cmd
+variables:
+  - name: FOO
+    default: "false"
+components:
+  - name: rightsize
+    actions:
+      onDeploy:
+        before:
+          - cmd: |
+              if [ "###ZARF_VAR_FOO###" = "true" ]; then
+                echo "rightsizing"
+              fi

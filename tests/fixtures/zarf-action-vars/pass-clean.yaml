@@ -1,0 +1,24 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# FIXTURE (must PASS): a clean, realistic zarf.yaml with an action that uses the
+# $ZARF_VAR environment variable form correctly and no ###ZARF_VAR_*### template
+# form anywhere inside an action cmd. The guard must pass it cleanly.
+#
+# NOTE: deliberately NOT named zarf.yaml (see fail-string-cmd.yaml).
+kind: ZarfPackageConfig
+metadata:
+  name: fixture-pass-clean
+variables:
+  - name: REPLICAS
+    default: "1"
+components:
+  - name: rightsize
+    actions:
+      onDeploy:
+        before:
+          - cmd: 'kubectl scale deploy/foo --replicas="${ZARF_VAR_REPLICAS:-1}"'
+    manifests:
+      - name: app
+        files:
+          - manifests/app.yaml

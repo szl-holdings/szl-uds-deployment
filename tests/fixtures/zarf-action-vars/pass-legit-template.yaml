@@ -1,0 +1,38 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# FIXTURE (must PASS): the ###ZARF_VAR_*### template form used in the positions
+# where Zarf DOES substitute it — component files targets, manifests, and chart
+# values. The guard is scoped to action cmd blocks only, so these legitimate uses
+# must NOT be flagged. The single action cmd here correctly uses the $ZARF_VAR
+# environment variable form, which is also fine.
+#
+# NOTE: deliberately NOT named zarf.yaml (see fail-string-cmd.yaml).
+kind: ZarfPackageConfig
+metadata:
+  name: fixture-pass-legit-template
+variables:
+  - name: FOO
+    default: "bar"
+components:
+  - name: legit-template-uses
+    files:
+      # files target: substitutes at deploy time -> legitimate
+      - source: ./config.tpl
+        target: "###ZARF_VAR_FOO###/config.yaml"
+    manifests:
+      # manifests: substitutes at deploy time -> legitimate
+      - name: cfg
+        files:
+          - "manifest-###ZARF_VAR_FOO###.yaml"
+    charts:
+      # chart values file path / values: substitutes at render -> legitimate
+      - name: app
+        namespace: app
+        valuesFiles:
+          - "values-###ZARF_VAR_FOO###.yaml"
+    actions:
+      onDeploy:
+        before:
+          # correct: the env var form inside an action cmd
+          - cmd: 'echo "deploying with ${ZARF_VAR_FOO:-default}"'

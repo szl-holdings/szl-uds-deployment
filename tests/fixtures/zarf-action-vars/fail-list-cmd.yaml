@@ -1,0 +1,22 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# FIXTURE (must FAIL): a ###ZARF_VAR_*### template form inside an action cmd given
+# as a LIST of strings. The guard walks list-form cmd values too, so this MUST be
+# flagged exactly like the string form.
+#
+# NOTE: deliberately NOT named zarf.yaml (see fail-string-cmd.yaml).
+kind: ZarfPackageConfig
+metadata:
+  name: fixture-fail-list-cmd
+variables:
+  - name: FOO
+    default: "false"
+components:
+  - name: rightsize
+    actions:
+      onDeploy:
+        after:
+          - cmd:
+              - "echo starting"
+              - "test ###ZARF_VAR_FOO### = true && echo rightsized"

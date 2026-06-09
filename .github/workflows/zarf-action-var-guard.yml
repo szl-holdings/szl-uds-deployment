@@ -25,6 +25,11 @@
 #   to action cmd blocks only, so a legitimate ###ZARF_VAR_*### in files / manifests
 #   / chart values is left alone (where it really does substitute).
 #
+# The guard itself is also self-tested: tests/test-lint-zarf-action-vars.sh runs
+# the linter against curated fixtures and asserts the exit codes, so a future
+# refactor can't quietly turn the linter into a no-op (false negative) or start
+# flagging legitimate template uses (false positive) without CI going red.
+#
 # Complements (does not duplicate):
 #   - clean-deploy-guard.yml   (grep of the four clean-deploy invariant files)
 #   - package-build-guard.yml  (zarf package render/build dry-run)
@@ -38,12 +43,16 @@ on:
     paths:
       - "**/zarf.yaml"
       - "scripts/lint-zarf-action-vars.py"
+      - "tests/test-lint-zarf-action-vars.sh"
+      - "tests/fixtures/zarf-action-vars/**"
       - ".github/workflows/zarf-action-var-guard.yml"
   push:
     branches: [main]
     paths:
       - "**/zarf.yaml"
       - "scripts/lint-zarf-action-vars.py"
+      - "tests/test-lint-zarf-action-vars.sh"
+      - "tests/fixtures/zarf-action-vars/**"
       - ".github/workflows/zarf-action-var-guard.yml"
   workflow_dispatch:
 
@@ -60,6 +69,11 @@ jobs:
 
       - name: Install PyYAML
         run: python3 -m pip install --quiet pyyaml
+
+      # Lock in the linter's own behavior FIRST: if the guard has been refactored
+      # into a false-negative/false-positive, fail fast before trusting it below.
+      - name: Self-test the guard against fixtures
+        run: bash tests/test-lint-zarf-action-vars.sh
 
       # No args -> the script globs every **/zarf.yaml in the repo, so a new
       # package's zarf.yaml is covered automatically without editing this workflow.
