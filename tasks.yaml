@@ -240,10 +240,9 @@ tasks:
             --output packages/szl-receipts \
             --confirm \
             --no-progress
-      - description: "Pre-build the szl-a11oy Zarf package into packages/a11oy/ (baked a11oy image)"
+      - description: "Pre-build the szl-a11oy Zarf package into packages/a11oy/ (baked a11oy image; no flavor — a11oy has no flavor-gated components)"
         cmd: |
           zarf package create packages/a11oy \
-            --flavor ${FLAVOR} \
             --output packages/a11oy \
             --confirm \
             --no-progress
