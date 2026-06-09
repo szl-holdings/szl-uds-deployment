@@ -1,0 +1,73 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# teardown-guard.yml — Guard the `uds run teardown` in-flight activity safety
+# check from being silently removed.
+#
+# The shared k3d demo cluster (uds-szl-demo) is operated by MULTIPLE task agents
+# at once. A blind `uds run teardown` would wipe a sibling's in-flight deploy, so
+# the teardown task REFUSES to destroy the cluster unless it is idle (judged by
+# scripts/idle-check.sh) or `--set FORCE=true` is passed. That safety net lives
+# in tasks.yaml (the wiring) and scripts/idle-check.sh (the logic). A sibling
+# refactor of tasks.yaml could silently drop the guard call, the
+# FORCE/IDLE_WINDOW_MINUTES variables, or the helper script — re-opening the exact
+# "naive teardown clobbers in-flight work" hole this fixed.
+#
+# The check logic lives in scripts/teardown-guard-checks.sh (pure text/lint, no
+# cluster). It was extracted from this workflow so it can be UNIT TESTED:
+# scripts/teardown-guard-checks.test.sh feeds each check a deliberately-BROKEN
+# fixture and asserts the check FAILS, plus asserts the pristine repo PASSES.
+# That self-test runs as the `self-test` job below, so a future edit that neuters
+# a check (passing vacuously — green while guarding nothing) is caught here.
+#
+# The asserted invariants:
+#   chk1  scripts/idle-check.sh exists and parses clean (sh -n)
+#   chk2  the teardown task invokes idle-check.sh AND references FORCE BEFORE the
+#         `k3d cluster delete` action
+#   chk3  the standalone idle-check task and the FORCE / IDLE_WINDOW_MINUTES
+#         variables are all present
+
+name: Teardown Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves each check
+  # still FAILS on bad input (i.e. is not silently passing). The guard job
+  # depends on it so a broken check blocks the build before it can wave a
+  # regression through.
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/teardown-guard-checks.test.sh
+
+  guard:
+    name: Assert teardown safety check is intact
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check 1 — idle-check.sh exists and parses clean
+        run: bash scripts/teardown-guard-checks.sh chk1 .
+
+      - name: Check 2 — teardown gates on idle-check.sh + FORCE before deleting
+        run: bash scripts/teardown-guard-checks.sh chk2 .
+
+      - name: Check 3 — idle-check task + FORCE / IDLE_WINDOW_MINUTES present
+        run: bash scripts/teardown-guard-checks.sh chk3 .
+
+      - name: Teardown safety check is intact
+        run: echo "The uds run teardown in-flight activity guard is intact."
