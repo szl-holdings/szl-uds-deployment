@@ -14,6 +14,12 @@
 # Reference: https://github.com/defenseunicorns/uds-cli/blob/main/docs/tasks.md
 
 variables:
+  - name: BUILD_TMPDIR
+    # Intermediate files (zarf package + uds bundle ingest) go here. Default is a
+    # repo-local dir so it lands on the SAME (large) filesystem as the output and
+    # never overflows a small /tmp tmpfs (the szl build box mounts /tmp as a 3.8G
+    # tmpfs; a full bundle ingest needs more). Override with --set BUILD_TMPDIR=/path.
+    default: ".uds-build-tmp"
   - name: CLUSTER_NAME
     default: uds-szl-demo
 
@@ -235,23 +241,29 @@ tasks:
     actions:
       - description: "Pre-build the szl-receipts Zarf package into packages/szl-receipts/ (flavor=${FLAVOR})"
         cmd: |
+          mkdir -p "${BUILD_TMPDIR}"
           zarf package create packages/szl-receipts \
             --flavor ${FLAVOR} \
             --output packages/szl-receipts \
+            --tmpdir "${BUILD_TMPDIR}" \
             --confirm \
             --no-progress
       - description: "Pre-build the szl-a11oy Zarf package into packages/a11oy/ (baked a11oy image; no flavor — a11oy has no flavor-gated components)"
         cmd: |
+          mkdir -p "${BUILD_TMPDIR}"
           zarf package create packages/a11oy \
             --output packages/a11oy \
+            --tmpdir "${BUILD_TMPDIR}" \
             --confirm \
             --no-progress
       - description: "Create the UDS bundle (--skip-signature-validation: init/core are keyless-signed by different identities)"
         cmd: |
+          mkdir -p "${BUILD_TMPDIR}"
           uds create . \
             --skip-signature-validation \
             --confirm \
-            --no-progress
+            --no-progress \
+            --tmpdir "${BUILD_TMPDIR}"
 
   # ── Idle / in-flight activity check ─────────────────────────────
   # "Idle" is NOT "all pods Running". A Deployment can be mid-rollout while every

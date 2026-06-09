@@ -6,3 +6,4 @@ __pycache__/
 /szl-receipts
 sbom/
 zarf-sbom/
+.uds-build-tmp/
