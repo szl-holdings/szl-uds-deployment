@@ -1,0 +1,228 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# a11oy-package-guard.yml — Catch a11oy packaging regressions before they ship.
+#
+# a11oy is shipped as a CHART-BASED Zarf package: packages/a11oy/zarf.yaml renders
+# the workload from the localPath Helm chart charts/a11oy, with the canonical,
+# cosign-signed image baked in at `zarf package create` time. It is a member of the
+# full-organ UDS bundle bundles/szl-uds-bundle/uds-bundle.yaml (package name
+# szl-a11oy). None of the existing CI guards protect THIS shape:
+#   * image-pin-guard.yml only scans the root zarf.yaml + packages/szl-receipts.
+#   * chart-guard.yml lint/templates every chart (so charts/a11oy renders) but never
+#     checks how packages/a11oy/zarf.yaml wraps it, nor bundle membership, nor that
+#     the zarf-baked image matches what the chart renders.
+#
+# A sibling could silently revert packages/a11oy/zarf.yaml back to the old
+# manifests-based + digest-pinned form, drop szl-a11oy from the bundle, or let the
+# zarf `images:` ref drift away from the chart-rendered ref — and nothing would fail
+# until a live `uds deploy` (image rewrite / airgap pull) broke minutes-to-hours
+# later. This workflow turns each of those into a seconds-long, cluster-free CI
+# failure.
+#
+# It asserts three things, all without a cluster:
+#   1. packages/a11oy/zarf.yaml is CHART-BASED — a component renders charts/a11oy via
+#      `charts[].localPath: ../../charts/a11oy`, and NO component is manifests-based
+#      (the old packaging used `components[].manifests`).
+#   2. The full-organ bundle bundles/szl-uds-bundle/uds-bundle.yaml still registers
+#      the szl-a11oy package pointing at packages/a11oy.
+#   3. The image the chart renders for the a11oy workload is byte-identical to the
+#      a11oy entry in the zarf `images:` list (both tag-only today — the chart has no
+#      digest support, so the zarf ref must match it or the deploy-time agent image
+#      rewrite / airgap pull breaks).
+#
+# NOTE: a11oy is intentionally NOT in the ROOT uds-bundle.yaml — commit a4c7dc9 split
+# that into the receipts-only "szl-receipts-bundle" (init + slim core + szl-receipts)
+# for the single-node offline redeploy. The organs (a11oy + sentra/amaru/killinchu/
+# rosie) live in bundles/szl-uds-bundle/uds-bundle.yaml, so that is the bundle this
+# guard checks.
+
+name: a11oy Package Guard
+
+on:
+  pull_request:
+    paths:
+      - "packages/a11oy/zarf.yaml"
+      - "charts/a11oy/**"
+      - "bundles/szl-uds-bundle/uds-bundle.yaml"
+      - ".github/workflows/a11oy-package-guard.yml"
+  push:
+    branches: [main]
+    paths:
+      - "packages/a11oy/zarf.yaml"
+      - "charts/a11oy/**"
+      - "bundles/szl-uds-bundle/uds-bundle.yaml"
+      - ".github/workflows/a11oy-package-guard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  a11oy-package-guard:
+    name: a11oy packaging shape (chart-based + bundle member + image parity)
+    runs-on: ubuntu-24.04
+    env:
+      ZARF: packages/a11oy/zarf.yaml
+      CHART: charts/a11oy
+      BUNDLE: bundles/szl-uds-bundle/uds-bundle.yaml
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: v3.14.0
+
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Sanity — required files exist
+        run: |
+          set -euo pipefail
+          for f in "$ZARF" "$CHART/Chart.yaml" "$BUNDLE"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::required file missing: $f"
+              exit 1
+            fi
+          done
+          echo "OK: $ZARF, $CHART, $BUNDLE all present"
+
+      # Render the chart exactly the way packages/a11oy/zarf.yaml does so the image
+      # parity check below compares what would actually deploy.
+      - name: Render charts/a11oy (default values)
+        run: |
+          set -euo pipefail
+          helm template a11oy "$CHART" > /tmp/a11oy-render.yaml
+          echo "OK: rendered $CHART -> /tmp/a11oy-render.yaml"
+
+      - name: Assert a11oy package is chart-based + bundle member + image parity
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, sys, yaml
+
+          ZARF   = os.environ["ZARF"]
+          CHART  = os.environ["CHART"]
+          BUNDLE = os.environ["BUNDLE"]
+          RENDER = "/tmp/a11oy-render.yaml"
+          A11OY_REPO = "ghcr.io/szl-holdings/a11oy"
+
+          errors = []
+
+          def err(msg):
+              errors.append(msg)
+              print(f"::error::{msg}")
+
+          def norm(base_dir, rel):
+              # Resolve a zarf localPath/bundle path (relative to the file's dir)
+              # to a repo-root-relative POSIX path for comparison.
+              return os.path.normpath(os.path.join(base_dir, rel)).replace("\\", "/")
+
+          # ── 1. packages/a11oy/zarf.yaml is CHART-BASED, not manifests-based ──────
+          with open(ZARF) as f:
+              zpkg = yaml.safe_load(f)
+          components = zpkg.get("components") or []
+          zarf_dir = os.path.dirname(ZARF)
+
+          chart_localpaths = []
+          manifest_components = []
+          for c in components:
+              for ch in (c.get("charts") or []):
+                  lp = ch.get("localPath")
+                  if lp:
+                      chart_localpaths.append(norm(zarf_dir, lp))
+              if c.get("manifests"):
+                  manifest_components.append(c.get("name", "<unnamed>"))
+
+          want_chart = norm(".", CHART)  # e.g. "charts/a11oy"
+          if want_chart not in chart_localpaths:
+              err(f"{ZARF} is NOT chart-based: no component renders {CHART} via "
+                  f"charts[].localPath (found localPaths: {chart_localpaths or 'none'}). "
+                  f"a11oy must stay chart-based (localPath ../../charts/a11oy); do not "
+                  f"revert to the manifests-based package.")
+          else:
+              print(f"OK: {ZARF} renders {CHART} via charts[].localPath")
+
+          if manifest_components:
+              err(f"{ZARF} has manifests-based component(s) {manifest_components} — "
+                  f"a11oy reverted to the old manifests packaging. It must ship "
+                  f"chart-based only (the chart owns the UDS Package CR + Deployment).")
+          else:
+              print(f"OK: {ZARF} has no manifests-based components")
+
+          # ── 2. szl-a11oy is still a member of the full-organ bundle ─────────────
+          with open(BUNDLE) as f:
+              bundle = yaml.safe_load(f)
+          bundle_dir = os.path.dirname(BUNDLE)
+          want_pkg_dir = norm(".", zarf_dir)  # e.g. "packages/a11oy"
+          a11oy_entries = [p for p in (bundle.get("packages") or [])
+                           if p.get("name") == "szl-a11oy"]
+          if not a11oy_entries:
+              err(f"{BUNDLE} no longer registers the 'szl-a11oy' package — a11oy was "
+                  f"dropped from the bundle.")
+          else:
+              entry = a11oy_entries[0]
+              ep = entry.get("path", "")
+              if not ep:
+                  err(f"{BUNDLE} szl-a11oy entry has no 'path'")
+              elif norm(bundle_dir, ep) != want_pkg_dir:
+                  err(f"{BUNDLE} szl-a11oy path '{ep}' resolves to "
+                      f"'{norm(bundle_dir, ep)}', expected '{want_pkg_dir}'")
+              else:
+                  print(f"OK: {BUNDLE} registers szl-a11oy -> {want_pkg_dir}")
+
+          # ── 3. chart-rendered a11oy image == zarf images: a11oy entry (tag-only) ─
+          render_imgs = set()
+          for doc in yaml.safe_load_all(open(RENDER)):
+              if not isinstance(doc, dict) or doc.get("kind") != "Deployment":
+                  continue
+              pod = doc.get("spec", {}).get("template", {}).get("spec", {})
+              for key in ("containers", "initContainers"):
+                  for ct in (pod.get(key) or []):
+                      img = ct.get("image", "")
+                      if img.startswith(A11OY_REPO):
+                          render_imgs.add(img)
+
+          zarf_imgs = set()
+          for c in components:
+              for img in (c.get("images") or []):
+                  if img.startswith(A11OY_REPO):
+                      zarf_imgs.add(img)
+
+          if len(render_imgs) != 1:
+              err(f"expected exactly one a11oy workload image in the rendered chart, "
+                  f"found {sorted(render_imgs) or 'none'} (repo {A11OY_REPO})")
+          if len(zarf_imgs) != 1:
+              err(f"expected exactly one a11oy image in {ZARF} images: list, "
+                  f"found {sorted(zarf_imgs) or 'none'} (repo {A11OY_REPO})")
+
+          if len(render_imgs) == 1 and len(zarf_imgs) == 1:
+              ri = next(iter(render_imgs))
+              zi = next(iter(zarf_imgs))
+              if ri != zi:
+                  err(f"a11oy image MISMATCH: chart renders '{ri}' but {ZARF} bakes "
+                      f"'{zi}'. The zarf images: ref must be byte-identical to the "
+                      f"chart-rendered ref or the Zarf deploy-time agent image "
+                      f"rewrite / airgap pull breaks.")
+              else:
+                  print(f"OK: chart image == zarf image ({ri})")
+              # Both must stay tag-only: the chart has no digest support, so a digest
+              # added to only the zarf side would silently break the rewrite.
+              for label, ref in (("chart", ri), ("zarf", zi)):
+                  if "@sha256:" in ref:
+                      err(f"{label} a11oy image '{ref}' is digest-pinned. The a11oy "
+                          f"chart renders tag-only (no digest support); keep both "
+                          f"tag-only, or add digest support to the chart first.")
+              if "@sha256:" not in ri and "@sha256:" not in zi:
+                  print("OK: a11oy image is tag-only on both sides")
+
+          if errors:
+              print(f"\n{len(errors)} a11oy packaging check(s) FAILED")
+              sys.exit(1)
+          print("\nAll a11oy packaging checks passed.")
+          PY
+
+      - name: a11oy package guard passed
+        run: echo "a11oy is chart-based, a bundle member, and its zarf image matches the chart."
