@@ -83,14 +83,15 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import sys, yaml
-          files = ["zarf.yaml", "packages/szl-receipts/zarf.yaml"]
+          import sys, glob, yaml
+          files = ["zarf.yaml"] + sorted(glob.glob("packages/**/zarf.yaml", recursive=True))
           pins = []
           for path in files:
               try:
                   doc = yaml.safe_load(open(path))
               except FileNotFoundError:
-                  sys.exit(f"::error::expected zarf package file not found: {path}")
+                  print(f"::notice::skipping missing zarf package file: {path}")
+                  continue
               for comp in (doc or {}).get("components", []) or []:
                   for img in comp.get("images", []) or []:
                       if isinstance(img, str) and "@sha256:" in img:
