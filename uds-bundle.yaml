@@ -67,7 +67,8 @@ packages:
     repository: ghcr.io/zarf-dev/packages/init
     ref: v0.77.0
 
-  # ── Layer 2: UDS Core — Istio + Pepr (UDS Operator) + Keycloak + Prometheus ─
+  # ── Layer 2: UDS Core (slim) — core-base (Istio + Pepr/UDS Operator) +
+#            core-identity-authorization (Keycloak + AuthService) ─
   # For the local k3d demo, the documented path is the slim-dev BUNDLE:
   #   oci://ghcr.io/defenseunicorns/bundles/k3d-core-slim-dev:1.5.0
   # The published core PACKAGE is mirrored in two registries with identical content:
@@ -78,8 +79,22 @@ packages:
   # Defense Unicorns registry credentials (the DU registry returns "basic credential
   # not found" on this box, which has only a ghcr/github auth). Same image set, no DoD
   # registry access required for the hackathon demo.
-  - name: core
-    repository: ghcr.io/defenseunicorns/packages/uds/core
+  # core 1.5.0 is published as a PACKAGE SPLIT: `core-base` (Istio + Pepr/UDS
+  # Operator) and `core-identity-authorization` (Keycloak + AuthService) are the
+  # slim, single-node footprint; the monolithic `core` package additionally
+  # bundles the FULL observability + runtime-security suite (kube-prometheus-
+  # stack, Grafana, Loki, Vector, Falco, NeuVector, Velero). That fat stack
+  # reserves more CPU-request budget than this ~2-vCPU node has (it strands even
+  # istiod Pending and never reaches Ready), so a full `core` deploy can never
+  # complete here. We deploy the two slim packages — the exact composition of
+  # Defense Unicorns' own k3d-core-slim-dev bundle — which is all the receipt
+  # mesh needs (Istio for the mesh, Pepr for the UDS Operator + receipt webhook,
+  # Keycloak for optional SSO) and which fits this box (proven: istiod + keycloak
+  # both reach Ready). Both packages pull anonymously from the same GHCR mirror
+  # (no Defense Unicorns registry creds). Use the monolithic `core` package on a
+  # larger / multi-node cluster that can host the full observability stack.
+  - name: core-base
+    repository: ghcr.io/defenseunicorns/packages/uds/core-base
     ref: 1.5.0-upstream
     overrides:
       # ── istiod HPA: single-replica for the ~2-vCPU uds-szl-demo node ──────────
@@ -95,6 +110,36 @@ packages:
           values:
             - path: pilot.autoscaleMax
               value: 1
+            # ── istiod CPU-request right-size for the 2-vCPU uds-szl-demo ──────
+            # The istiod chart reserves 500m CPU by default. On this single
+            # 2-vCPU node (shared with a11oy.net + the receipt mesh) that reserve
+            # saturates the scheduler's CPU-request budget, leaving < keycloak's
+            # 100m request free, so the `keycloak` component can never schedule
+            # its pod and `uds deploy` times out waiting for it Ready.
+            # istiod's real usage on a quiet single-node mesh is ~10-50m, so a
+            # 150m request is ample and frees enough budget for keycloak to boot.
+            # Drop this override on multi-node / HA clusters that need full istiod.
+            - path: pilot.resources.requests.cpu
+              value: 150m
+      # ── tenant gateway: ClusterIP on the single-node uds-szl-demo ───────
+      # This single-node demo box has exactly ONE LoadBalancer slot, already held
+      # by the admin gateway (172.18.0.2); nginx owns host 80/443 for a11oy.net.
+      # The tenant gateway's Deployment is 0/0 here (no tenant waypoint provisions
+      # at this resource ceiling), but its Service defaults to type LoadBalancer,
+      # so `helm --wait` blocks forever on an external IP that can never be
+      # assigned. Pin it to ClusterIP so a full `uds deploy` completes RC=0 on a
+      # single node. Drop this override on multi-node / HA clusters where the
+      # tenant gateway must take a real LoadBalancer address.
+      istio-tenant-gateway:
+        gateway:
+          values:
+            - path: service.type
+              value: ClusterIP
+
+  - name: core-identity-authorization
+    repository: ghcr.io/defenseunicorns/packages/uds/core-identity-authorization
+    ref: 1.5.0-upstream
+    overrides:
       keycloak:
         keycloak:
           values:
@@ -136,24 +181,3 @@ packages:
             # PSS restricted enforcement on namespace
             - path: podSecurityStandard.enforce
               value: "restricted"
-
-  # ── Layer 4: SZL a11oy flagship ───────────────────────────────────────────────
-  # path: local Zarf package built from packages/a11oy (localPath chart
-  #   charts/a11oy). The canonical, cosign-signed image
-  #   ghcr.io/szl-holdings/a11oy:uds-v0.2.0 is BAKED into the package at build
-  #   time, so a clean `uds deploy` brings a11oy up with no manual
-  #   `k3d image import` and no zarfAgentIgnore. a11oy runs INSIDE UDS Core
-  #   (Istio ambient mTLS + NetworkPolicy + ServiceMonitor via its UDS Package
-  #   CR), exposed on the admin gateway -> https://a11oy.admin.<domain>, and
-  #   emits decision-time DSSE receipts to the szl-receipts chain authority.
-  - name: szl-a11oy
-    path: ./packages/a11oy
-    ref: 0.2.0
-    overrides:
-      szl-a11oy:
-        a11oy:
-          values:
-            - path: global.domain
-              value: "uds.dev"
-            - path: replicas
-              value: 1
