@@ -10,15 +10,15 @@ global:
 # ── MCP Receipts Server ───────────────────────────────────────────────────────
 server:
   name: szl-receipts-server
-  # OCI image built from services/szl-receipts-server/Dockerfile (v0.4.0).
+  # OCI image built from services/szl-receipts-server/Dockerfile (v0.4.1).
   # Replaces the prior ConfigMap-mounted source on stock python:3.12-slim.
   image:
     repository: ghcr.io/szl-holdings/szl-receipts-server
-    tag: "uds-v0.4.0"
-    # Immutable content digest for uds-v0.4.0. Pinning here makes a clean
-    # install bit-for-bit reproducible: even if the uds-v0.4.0 tag is later
+    tag: "uds-v0.4.1"
+    # Immutable content digest for uds-v0.4.1. Pinning here makes a clean
+    # install bit-for-bit reproducible: even if the uds-v0.4.1 tag is later
     # re-pushed with different contents, this digest is what gets deployed.
-    digest: "sha256:dfb6b4925bd4d3c54fca0c83887be5911f89c01864d8f6403673f45cd525add1"
+    digest: "sha256:a33426d8700066573a444d13bf346feee00e758c7ef2bcf74b9c15171740ebef"
     pullPolicy: IfNotPresent
 
   replicas: 1
