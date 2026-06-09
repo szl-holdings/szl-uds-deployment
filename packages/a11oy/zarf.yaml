@@ -2,80 +2,78 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # zarf.yaml — szl-a11oy (UDS-bundle member package)
+# =============================================================================
+# Packages the a11oy flagship as a proper, self-contained Zarf package, the same
+# way packages/szl-receipts ships: the workload is rendered from the localPath
+# Helm chart charts/a11oy, and the canonical, cosign-signed container image is
+# BAKED into the package tarball at `zarf package create` time. A clean
+# `uds deploy` therefore brings a11oy up on ANY UDS Core cluster with no manual
+# `k3d image import` and no `zarfAgentIgnore` workaround — the Zarf deploy-time
+# agent mirrors the baked image into the in-cluster registry and rewrites the
+# chart's image reference to point at it.
 #
-# Zarf v0.77.0-compliant package. Wraps the LIVE, already-published and
-# cosign-signed container image:
-#     ghcr.io/szl-holdings/a11oy:###ZARF_PKG_TMPL_VERSION###
-# (tag uds-v0.2.0 confirmed live on ghcr.io with a cosign .sig present).
+# Canonical image (published + cosign keyless-signed on GHCR):
+#   ghcr.io/szl-holdings/a11oy:uds-v0.2.0   (single-arch linux/amd64 manifest)
+# The reference baked here is byte-identical to what charts/a11oy renders
+# (values: image.repository + image.tag), so the agent rewrite resolves cleanly.
 #
-# Build (CI):
-#   zarf package create packages/a11oy \
-#     --set VERSION=0.2.0 --architecture amd64 --confirm
+# Build (CI / local):
+#   zarf package create packages/a11oy --set DOMAIN=uds.dev -a amd64 --confirm
 #
-# This package is composed into oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.2.0
-# by bundles/szl-uds-bundle/uds-bundle.yaml via a local path reference.
+# Composed into the szl-receipts-bundle by ../../uds-bundle.yaml
+#   (packages: - name: szl-a11oy / path: ./packages/a11oy).
 #
 # References:
-#   Zarf schema: https://docs.zarf.dev/ref/zarf-package/
+#   Zarf schema:  https://docs.zarf.dev/ref/zarf-package/
 #   UDS Operator: https://uds.defenseunicorns.com/reference/uds-core/overview/
-#   a11oy repo: https://github.com/szl-holdings/a11oy
+#   a11oy repo:   https://github.com/szl-holdings/a11oy
 
 # yaml-language-server: $schema=https://raw.githubusercontent.com/zarf-dev/zarf/main/zarf.schema.json
 kind: ZarfPackageConfig
 
 metadata:
   name: szl-a11oy
-  version: "###ZARF_PKG_TMPL_VERSION###"
+  version: "0.2.0"
   description: >-
-    SZL a11oy — policy + receipt substrate orchestrator (commands rosie/amaru/sentra/vessels, emits decision-time DSSE receipts).
+    SZL a11oy — governance + policy + receipt-substrate flagship. Runs inside UDS
+    Core (Istio ambient mTLS + NetworkPolicy + ServiceMonitor via its UDS Package
+    CR) and emits decision-time DSSE receipts to the szl-receipts chain authority.
   url: "https://szlholdings.com"
   authors: "SZL Holdings <eng@szlholdings.com>"
   documentation: "https://github.com/szl-holdings/szl-uds-deployment"
-  image: "ghcr.io/szl-holdings/a11oy:uds-v0.2.0@sha256:88bc323cd81c799b486c88fec5a04f110e4cd495e4acbc373e0d8d3b31d6881a"
-  uncompressed: false
 
 variables:
-  - name: VERSION
-    description: "Image tag / package version (injected from the release tag, 'v'/'uds-' stripped)"
-    default: "0.2.0"
   - name: DOMAIN
     description: "Cluster domain — must match UDS Core DOMAIN"
     default: "uds.dev"
-  - name: REPLICAS
-    description: "a11oy replica count"
-    default: "1"
 
 components:
-  # 1. Namespace + UDS Operator Package CR (Istio/NetworkPolicy/SSO/ServiceMonitor)
-  - name: szl-a11oy-operator
+  # The a11oy workload, rendered from the localPath Helm chart with its baked,
+  # cosign-signed image. The chart ships the UDS Package CR, Deployment, Service,
+  # PeerAuthentication (STRICT mTLS) and the doctrine ConfigMap.
+  - name: szl-a11oy
     required: true
     description: >-
-      Create the szl-a11oy namespace and apply the UDS Operator Package CR that
-      generates Istio sidecar config, NetworkPolicies, SSO client and the
-      ServiceMonitor for a11oy.
-    manifests:
-      - name: szl-a11oy-namespace
+      Deploy the a11oy flagship from charts/a11oy, pulling the baked
+      ghcr.io/szl-holdings/a11oy image (no k3d import / zarfAgentIgnore needed).
+    charts:
+      - name: a11oy
         namespace: szl-a11oy
-        files:
-          - manifests/namespace.yaml
-      - name: szl-a11oy-uds-package
-        namespace: szl-a11oy
-        files:
-          - ../a11oy/uds-package.yaml
-
-  # 2. The a11oy workload itself (pulls the live signed image)
-  - name: szl-a11oy-workload
-    required: true
-    description: >-
-      Deploy the a11oy workload from the live signed image
-      ghcr.io/szl-holdings/a11oy:###ZARF_PKG_TMPL_VERSION###.
+        version: 0.2.0
+        localPath: ../../charts/a11oy
+        valuesFiles:
+          - ../../charts/a11oy/values.yaml
+        # Map the package DOMAIN variable onto the chart so the standalone
+        # `zarf package deploy --set DOMAIN=...` path configures the UDS Package
+        # CR endpoint host (the bundle path sets the same via global.domain).
+        variables:
+          - name: DOMAIN
+            description: "Cluster domain (UDS Core DOMAIN)"
+            path: global.domain
     images:
-      - ghcr.io/szl-holdings/a11oy:uds-v0.2.0@sha256:88bc323cd81c799b486c88fec5a04f110e4cd495e4acbc373e0d8d3b31d6881a
-    manifests:
-      - name: szl-a11oy-workload
-        namespace: szl-a11oy
-        files:
-          - manifests/deployment.yaml
+      # Canonical, cosign-signed image. Baked into the tarball at build time and
+      # rewritten to the in-cluster registry by the Zarf agent at deploy time.
+      - ghcr.io/szl-holdings/a11oy:uds-v0.2.0
     actions:
       onDeploy:
         after:

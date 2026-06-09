@@ -136,3 +136,24 @@ packages:
             # PSS restricted enforcement on namespace
             - path: podSecurityStandard.enforce
               value: "restricted"
+
+  # ── Layer 4: SZL a11oy flagship ───────────────────────────────────────────────
+  # path: local Zarf package built from packages/a11oy (localPath chart
+  #   charts/a11oy). The canonical, cosign-signed image
+  #   ghcr.io/szl-holdings/a11oy:uds-v0.2.0 is BAKED into the package at build
+  #   time, so a clean `uds deploy` brings a11oy up with no manual
+  #   `k3d image import` and no zarfAgentIgnore. a11oy runs INSIDE UDS Core
+  #   (Istio ambient mTLS + NetworkPolicy + ServiceMonitor via its UDS Package
+  #   CR), exposed on the admin gateway -> https://a11oy.admin.<domain>, and
+  #   emits decision-time DSSE receipts to the szl-receipts chain authority.
+  - name: szl-a11oy
+    path: ./packages/a11oy
+    ref: 0.2.0
+    overrides:
+      szl-a11oy:
+        a11oy:
+          values:
+            - path: global.domain
+              value: "uds.dev"
+            - path: replicas
+              value: 1
