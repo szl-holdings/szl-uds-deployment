@@ -2,14 +2,25 @@ kind: UDSBundle
 metadata:
   name: szl-full-stack
   description: >
-    SZL Holdings full-stack UDS bundle — composes szl-receipts, a11oy-runtime,
-    sentra-gates, amaru-attestation, and rosie-replay as separate Zarf packages.
-    Doctrine v6 strict: STAGED labels indicate packages pending Zarf package
-    creation (blocked on FA-001 container push and cosign signing).
+    SZL Holdings full-stack UDS bundle — composes szl-receipts plus the four
+    flagship organs (a11oy, sentra, amaru, rosie) as separate Zarf packages.
+    The organ members are now AVAILABLE: each is referenced by LOCAL path to its
+    packages/<organ>/zarf.yaml, which wraps the LIVE, cosign-signed,
+    digest-pinned organ image on ghcr.io (amaru/sentra/rosie pin uds-v0.2.0
+    @sha256 digests; a11oy is tag-pinned uds-v0.3.0 by design). This bundle
+    therefore pulls ONLY verified images.
+    DOCTRINE: the members are published, cosign-signed and INDIVIDUALLY
+    deployable; this bundle does NOT claim all five boot together on any single
+    cluster.
   version: 0.3.1
-  # Doctrine marker: honest STAGED labels in package entries below.
-  # Do NOT remove STAGED markers until the corresponding Zarf packages exist
-  # and containers are pushed to ghcr.io/szl-holdings/.
+  # Doctrine marker: organ members re-pinned from the broken uds-v0.3.1 image-repo
+  # placeholders to the verified, digest-pinned packages/<organ> (Task #595).
+  # cosign verify + cosign verify-attestation --type slsaprovenance PASS for each
+  # pinned organ image (amaru/sentra @refs/heads/main, rosie @refs/tags/uds-v0.3.1;
+  # issuer https://token.actions.githubusercontent.com). Do NOT revert these to
+  # raw `repository: ghcr.io/szl-holdings/<organ>` + `ref: uds-v0.3.1` — that
+  # coordinate is an image repo, not a published Zarf package, and no Zarf
+  # package was ever published at uds-v0.3.1.
 
 packages:
   # ─────────────────────────────────────────────────────────────────
@@ -48,137 +59,68 @@ packages:
               value: 30
 
   # ─────────────────────────────────────────────────────────────────
-  # Package 2: a11oy-runtime
-  # Status: STAGED — awaiting Zarf package creation (blocked on FA-001)
-  # Zarf package does not yet exist. Add after: docker push ghcr.io/szl-holdings/a11oy:uds-v0.3.1
+  # Package 2: szl-a11oy (a11oy-runtime)
+  # Status: AVAILABLE — local Zarf package packages/a11oy wraps the live,
+  #         cosign-signed image ghcr.io/szl-holdings/a11oy:uds-v0.3.0
+  #         (tag-pinned by design; a11oy is intentionally exempt from the
+  #         @sha256 digest-pin guard — see image-pin-guard.yml).
   # ─────────────────────────────────────────────────────────────────
-  - name: a11oy-runtime
+  - name: szl-a11oy
     description: >
-      [STAGED: awaiting FA-001 container push + Zarf package create]
       a11oy brand-orchestration kernel: L1–L7 receipt chain, 5 anchor formula
       policy gates (LiuHuiPi, MadhavaBound, FalsePosition, SummationInvariant,
       AdversarialRobustness), KS-18 contextuality witness, 248 CI assertions.
-    repository: ghcr.io/szl-holdings/a11oy
-    ref: uds-v0.3.1
-    # BLOCKER: This package cannot be deployed until container is pushed to GHCR.
-    # Founder action FA-001 required before this entry is functional.
-    optionalComponents:
-      - name: a11oy-policy-gates
-        description: 5 anchor formula policy gates (L6)
-      - name: a11oy-receipt-substrate
-        description: Receipt substrate with DSSE emission
-    overrides:
-      a11oy-runtime:
-        a11oy-policy-gates:
-          values:
-            - path: gates.enabled
-              value: true
-            - path: gates.strictMode
-              value: true
-            - path: gates.anchors.liuHuiPi
-              value: true
-            - path: gates.anchors.madhavaBound
-              value: true
-            - path: gates.anchors.falsePosition
-              value: true
-            - path: gates.anchors.summationInvariant
-              value: true
-            - path: gates.anchors.adversarialRobustness
-              value: true
+      Composed from the LIVE cosign-signed a11oy image (uds-v0.3.0).
+    path: ../../packages/a11oy
+    ref: "0.2.0"
 
   # ─────────────────────────────────────────────────────────────────
-  # Package 3: sentra-gates
-  # Status: STAGED — awaiting Zarf package creation (blocked on FA-001)
+  # Package 3: szl-sentra (sentra-gates)
+  # Status: AVAILABLE — local Zarf package packages/sentra wraps the live,
+  #         cosign-signed, digest-pinned image:
+  #         ghcr.io/szl-holdings/sentra:uds-v0.2.0
+  #           @sha256:60a0efc14366ba392bfe3f3cd4196863fe148bb87a17428be6a57f0a05ac3639
   # ─────────────────────────────────────────────────────────────────
-  - name: sentra-gates
+  - name: szl-sentra
     description: >
-      [STAGED: awaiting FA-001 container push + Zarf package create]
       sentra cyber-resilience runtime: fail-closed asset-scoped Safety Gate
       (Sentra-V1, NIST CSF 2.0 + D3FEND), L7 forecast engine consuming
-      a11oy-gate-emitted UDS receipts.
-    repository: ghcr.io/szl-holdings/sentra
-    ref: uds-v0.3.1
-    # BLOCKER: Requires sentra container at GHCR + Zarf package.
-    optionalComponents:
-      - name: sentra-safety-gate
-        description: Fail-closed asset-scoped safety gate (Sentra-V1)
-      - name: sentra-l7-forecast
-        description: L7 forecast engine consuming a11oy receipts
-    overrides:
-      sentra-gates:
-        sentra-safety-gate:
-          values:
-            - path: gate.failClosed
-              value: true
-            - path: gate.nistCsf
-              value: "2.0"
-            - path: gate.d3fend
-              value: true
+      a11oy-gate-emitted UDS receipts. Composed from the LIVE cosign-signed,
+      digest-pinned sentra image (uds-v0.2.0).
+    path: ../../packages/sentra
+    ref: "0.2.0"
 
   # ─────────────────────────────────────────────────────────────────
-  # Package 4: amaru-attestation
-  # Status: STAGED — awaiting Zarf package creation (blocked on FA-001)
+  # Package 4: szl-amaru (amaru-attestation)
+  # Status: AVAILABLE — local Zarf package packages/amaru wraps the live,
+  #         cosign-signed, digest-pinned image:
+  #         ghcr.io/szl-holdings/amaru:uds-v0.2.0
+  #           @sha256:53301e26adcde49e73df28d8c3b790f2496da9d495307fe8587ffa7452b289ff
   # ─────────────────────────────────────────────────────────────────
-  - name: amaru-attestation
+  - name: szl-amaru
     description: >
-      [STAGED: awaiting FA-001 container push + Zarf package create]
       amaru convergent data-sync runtime: KL drift + hash-chained proof receipts,
       brain organ wiring for anatomy-alive Phase 1 Track 1 (emits formula_witness),
-      adversarial regression detection runtime.
-    repository: ghcr.io/szl-holdings/amaru
-    ref: uds-v0.3.1
-    # BLOCKER: Requires amaru container at GHCR + Zarf package.
-    optionalComponents:
-      - name: amaru-formula-witness
-        description: anatomy-alive Phase 1 Track 1 formula witness emitter
-      - name: amaru-adversarial-detect
-        description: Adversarial regression detection runtime
-    overrides:
-      amaru-attestation:
-        amaru-formula-witness:
-          values:
-            - path: witness.enabled
-              value: true
-            - path: witness.emitOnDrift
-              value: true
-            - path: witness.klDriftThreshold
-              value: "0.05"
+      adversarial regression detection runtime. Composed from the LIVE
+      cosign-signed, digest-pinned amaru image (uds-v0.2.0).
+    path: ../../packages/amaru
+    ref: "0.2.0"
 
   # ─────────────────────────────────────────────────────────────────
-  # Package 5: rosie-replay
-  # Status: STAGED — awaiting Zarf package creation (blocked on FA-001)
+  # Package 5: szl-rosie (rosie-replay)
+  # Status: AVAILABLE — local Zarf package packages/rosie wraps the live,
+  #         cosign-signed, digest-pinned image:
+  #         ghcr.io/szl-holdings/rosie:uds-v0.2.0
+  #           @sha256:1984a15f53c2e1b91c7dafaa0ed5df9148d57e3e86eb73db879c2b0443302848
   # ─────────────────────────────────────────────────────────────────
-  - name: rosie-replay
+  - name: szl-rosie
     description: >
-      [STAGED: awaiting FA-001 container push + Zarf package create]
       rosie governed decision fabric: mandatory witnesses on every decision
       (ROSIE-V1), receipt observability dashboard, receipt-replayable Warhacker
-      demo path. Provides live receipt feed at http://localhost:8443 when deployed.
-    repository: ghcr.io/szl-holdings/rosie
-    ref: uds-v0.3.1
-    # BLOCKER: Requires rosie container at GHCR + Zarf package.
-    optionalComponents:
-      - name: rosie-dashboard
-        description: Receipt observability dashboard (Phase 1 Track 1)
-      - name: rosie-replay-engine
-        description: Receipt-replayable demo engine (Phase 1 Track 2c)
-    overrides:
-      rosie-replay:
-        rosie-dashboard:
-          values:
-            - path: dashboard.enabled
-              value: true
-            - path: dashboard.port
-              value: 8443
-            - path: dashboard.retentionDays
-              value: 30
-        rosie-replay-engine:
-          values:
-            - path: replay.enabled
-              value: true
-            - path: replay.mode
-              # live: real-time | replay: recorded scenario
-              value: live
+      demo path. Composed from the LIVE cosign-signed, digest-pinned rosie image
+      (uds-v0.2.0).
+    path: ../../packages/rosie
+    ref: "0.2.0"
 
 # ─────────────────────────────────────────────────────────────────
 # Bundle metadata
@@ -186,4 +128,15 @@ packages:
 # SZL UDS = Unified Decision Span (not Defense Unicorns' "Unified Defense Stack" trademark, formerly "Unicorn Delivery Service", rebranded 2026-06-02)
 # Andrew Greene Option-A endorsement 2026-05-22 authorizes operation within UDS licensing.
 # This bundle is NOT UDS Catalog accepted. See catalog-submission/ for acceptance status.
+#
+# Build (members must be pre-built, same flow as bundles/szl-uds-bundle):
+#   for o in a11oy sentra amaru rosie; do \
+#     zarf package create packages/$o --set VERSION=uds-v0.2.0 -a amd64 --confirm; done
+#   zarf package create packages/szl-receipts --confirm
+#   uds create bundles/szl-full-stack --confirm
+#
+# Verify a pinned organ image (example, amaru):
+#   cosign verify ghcr.io/szl-holdings/amaru@sha256:53301e26adcde49e73df28d8c3b790f2496da9d495307fe8587ffa7452b289ff \
+#     --certificate-identity https://github.com/szl-holdings/amaru/.github/workflows/ghcr-build-push.yml@refs/heads/main \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com
 # ─────────────────────────────────────────────────────────────────
