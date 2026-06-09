@@ -39,6 +39,13 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+          env:
+            # Persistent ECDSA P-256 signing key mount (BYOK). Pre-create Secret
+            # szl-a11oy-receipts-ecdsa-p256 in this namespace with key
+            # ecdsa-p256.key to give a11oy a stable /cosign.pub across restarts;
+            # absent, a11oy falls back to an ephemeral key (honest label).
+            - name: A11OY_RECEIPT_KEY_DIR
+              value: /etc/szl/receipt-key
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -54,9 +61,16 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: receipt-key
+              mountPath: /etc/szl/receipt-key
+              readOnly: true
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: receipt-key
+          secret:
+            secretName: szl-a11oy-receipts-ecdsa-p256
+            optional: true
 ---
 apiVersion: v1
 kind: Service

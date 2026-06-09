@@ -1,10 +1,20 @@
 {{- if .Values.receiptKeyInit.enabled }}
 # Copyright 2026 SZL Holdings — SPDX-License-Identifier: Apache-2.0
 #
-# Receipt-key init — Helm PRE-INSTALL hook (weight -5, runs before workload).
-# Generates an Ed25519 receipt-signing keypair into Secret {{ .Values.receiptKeySecret }}
-# unless it already exists (BYOK path). Key material never leaves the cluster.
-# Image: docker.io/library/alpine:3.21 (public; openssl via apk).
+# Receipt-key init — Helm pre-install / pre-upgrade hook (Job, weight -5).
+#
+# AIRGAP-FRIENDLY: reuses the a11oy image (already imported into the cluster /
+# baked into the Zarf package — no extra pull) and generates the keypair with
+# the in-image Python `cryptography` module, talking to the Kubernetes API
+# directly over the pod's mounted ServiceAccount token. There is NO
+# alpine + apk + kubectl download (which cannot pull on an air-gapped / k3d
+# cluster and was the reason the old hook silently failed there).
+#
+# Generates an ECDSA P-256 (secp256r1) receipt-signing keypair into Secret
+# {{ .Values.receiptKeySecret }} unless it already exists (BYOK path — the
+# Secret is left completely untouched). The curve is ECDSA P-256 to match
+# a11oy's cosign.pub and every verify path (deliberately NOT Ed25519). Key
+# material is generated in-cluster and never leaves it.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -15,7 +25,7 @@ metadata:
     app.kubernetes.io/managed-by: {{ .Release.Service }}
     szl.ai/doctrine-version: "v11"
   annotations:
-    "helm.sh/hook": pre-install
+    "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "-5"
     "helm.sh/hook-delete-policy": hook-succeeded,before-hook-creation
 spec:
@@ -27,30 +37,128 @@ spec:
         app.kubernetes.io/name: a11oy-receipt-key-init
     spec:
       serviceAccountName: a11oy-receipt-key-init
+      # The keygen talks to the K8s API, so it DOES need its token (the workload
+      # pod keeps automountServiceAccountToken:false).
+      automountServiceAccountToken: true
       restartPolicy: OnFailure
       securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.securityContext.runAsGroup }}
+        fsGroup: {{ .Values.securityContext.fsGroup }}
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: keygen
-          image: docker.io/library/alpine:3.21
-          command: ["/bin/sh", "-c"]
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python3", "-c"]
           args:
             - |
-              set -eu
-              SECRET="{{ .Values.receiptKeySecret }}"
-              NS="{{ .Values.namespace }}"
-              if kubectl -n "$NS" get secret "$SECRET" >/dev/null 2>&1; then
-                echo "receipt key Secret $SECRET already present in $NS — BYOK, leaving untouched."
-                exit 0
-              fi
-              apk add --no-cache openssl >/dev/null
-              openssl genpkey -algorithm ed25519 -out /tmp/receipt.key
-              openssl pkey -in /tmp/receipt.key -pubout -out /tmp/receipt.pub
-              kubectl -n "$NS" create secret generic "$SECRET" \
-                --from-file=ed25519.key=/tmp/receipt.key \
-                --from-file=ed25519.pub=/tmp/receipt.pub
-              echo "created receipt-signing Secret $SECRET in $NS"
+              import base64, json, os, ssl, sys, urllib.request, urllib.error
+              NS = "{{ .Values.namespace }}"
+              SECRET = "{{ .Values.receiptKeySecret }}"
+              KEY_FILE = "{{ .Values.receiptKeyInit.keyFile }}"
+              PUB_FILE = "{{ .Values.receiptKeyInit.pubFile }}"
+
+              def fail(msg):
+                  sys.stderr.write("a11oy-receipt-key-init: ERROR - %s\n" % msg)
+                  sys.stderr.write("a11oy-receipt-key-init: FAILED - no Secret created; refusing to exit 0.\n")
+                  sys.exit(1)
+
+              sa = "/var/run/secrets/kubernetes.io/serviceaccount"
+              try:
+                  token = open(sa + "/token").read().strip()
+              except Exception as e:
+                  fail("cannot read serviceaccount token: %r" % (e,))
+              host = os.environ.get("KUBERNETES_SERVICE_HOST")
+              port = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
+              if not host:
+                  fail("KUBERNETES_SERVICE_HOST unset - not running in-cluster")
+              base = "https://%s:%s" % (host, port)
+              ctx = ssl.create_default_context(cafile=sa + "/ca.crt")
+
+              def api(method, path, body=None):
+                  data = json.dumps(body).encode() if body is not None else None
+                  req = urllib.request.Request(base + path, data=data, method=method)
+                  req.add_header("Authorization", "Bearer " + token)
+                  if data is not None:
+                      req.add_header("Content-Type", "application/json")
+                  return urllib.request.urlopen(req, context=ctx, timeout=30)
+
+              # Idempotent BYOK: if the Secret already exists, leave it untouched.
+              try:
+                  api("GET", "/api/v1/namespaces/%s/secrets/%s" % (NS, SECRET))
+                  print("a11oy-receipt-key-init: Secret %s exists in %s - BYOK, leaving untouched." % (SECRET, NS))
+                  sys.exit(0)
+              except urllib.error.HTTPError as e:
+                  if e.code != 404:
+                      fail("checking Secret failed: HTTP %s %s" % (e.code, e.read().decode("utf-8", "replace")))
+              except Exception as e:
+                  fail("checking Secret failed: %r" % (e,))
+
+              try:
+                  from cryptography.hazmat.primitives.asymmetric import ec
+                  from cryptography.hazmat.primitives import serialization
+              except Exception as e:
+                  fail("cryptography unavailable in image: %r" % (e,))
+
+              priv = ec.generate_private_key(ec.SECP256R1())
+              priv_pem = priv.private_bytes(
+                  serialization.Encoding.PEM,
+                  serialization.PrivateFormat.PKCS8,
+                  serialization.NoEncryption())
+              pub_pem = priv.public_key().public_bytes(
+                  serialization.Encoding.PEM,
+                  serialization.PublicFormat.SubjectPublicKeyInfo)
+
+              manifest = {
+                  "apiVersion": "v1", "kind": "Secret", "type": "Opaque",
+                  "metadata": {
+                      "name": SECRET, "namespace": NS,
+                      "labels": {
+                          "app.kubernetes.io/name": "a11oy",
+                          "app.kubernetes.io/managed-by": "a11oy-receipt-key-init",
+                          "szl.ai/doctrine-version": "v11",
+                      },
+                  },
+                  "data": {
+                      KEY_FILE: base64.b64encode(priv_pem).decode("ascii"),
+                      PUB_FILE: base64.b64encode(pub_pem).decode("ascii"),
+                  },
+              }
+              try:
+                  api("POST", "/api/v1/namespaces/%s/secrets" % NS, manifest)
+              except urllib.error.HTTPError as e:
+                  if e.code == 409:
+                      print("a11oy-receipt-key-init: Secret %s created concurrently - ok." % SECRET)
+                      sys.exit(0)
+                  fail("creating Secret failed: HTTP %s %s" % (e.code, e.read().decode("utf-8", "replace")))
+              except Exception as e:
+                  fail("creating Secret failed: %r" % (e,))
+
+              # Verify the Secret now carries the private key (closes silent-fail gap).
+              try:
+                  r = api("GET", "/api/v1/namespaces/%s/secrets/%s" % (NS, SECRET))
+                  got = json.loads(r.read().decode("utf-8"))
+              except Exception as e:
+                  fail("post-create verify failed: %r" % (e,))
+              if not got.get("data", {}).get(KEY_FILE):
+                  fail("Secret %s has no '%s' data after create" % (SECRET, KEY_FILE))
+              print("a11oy-receipt-key-init: created ECDSA P-256 Secret %s in %s (verified)." % (SECRET, NS))
+              print("a11oy-receipt-key-init: key material never left the cluster.")
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "96Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -58,8 +166,10 @@ metadata:
   name: a11oy-receipt-key-init
   namespace: {{ .Values.namespace }}
   annotations:
-    "helm.sh/hook": pre-install
+    "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+automountServiceAccountToken: false
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -67,8 +177,9 @@ metadata:
   name: a11oy-receipt-key-init
   namespace: {{ .Values.namespace }}
   annotations:
-    "helm.sh/hook": pre-install
+    "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation
 rules:
   - apiGroups: [""]
     resources: ["secrets"]
@@ -80,8 +191,9 @@ metadata:
   name: a11oy-receipt-key-init
   namespace: {{ .Values.namespace }}
   annotations:
-    "helm.sh/hook": pre-install
+    "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role

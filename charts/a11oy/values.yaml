@@ -33,9 +33,13 @@ healthPath: "/healthz"
 # registry. Leave false for the canonical Zarf/uds-bundle deploy path.
 zarfAgentIgnore: false
 
-# Receipt-signing key (Ed25519). Provisioned by the receipt-key-init pre-install
-# hook into Secret `receiptKeySecret` unless it already exists (BYOK supported).
-receiptKeySecret: szl-a11oy-receipts-ed25519
+# Receipt-signing key (ECDSA P-256 / secp256r1 — matches a11oy's cosign.pub and
+# every verify path, deliberately NOT Ed25519). Provisioned by the
+# receipt-key-init pre-install/pre-upgrade hook into Secret `receiptKeySecret`
+# unless it already exists (BYOK supported). The a11oy pod mounts it read-only at
+# /etc/szl/receipt-key and PREFERS it over an ephemeral key, so /cosign.pub is
+# stable across pod restarts.
+receiptKeySecret: szl-a11oy-receipts-ecdsa-p256
 
 # Cross-organ DSSE receipt sink (a11oy emits decision-time receipts here).
 receiptsSink:
@@ -91,8 +95,15 @@ resources:
   requests: {cpu: 20m, memory: 192Mi}
   limits: {cpu: "1", memory: 1Gi}
 
-# Optional BYOK pre-install keygen hook. a11oy signs receipts with its own
-# in-process key, so this is OFF by default (and the alpine+kubectl hook is not
-# airgap-friendly). Enable for BYOK Secret provisioning on internet clusters.
+# Receipt-signing key provisioning hook. Generates an ECDSA P-256 keypair into
+# `receiptKeySecret` (unless it already exists — BYOK) using the a11oy image's
+# in-image Python crypto + the Kubernetes API, so it works on air-gapped / k3d
+# clusters with NO alpine/apk/kubectl pull. On by default so a11oy signs with a
+# PERSISTENT identity (stable /cosign.pub across restarts) out of the box; set
+# false to rely purely on a pre-provisioned BYOK Secret or the ephemeral key.
 receiptKeyInit:
-  enabled: false
+  enabled: true
+  # Filenames inside the Secret. The server loader (a11oy_signing_key.py) looks
+  # for ecdsa-p256.key first; keep these in sync with that candidate list.
+  keyFile: ecdsa-p256.key
+  pubFile: ecdsa-p256.pub

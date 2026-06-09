@@ -37,6 +37,11 @@ spec:
           envFrom:
             - configMapRef:
                 name: a11oy-doctrine
+          env:
+            # Where the persistent ECDSA P-256 signing key is mounted from the
+            # receiptKeySecret. a11oy_signing_key.load_signing_key() reads this.
+            - name: A11OY_RECEIPT_KEY_DIR
+              value: /etc/szl/receipt-key
           volumeMounts:
             # a11oy writes runtime state under /tmp (read-only root filesystem).
             - name: tmp
