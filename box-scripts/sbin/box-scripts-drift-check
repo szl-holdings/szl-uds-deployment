@@ -14,9 +14,16 @@
 # each live file against its committed box-scripts/ copy and alerts on drift, so
 # the repo copy stays the real source of truth.
 #
-# It only REPORTS — it does NOT auto-reinstall. Re-syncing the host file with the
-# repo (or committing the live edit back into box-scripts/) is a human/agent call
-# (run box-scripts/install.sh to push repo->host, or copy host->repo + commit).
+# By DEFAULT it only REPORTS — it does NOT auto-reinstall. Re-syncing the host
+# file with the repo (or committing the live edit back into box-scripts/) is a
+# human/agent call (run box-scripts/install.sh to push repo->host, or copy
+# host->repo + commit). For the case where the COMMITTED copy is the desired
+# source of truth and a stray host edit should simply be reverted, an OPT-IN
+# self-heal mode (SELF_HEAL=1, default OFF) re-installs the drifted file from its
+# box-scripts/ copy on the drift edge — see "SELF-HEAL" below. This mirrors the
+# sibling dns-drift watcher's opt-in re-apply, but it is OFF by default here
+# because a host edit may legitimately be a hot-fix that should be back-ported to
+# the repo, not clobbered.
 #
 # WHAT IT COMPARES (default set; override via WATCH_SBIN / WATCH_UNITS):
 #   /usr/local/sbin/{a11oy-uptime-check,a11oy-uptime-notify,dns-drift-check}
@@ -45,6 +52,20 @@
 #   fail-soft. Because it only fires on the EDGE and on RECOVERED it respects the
 #   standing "recurring alerts = the owner only" policy by construction.
 #
+# SELF-HEAL (opt-in, OFF by default)
+#   With SELF_HEAL=1 the watcher, on the healthy->drift EDGE, re-installs each
+#   drifted host file from its committed box-scripts/ copy (install -m, scripts
+#   0755 / units 0644) and, if any unit was re-installed, runs `systemctl
+#   daemon-reload`. It then pushes a REPAIRED notification (distinct from the
+#   RECOVERED that fires when the drift simply clears on its own). A DRIFT whose
+#   committed source is GONE (REPO-MISSING / BOTH-MISSING) cannot be restored and
+#   is reported as un-healable. The DRIFT edge alert still fires (it reads
+#   "auto-repairing now…") so the human still sees the event. A drift that is
+#   still present after a heal (e.g. an un-healable REPO-MISSING, or install
+#   keeps failing) is retried at most once every HEAL_RETRY_SECS so it never
+#   loops. With SELF_HEAL=0 (the default) the detection + alert + edge/de-dup
+#   path is exactly the original report-only behaviour.
+#
 # Idempotent and safe to run on a short timer. Repo-absent = clean no-op.
 set -uo pipefail
 
@@ -67,6 +88,20 @@ STATUS="${STATUS:-$STATE_DIR/status.json}"
 SIG_FILE="${SIG_FILE:-$STATE_DIR/problem.sig}"
 NOTIFY_CMD="${NOTIFY_CMD:-}"          # optional external notifier (stdin = message)
 ALERT_PREFIX="${ALERT_PREFIX:-}"      # e.g. "[TEST-ignore] " to test without alarming
+
+# ---- self-heal config (opt-in, OFF by default) ------------------------------
+# When SELF_HEAL=1 the watcher re-installs each drifted host file from its
+# committed box-scripts/ copy on the drift EDGE (and daemon-reloads if a unit
+# changed), instead of only paging a human. OFF by default because a host edit
+# may be a deliberate hot-fix that should be back-ported to the repo rather than
+# clobbered. INSTALL_CMD / DAEMON_RELOAD_CMD are overridable for the isolated
+# test recipe (see box-scripts-drift-check.README.md).
+SELF_HEAL="${SELF_HEAL:-0}"
+INSTALL_CMD="${INSTALL_CMD:-install}"
+DAEMON_RELOAD_CMD="${DAEMON_RELOAD_CMD:-systemctl daemon-reload}"
+HEAL_TS_FILE="${HEAL_TS_FILE:-$STATE_DIR/heal-last.ts}"
+HEAL_RESULT_FILE="${HEAL_RESULT_FILE:-$STATE_DIR/heal-last.txt}"
+HEAL_RETRY_SECS="${HEAL_RETRY_SECS:-3600}"   # min seconds between heals for a persisting drift
 
 mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
 
@@ -113,6 +148,7 @@ fi
 # ---- walk the watch set -----------------------------------------------------
 problems=()         # human-readable "name: STATUS" for each drifted file
 files_json=()       # per-file json objects for status.json
+heal_targets=()     # "kind|name|live|repo|status" for each drifted file (self-heal)
 
 add_file_json() {   # name kind live repo status
   files_json+=("$(printf '{ "name": "%s", "kind": "%s", "live": "%s", "repo": "%s", "status": "%s" }' \
@@ -127,7 +163,10 @@ check_set() {       # kind live_dir repo_dir names...
     repo="$repo_dir/$name"
     st=$(compare_one "$live" "$repo")
     add_file_json "$name" "$kind" "$live" "$repo" "$st"
-    [ "$st" = "MATCH" ] || problems+=("$kind $name: $st")
+    if [ "$st" != "MATCH" ]; then
+      problems+=("$kind $name: $st")
+      heal_targets+=("$kind|$name|$live|$repo|$st")
+    fi
   done
 }
 
@@ -146,6 +185,9 @@ overall="OK"; [ "$drift_count" -gt 0 ] && overall="DRIFT"
   printf '  "overall": "%s",\n' "$overall"
   printf '  "drift_count": %s,\n' "$drift_count"
   printf '  "alerting": %s,\n' "$( [ "$drift_count" -gt 0 ] && echo true || echo false )"
+  printf '  "self_heal": { "enabled": %s, "last_result": "%s" },\n' \
+    "$( [ "$SELF_HEAL" = "1" ] && echo true || echo false )" \
+    "$( [ -r "$HEAL_RESULT_FILE" ] && tr -d '\n' <"$HEAL_RESULT_FILE" | sed 's/"/\\"/g' || echo none )"
   printf '  "files": [\n'
   i=0
   for obj in "${files_json[@]}"; do
@@ -160,6 +202,83 @@ overall="OK"; [ "$drift_count" -gt 0 ] && overall="DRIFT"
   printf '}\n'
 } >"$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
 
+# ---- self-heal helpers ------------------------------------------------------
+# heal_due(): true when we should (re)attempt a re-install. Heals immediately on
+# a new drift edge; for a drift still present after a previous heal it only
+# re-tries once HEAL_RETRY_SECS has elapsed so it never loops (e.g. an
+# un-healable REPO-MISSING, or install repeatedly failing).
+heal_due() {
+  [ "$SELF_HEAL" = "1" ] || return 1
+  [ "${is_new_edge:-0}" = "1" ] && return 0
+  local last now
+  last=$(cat "$HEAL_TS_FILE" 2>/dev/null || echo 0)
+  case "$last" in (*[!0-9]*|"") last=0 ;; esac
+  now=$(date -u +%s)
+  [ $(( now - last )) -ge "$HEAL_RETRY_SECS" ]
+}
+
+# attempt_heal(): re-install each drifted file from its committed box-scripts/
+# copy. Scripts -> 0755, units -> 0644; daemon-reload once if any unit changed.
+# REPO-MISSING / BOTH-MISSING have no source to restore from (un-healable).
+# Fail-soft: a failed install is logged/pushed but never aborts the watcher.
+attempt_heal() {
+  local entry kind name live repo st mode any_unit=0
+  local healed=() failed=() skipped=()
+  date -u +%s >"$HEAL_TS_FILE"
+  for entry in "${heal_targets[@]}"; do
+    IFS='|' read -r kind name live repo st <<<"$entry"
+    case "$st" in
+      DRIFT|LIVE-MISSING)
+        mode=755; [ "$kind" = "unit" ] && mode=644
+        if $INSTALL_CMD -m "$mode" "$repo" "$live" >>"$LOG" 2>&1; then
+          healed+=("$kind $name")
+          [ "$kind" = "unit" ] && any_unit=1
+        else
+          failed+=("$kind $name")
+        fi
+        ;;
+      *)  # REPO-MISSING / BOTH-MISSING — no committed source to restore from
+        skipped+=("$kind $name ($st)")
+        ;;
+    esac
+  done
+
+  if [ "$any_unit" = "1" ]; then
+    if $DAEMON_RELOAD_CMD >>"$LOG" 2>&1; then
+      log "SELF-HEAL daemon-reload OK (a watched unit was re-installed)"
+    else
+      log "WARN SELF-HEAL daemon-reload failed"
+    fi
+  fi
+
+  local rc=0 summary=""
+  if [ "${#healed[@]}" -gt 0 ]; then
+    summary="re-installed ${#healed[@]} committed copy/copies onto the host: $(printf '%s, ' "${healed[@]}")"
+    summary="${summary%, }"
+    [ "$any_unit" = "1" ] && summary="$summary; ran daemon-reload"
+  fi
+  if [ "${#failed[@]}" -gt 0 ]; then
+    rc=1
+    summary="${summary:+$summary; }FAILED to re-install: $(printf '%s, ' "${failed[@]}")"
+    summary="${summary%, }"
+  fi
+  if [ "${#skipped[@]}" -gt 0 ]; then
+    summary="${summary:+$summary; }un-healable (no committed source): $(printf '%s, ' "${skipped[@]}")"
+    summary="${summary%, }"
+  fi
+  [ -z "$summary" ] && summary="nothing to re-install"
+
+  if [ "${#healed[@]}" -gt 0 ] && [ "${#failed[@]}" -eq 0 ]; then
+    log "REPAIRED $summary"
+    push "box-scripts-drift REPAIRED: $summary"
+  else
+    log "REPAIR-INCOMPLETE $summary"
+    push "box-scripts-drift REPAIR could not fully restore: $summary"
+  fi
+  printf '%s %s\n' "$now_iso" "$summary" >"$HEAL_RESULT_FILE"
+  return "$rc"
+}
+
 # ---- transition de-dup + alert ---------------------------------------------
 prev_sig=""; [ -r "$SIG_FILE" ] && prev_sig=$(cat "$SIG_FILE" 2>/dev/null)
 
@@ -168,7 +287,7 @@ if [ "$drift_count" -eq 0 ]; then
     rec="all watched box-scripts host files match their committed box-scripts/ copies again"
     log "RECOVERED $rec"
     push "box-scripts-drift RECOVERED: $rec"
-    rm -f "$SIG_FILE"
+    rm -f "$SIG_FILE" "$HEAL_TS_FILE"
   fi
   log "STATE overall=OK drift=0 (checked $(( $(printf '%s\n' $WATCH_SBIN | grep -c .) + $(printf '%s\n' $WATCH_UNITS | grep -c .) )) files)"
   exit 0
@@ -177,16 +296,29 @@ fi
 problem_text=$(printf '%s; ' "${problems[@]}"); problem_text="${problem_text%; }"
 cur_sig=$(printf '%s\n' "${problems[@]}" | sort | md5sum | awk '{print $1}')
 
+is_new_edge=0
 if [ "$cur_sig" = "$prev_sig" ]; then
   log "(persisting) DRIFT $drift_count file(s): $problem_text"
 else
-  body="$drift_count box-scripts host file(s) DRIFTED from the committed box-scripts/ copies on $REPO:
+  is_new_edge=1
+  if [ "$SELF_HEAL" = "1" ]; then
+    body="$drift_count box-scripts host file(s) DRIFTED from the committed box-scripts/ copies on $REPO:
+$(printf '    %s\n' "${problems[@]}")
+Self-heal ON — auto-repairing now (re-installing the committed copies)..."
+  else
+    body="$drift_count box-scripts host file(s) DRIFTED from the committed box-scripts/ copies on $REPO:
 $(printf '    %s\n' "${problems[@]}")
 Reconcile: copy host->repo + commit if the live edit is intended, or re-run box-scripts/install.sh to push repo->host."
+  fi
   log "ALERT $body"
   push "box-scripts-drift DRIFT: $body"
   printf '%s' "$cur_sig" >"$SIG_FILE"
 fi
 
-log "STATE overall=DRIFT drift=$drift_count"
+# self-heal (opt-in): re-install the drifted files from their committed copies.
+if heal_due; then
+  attempt_heal || true
+fi
+
+log "STATE overall=DRIFT drift=$drift_count self_heal=$( [ "$SELF_HEAL" = "1" ] && echo on || echo off )"
 exit 0
