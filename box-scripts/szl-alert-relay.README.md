@@ -1,23 +1,30 @@
 # szl-alert-relay — clean-text alert relay (Slack-format webhook → ntfy)
 
 ## Problem
-GitHub Actions alert steps (notably `szl-holdings/a11oy`
-`.github/workflows/rekor-recheck.yml`, step *"Alert the team directly on
-re-check failure"*) POST a **Slack incoming-webhook** body
-`{"text": "..."}` to whatever the `SLACK_WEBHOOK_URL` secret points at. The
-team's only watched push channel is the **ntfy** topic in
+Several GitHub Actions alert steps POST a **Slack incoming-webhook** body to
+whatever the `SLACK_WEBHOOK_URL` secret points at:
+- `szl-holdings/a11oy` `.github/workflows/rekor-recheck.yml` — `{"text": "..."}`
+- `szl-holdings/a11oy` `.github/workflows/release-receipt-verify.yml` —
+  `{"text": "..."}` (shares a11oy's one repo-level secret with rekor-recheck)
+- `szl-holdings/platform` `.github/workflows/post-deploy-smoke.yml` — a richer
+  `{"text": ..., "attachments": [{ "fields": [...], "footer": ... }]}` shape
+
+The team's only watched push channel is the **ntfy** topic in
 `/etc/a11oy-uptime.env` on box `167.233.50.75`. ntfy *accepts* that JSON and
 returns **HTTP 200** (so the workflow's 2xx gate passes), but it does **not**
-understand the Slack schema — it renders the raw `{"text": ...}` JSON wrapper
-as the message body. The page is readable but ugly, which is bad for an urgent
-alert.
+understand the Slack schema — it renders the raw JSON wrapper as the message
+body. The page is readable but ugly, which is bad for an urgent alert.
 
 ## What this does
 A tiny loopback HTTP service (`/usr/local/sbin/szl-alert-relay`, pure stdlib
-Python 3) sits **behind the existing nginx**. It accepts the Slack-format POST,
-extracts `.text`, cleans it (per-line de-indent, Slack emoji shortcodes →
-unicode e.g. `:rotating_light:` → 🚨, strips `*bold*` markers), and republishes
-it as a **clean plain-text** message through the shared notifier
+Python 3) sits **behind the existing nginx**. It accepts the Slack-format POST
+and **flattens** it into one plain-text block — `.text` plus, for the richer
+attachments shape, each `attachments[]` title/text, its `fields[]` rendered as
+`Title: value` lines, and its `footer`. Then it cleans the text (per-line
+de-indent, Slack emoji shortcodes → unicode e.g. `:rotating_light:` → 🚨, strips
+`*bold*` markers, unwraps `<url|label>` links → `label (url)`, drops ``` ```
+fences), and republishes it as a **clean plain-text** message through the shared
+notifier
 `/usr/local/sbin/a11oy-uptime-notify` — which already reads `NTFY_URL` from
 `/etc/a11oy-uptime.env`. So the alert lands on the **same watched topic**, now
 as clean text.
@@ -58,11 +65,21 @@ prints a reminder to set `RELAY_TOKEN` if it is still empty.
 > will fail on a duplicate `default_server` and it will look like this change
 > broke nginx (it didn't). install.sh checks for this.
 
-## The other half: the GitHub secret
-Point `SLACK_WEBHOOK_URL` on `szl-holdings/a11oy` at
-`https://a11oy.net/relay/ntfy/<RELAY_TOKEN>`. The workflow's existing
-`{"text": ...}` POST then arrives here and pages cleanly. No workflow change is
-needed.
+## The other half: the GitHub secret(s)
+Point every `SLACK_WEBHOOK_URL` secret that feeds a CI alert at
+`https://a11oy.net/relay/ntfy/<RELAY_TOKEN>`. The workflows' existing POSTs then
+arrive here and page cleanly — **no workflow change is needed**. Current wiring:
+- `szl-holdings/a11oy` — one **repo-level** secret, shared by both
+  `rekor-recheck.yml` and `release-receipt-verify.yml` (Actions secrets are
+  repo-scoped, so repointing it once covers both workflows).
+- `szl-holdings/platform` — `post-deploy-smoke.yml` binds `environment:
+  production`, so its secret lives in the **`production` environment** secrets,
+  not at repo level. Set `SLACK_WEBHOOK_URL` there.
+
+> Secrets need a libsodium sealed box (no `gh` CLI on the box). Do the encrypt
+> + PUT so the `RELAY_TOKEN` never lands in a log: read it on-box from
+> `/etc/szl-alert-relay.env`, seal it against the secret's public key, and PUT
+> only the encrypted blob. Org-owner `SZL_GITHUB_TOKEN` can write the secret.
 
 ## Test the failure path without a real failure
 POST the workflow's exact payload (prefixed `[TEST-ignore]`) to the relay and
