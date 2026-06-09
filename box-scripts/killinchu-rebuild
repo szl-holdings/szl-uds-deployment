@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+# killinchu-rebuild — rebuild the killinchu.a11oy.net Docker image from the
+# PUBLISHED GitHub source of truth (szl-holdings/killinchu), discarding any local
+# working-tree drift, then recreate the running container. Idempotent and safe to
+# re-run. This is the killinchu twin of a11oy-rebuild.
+#
+# WHY THIS EXISTS:
+#   The box build tree (/opt/szl/killinchu) routinely drifts BEHIND GitHub main
+#   (a stale remote-tracking ref plus hand-patched working-tree files — it was 23
+#   commits behind during task #430). The Docker image used to be built straight
+#   from that drifting tree by hand, so the live killinchu.a11oy.net image could
+#   silently diverge from the published source (a stale/degraded build). This
+#   wrapper guarantees every rebuild starts from a clean checkout of origin/main,
+#   so the running container always reflects what is published. DO NOT hand-patch
+#   the tree and `docker build` directly — run this instead.
+#
+# USAGE:
+#   killinchu-rebuild              # fetch+reset to origin/main, build, recreate, verify
+#   killinchu-rebuild --verify-only   # just verify the running image+container vs origin/main
+#
+# OVERRIDES (env): KILLINCHU_REPO_DIR KILLINCHU_BRANCH KILLINCHU_IMAGE
+#                  KILLINCHU_CONTAINER KILLINCHU_PORT_BIND KILLINCHU_HEALTH_URL
+set -uo pipefail
+
+REPO_DIR="${KILLINCHU_REPO_DIR:-/opt/szl/killinchu}"
+BRANCH="${KILLINCHU_BRANCH:-main}"
+IMAGE="${KILLINCHU_IMAGE:-killinchu:local}"
+CONTAINER="${KILLINCHU_CONTAINER:-killinchu}"
+PORT_BIND="${KILLINCHU_PORT_BIND:-127.0.0.1:7862:7860}"
+# Host:port the recreated container is reachable on (derived from PORT_BIND's host
+# side) for the live endpoint probe.
+HEALTH_HOSTPORT="${KILLINCHU_HEALTH_HOSTPORT:-127.0.0.1:7862}"
+# Published Hugging Face Space that would hold any feature files never back-ported
+# to GitHub (3-way drift). As of 2026-06-08 GitHub main is a COMPLETE build source
+# (every Dockerfile COPY exists in main), so the overlay is a no-op — it is kept as
+# a drift-proof safety net identical to a11oy-rebuild. Public repo → cloned
+# anonymously, LFS smudge skipped (overlay files are plain .py/.json/.js/.md).
+HF_SPACE_URL="${KILLINCHU_HF_SPACE_URL:-https://huggingface.co/spaces/szlholdings/killinchu}"
+HF_CACHE_DIR="${KILLINCHU_HF_CACHE_DIR:-/opt/szl/hf-killinchu}"
+BACKUP_DIR="/root/killinchu-build-backups"
+TS="$(date +%Y%m%d-%H%M%S)"
+
+# Key feature modules to md5-guard: the live image MUST bake these byte-for-byte
+# from origin/$BRANCH (Dockerfile WORKDIR=/app, every COPY lands at /app/<path>).
+# A build from a stale/wrong tree silently ships the old module — this catches it.
+GUARD_FILES=(
+  "szl_evidence_research.py"     # resilient live paper/evidence feed
+  "killinchu_backend.py"         # real Postgres-first persistent backend
+  "killinchu_elite_console.py"   # the /elite console UI
+  "killinchu_osint.py"           # real adsb.lol military ADS-B scrape
+  "szl_readiness.py"             # operational readiness console
+  "killinchu_cannonico.py"       # canonical app module (hf-sync mirrored)
+  "serve.py"                     # FastAPI app entry / route registration
+)
+
+log(){ echo "[killinchu-rebuild $(date +%H:%M:%S)] $*"; }
+fail(){ echo "[killinchu-rebuild] FATAL: $*" >&2; exit "${2:-1}"; }
+
+# Compare the key feature modules baked into $IMAGE against origin/$BRANCH
+# byte-for-byte (md5). WORKDIR is /app so repo path <p> maps to image /app/<p>.
+verify_modules(){
+  local rc=0 rp want got
+  for rp in "${GUARD_FILES[@]}"; do
+    want="$(git show "origin/$BRANCH:$rp" 2>/dev/null | md5sum | awk '{print $1}')"
+    got="$(docker run --rm --entrypoint cat "$IMAGE" "/app/$rp" 2>/dev/null | md5sum | awk '{print $1}')"
+    if [ -z "$want" ]; then
+      log "VERIFY SKIP $rp (not in origin/$BRANCH)"
+    elif [ "$want" = "$got" ]; then
+      log "VERIFY OK   $rp == image:/app/$rp  ($want)"
+    else
+      log "VERIFY FAIL $rp ($want) != image:/app/$rp ($got)"; rc=1
+    fi
+  done
+  return $rc
+}
+
+# Probe the running container's live endpoints (killinchu has no a11oy-style
+# front-door file pair; its surface is /healthz + /api/killinchu/*). /healthz is
+# the hard gate; the evidence endpoint is an informational soft check.
+verify_endpoints(){
+  local rc=0 code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "http://$HEALTH_HOSTPORT/healthz" 2>/dev/null)"
+  if [ "$code" = "200" ]; then
+    log "ENDPOINT OK   /healthz -> 200"
+  else
+    log "ENDPOINT FAIL /healthz -> ${code:-000}"; rc=1
+  fi
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "http://$HEALTH_HOSTPORT/api/killinchu/v1/evidence/research" 2>/dev/null)"
+  if [ "$code" = "200" ]; then
+    log "ENDPOINT OK   /api/killinchu/v1/evidence/research -> 200"
+  else
+    log "ENDPOINT WARN /api/killinchu/v1/evidence/research -> ${code:-000} (soft)"
+  fi
+  return $rc
+}
+
+# Refresh the cached HF Space clone and overlay any Dockerfile COPY source that is
+# missing from the GitHub build context. Fails loudly rather than shipping a
+# degraded image. No-op when GitHub main is self-sufficient (the current state).
+overlay_hf(){
+  local missing=()
+  while read -r src; do
+    [ -z "$src" ] && continue
+    local s="${src%/}"
+    [ -e "$s" ] || missing+=("$s")
+  done < <(grep -E '^COPY ' "$REPO_DIR/Dockerfile" | awk '{print $2}')
+
+  if [ "${#missing[@]}" -eq 0 ]; then
+    log "Overlay: no missing COPY sources — GitHub main is self-sufficient."
+    return 0
+  fi
+  log "Overlay: ${#missing[@]} COPY source(s) missing from GitHub build context; sourcing from published HF Space."
+
+  if [ -d "$HF_CACHE_DIR/.git" ]; then
+    log "Overlay: refreshing HF cache $HF_CACHE_DIR ..."
+    ( cd "$HF_CACHE_DIR" && GIT_LFS_SKIP_SMUDGE=1 GIT_TERMINAL_PROMPT=0 git fetch --depth 1 origin "$BRANCH" \
+        && git reset --hard "origin/$BRANCH" && git clean -fd ) \
+      || fail "HF cache refresh failed" 9
+  else
+    log "Overlay: cloning HF Space $HF_SPACE_URL (anon, LFS-skip) ..."
+    GIT_LFS_SKIP_SMUDGE=1 GIT_TERMINAL_PROMPT=0 git clone --depth 1 -b "$BRANCH" "$HF_SPACE_URL" "$HF_CACHE_DIR" \
+      || fail "HF Space clone failed" 9
+  fi
+
+  local still=()
+  for s in "${missing[@]}"; do
+    if [ -e "$HF_CACHE_DIR/$s" ]; then
+      mkdir -p "$REPO_DIR/$(dirname "$s")"
+      cp -a "$HF_CACHE_DIR/$s" "$REPO_DIR/$s"
+      log "Overlay: + $s"
+    else
+      still+=("$s")
+    fi
+  done
+  if [ "${#still[@]}" -gt 0 ]; then
+    printf '   STILL-MISSING: %s\n' "${still[@]}" >&2
+    fail "overlay incomplete — ${#still[@]} COPY source(s) absent from BOTH GitHub main and the HF Space (refusing to ship a degraded image)" 10
+  fi
+  log "Overlay: all missing COPY sources resolved from the published HF Space."
+}
+
+cd "$REPO_DIR" || fail "$REPO_DIR not found" 2
+mkdir -p "$BACKUP_DIR"
+
+log "Fetching origin/$BRANCH ..."
+git fetch --no-tags origin "$BRANCH" || fail "git fetch failed" 3
+
+if [ "${1:-}" = "--verify-only" ]; then
+  log "verify-only: comparing running $IMAGE + container against origin/$BRANCH"
+  rc=0
+  verify_modules || rc=1
+  verify_endpoints || rc=1
+  if [ "$rc" -eq 0 ]; then log "verify-only: PASS"; exit 0; else log "verify-only: FAIL"; exit 5; fi
+fi
+
+# Never silently lose local work: snapshot any uncommitted drift before discarding.
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  git diff HEAD > "$BACKUP_DIR/uncommitted-$TS.patch" 2>/dev/null || true
+  log "Backed up uncommitted drift -> $BACKUP_DIR/uncommitted-$TS.patch"
+fi
+
+log "Resetting working tree to origin/$BRANCH (discarding drift) ..."
+git reset --hard "origin/$BRANCH" || fail "git reset failed" 6
+git clean -fd || true
+
+HEAD_SHA="$(git rev-parse --short HEAD)"
+log "Build source pinned to published origin/$BRANCH = $HEAD_SHA"
+
+overlay_hf
+
+log "docker build -t $IMAGE . (this can take several minutes) ..."
+if docker build -t "$IMAGE" . ; then
+  log "docker build OK -> $IMAGE"
+else
+  fail "docker build failed" 4
+fi
+
+log "Guarding baked feature modules against published origin/$BRANCH (pre-recreate) ..."
+verify_modules || fail "baked modules do not match origin/$BRANCH — refusing to deploy a drifted image" 11
+
+log "Recreating container $CONTAINER ..."
+docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+docker run -d --name "$CONTAINER" --restart unless-stopped -p "$PORT_BIND" "$IMAGE" >/dev/null \
+  || fail "docker run failed" 7
+
+sleep 4
+log "Container state: $(docker inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null)"
+
+log "Verifying live endpoints on the recreated container ..."
+if verify_endpoints; then
+  log "DONE — $CONTAINER running from published $BRANCH@$HEAD_SHA, modules match source, endpoints live."
+else
+  fail "rebuild completed but live endpoint verification FAILED" 8
+fi
