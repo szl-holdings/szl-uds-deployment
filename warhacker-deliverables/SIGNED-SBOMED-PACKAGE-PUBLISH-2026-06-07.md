@@ -251,9 +251,11 @@ zarf package create uds --set UDSMESH_IMAGE_TAG=latest --set A11OY_IMAGE_TAG=lat
 
 ## 7. Honesty / scope
 
-- **Provenance level: SLSA L1/L2 class only** — GitHub-Actions keyless attestation +
-  cosign signatures + Syft SBOMs. **No** SLSA L3, Iron Bank, FedRAMP, or CMMC
-  claims.
+- **Provenance level: SLSA L1 honest on this bundle** — GitHub-Actions keyless
+  attestation + cosign signatures + Syft SBOMs. The verified L2 on organ images is
+  attested on the five organ images only; bundle-level SLSA attestation is **NOT
+  earned** (the cosign signature is the bundle provenance). This is **not L3**.
+  No Iron Bank, no FedRAMP, no CMMC claims.
 - The cosign **transparency-log** entries are real (Rekor). The original
   `0.3.1-upstream` package signature used an ephemeral box key-pair; current
   releases are signed **keyless** in CI (`zarf-package-sign.yml` now publishes the
@@ -261,3 +263,4 @@ zarf package create uds --set UDSMESH_IMAGE_TAG=latest --set A11OY_IMAGE_TAG=lat
   stored and no public key is committed.
 - Version-consistency (package `uds-v0.4.0` ref vs GHCR `uds-v0.3.1`) is **out of
   scope** and tracked elsewhere; it does not affect this self-contained round-trip.
+
