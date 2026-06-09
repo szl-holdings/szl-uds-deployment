@@ -24,6 +24,13 @@
 #   4. Asserts signing.requireKey=true renders the ed25519-key Secret mount with
 #      optional:false (pod refuses to start unsigned) and requireKey=false
 #      renders optional:true — the core "fail loud, never sign nothing" contract.
+#   5. Fails the build if a generated umbrella subchart snapshot
+#      (charts/<umbrella>/charts/*) is ever tracked in git. stub_missing_deps.py
+#      writes those into <umbrella>/charts/ at render time and .gitignore keeps
+#      them out, but .gitignore only stops an accidental `git add` — `git add -f`
+#      or a tree committed before the ignore rule existed would still land a stale
+#      snapshot that Helm then treats as the source of truth. This is the hard
+#      guard .gitignore can't be.
 #
 # Umbrella charts (e.g. szl-full-stack) declare subcharts that are STAGED — their
 # OCI charts are not published yet — and Helm refuses to render a chart while any
@@ -76,6 +83,34 @@ jobs:
         run: python3 -m pip install --quiet pyyaml
       - name: Run chart-guard checks self-test
         run: python3 scripts/chart-guard-checks.test.py
+
+  # ── No committed umbrella subchart snapshots ────────────────────────────────
+  # .gitignore (charts/*/charts/) keeps the CI-ephemeral vendored/stub subcharts
+  # out of git, but .gitignore only blocks an accidental `git add`. A `git add -f`
+  # or a branch whose tree was committed before the ignore rule existed could
+  # still carry a stale snapshot — and once committed, Helm treats that snapshot
+  # as the source of truth and the umbrella silently drifts. This job is the hard
+  # guard: it fails if `git ls-files 'charts/*/charts/*'` lists anything tracked.
+  # It runs straight off the checkout (no stub_missing_deps.py, so the render-time
+  # snapshots are never present) so it only ever sees what is actually committed.
+  no-committed-snapshots:
+    name: No committed umbrella subchart snapshots
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Assert no generated subchart snapshot is tracked in git
+        run: |
+          set -euo pipefail
+          tracked="$(git ls-files 'charts/*/charts/*')"
+          if [ -n "$tracked" ]; then
+            echo "::error::A generated umbrella subchart snapshot is tracked in git. These are written by .github/scripts/stub_missing_deps.py at render time and MUST NOT be committed — Helm would then treat the snapshot as the source of truth and the umbrella would drift / go stale. Remove it with 'git rm -r --cached <path>' and rely on the .gitignore rule 'charts/*/charts/'. Offending paths:"
+            echo "$tracked" | while IFS= read -r p; do
+              echo "::error file=${p}::committed generated subchart snapshot (matched 'charts/*/charts/*')"
+            done
+            exit 1
+          fi
+          echo "OK: no generated umbrella subchart snapshot is tracked under charts/*/charts/*"
 
   chart-guard:
     name: Render + lint receipt-deploy charts
