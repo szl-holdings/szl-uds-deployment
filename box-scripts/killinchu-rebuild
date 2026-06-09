@@ -40,6 +40,14 @@ HF_CACHE_DIR="${KILLINCHU_HF_CACHE_DIR:-/opt/szl/hf-killinchu}"
 BACKUP_DIR="/root/killinchu-build-backups"
 TS="$(date +%Y%m%d-%H%M%S)"
 
+# Optional push channel for watchlist alerts. killinchu_backend.py pushes a
+# DE-DUPED, edge-triggered alert to an ntfy topic when a watchlist fires — but
+# only if KILLINCHU_NTFY_URL (or NTFY_URL) is present in the container's env. We
+# reuse the SAME private ntfy topic the box uptime monitor already uses, kept
+# ONLY in /etc/a11oy-uptime.env (never in git). If the file/key is absent the
+# backend stays in-app-only with no error. The URL/token are NEVER logged.
+NTFY_ENV_FILE="${KILLINCHU_NTFY_ENV_FILE:-/etc/a11oy-uptime.env}"
+
 # Key feature modules to md5-guard: the live image MUST bake these byte-for-byte
 # from origin/$BRANCH (Dockerfile WORKDIR=/app, every COPY lands at /app/<path>).
 # A build from a stale/wrong tree silently ships the old module — this catches it.
@@ -180,7 +188,31 @@ verify_modules || fail "baked modules do not match origin/$BRANCH — refusing t
 
 log "Recreating container $CONTAINER ..."
 docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-docker run -d --name "$CONTAINER" --restart unless-stopped -p "$PORT_BIND" "$IMAGE" >/dev/null \
+# Build the optional ntfy env passthrough from the box's private env file. We
+# parse only the specific keys we need (never `source`, to avoid executing the
+# file) and strip surrounding quotes. URL/token values are never echoed.
+_ntfy_val(){ # _ntfy_val KEY -> value (last assignment wins, quotes stripped)
+  [ -r "$NTFY_ENV_FILE" ] || return 0
+  sed -n "s/^[[:space:]]*$1=//p" "$NTFY_ENV_FILE" | tail -n1 \
+    | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//"
+}
+RUN_ENV=()
+_ntfy_url="$(_ntfy_val NTFY_URL)"; [ -z "$_ntfy_url" ] && _ntfy_url="$(_ntfy_val KILLINCHU_NTFY_URL)"
+if [ -n "$_ntfy_url" ]; then
+  RUN_ENV+=(-e "KILLINCHU_NTFY_URL=$_ntfy_url")
+  _ntfy_token="$(_ntfy_val NTFY_TOKEN)"; [ -z "$_ntfy_token" ] && _ntfy_token="$(_ntfy_val KILLINCHU_NTFY_TOKEN)"
+  [ -n "$_ntfy_token" ] && RUN_ENV+=(-e "KILLINCHU_NTFY_TOKEN=$_ntfy_token")
+  _ntfy_prio="$(_ntfy_val NTFY_PRIORITY)"; [ -z "$_ntfy_prio" ] && _ntfy_prio="$(_ntfy_val KILLINCHU_NTFY_PRIORITY)"
+  [ -n "$_ntfy_prio" ] && RUN_ENV+=(-e "KILLINCHU_NTFY_PRIORITY=$_ntfy_prio")
+  _ntfy_cd="$(_ntfy_val KILLINCHU_NTFY_COOLDOWN)"
+  [ -n "$_ntfy_cd" ] && RUN_ENV+=(-e "KILLINCHU_NTFY_COOLDOWN=$_ntfy_cd")
+  log "watchlist alerts -> ntfy channel ENABLED (from $NTFY_ENV_FILE)"
+else
+  log "watchlist alerts -> ntfy channel not configured (in-app only)"
+fi
+
+docker run -d --name "$CONTAINER" --restart unless-stopped -p "$PORT_BIND" \
+  ${RUN_ENV[@]+"${RUN_ENV[@]}"} "$IMAGE" >/dev/null \
   || fail "docker run failed" 7
 
 sleep 4
