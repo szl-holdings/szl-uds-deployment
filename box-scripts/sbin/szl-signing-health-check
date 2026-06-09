@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+#
+# szl-signing-health-check — alert a human when szl-receipts SIGNING is down on
+# the single-node uds-szl-demo k3d cluster (box 167.233.50.75).
+#
+# WHY THIS EXISTS
+# Receipt signing already self-heals after a Vault restart (vault-auto-unseal
+# helper + timer). But if it ever FAILS to recover — /root/vault-init/init.json
+# missing/misowned, the unseal key no longer matches, Vault wedged, OR the
+# receipts-server itself crashlooping / running unsigned — nothing actively
+# tells a human. The self-heal helper just logs + exits non-zero into the
+# journal. This watcher closes that loop: it detects a signing outage that
+# PERSISTS past a grace window and fires a REAL push notification (ntfy /
+# Telegram / Slack-Discord webhook) via the SAME notifier + creds file the
+# a11oy-uptime + dns-drift monitors already use. Mirrors those monitors'
+# transition-de-dup so a persisting outage does not spam (recurring alerts =
+# the owner only).
+#
+# WHAT IT CHECKS (only when the cluster is up — k3d nodes are --restart no, so a
+# rebooted box where the cluster is intentionally down is a no-op, not an alert):
+#   1. Vault (ns vault) is NOT sealed.            (vault status -format=json .sealed)
+#   2. szl-receipts (ns szl-receipts) is signing: a receipts-server container is
+#      Ready AND GET /pubkey reports signed=true. (catches crashloop / Pending /
+#      "booted unsigned because Vault was sealed at boot" — the exact failure the
+#      auto-unseal nudge is supposed to fix but can't if the cluster is wedged.)
+#
+# GRACE WINDOW
+# A problem must persist >= THRESHOLD_SECS (default 300s = 5 min) before it pages,
+# so a normal ~1-min Vault auto-unseal cycle or a brief pod restart never alerts.
+# Alerts fire only on the (sustained-problem) EDGE and on RECOVERED.
+#
+# NOTE ON NAMESPACE: the canonical receipts service is ns `szl-receipts` (the old
+# `szl-receipts-demo` scratch ns was deleted 2026-06-08). This watcher targets
+# the canonical ns; override with RX_NS if that ever changes.
+#
+# Installed at /usr/local/sbin/szl-signing-health-check, driven by
+# szl-signing-health-check.timer. Versioned in repo box-scripts/.
+set -uo pipefail
+
+# ---- config (overridable via env for testing) -------------------------------
+CLUSTER="${CLUSTER:-uds-szl-demo}"
+VAULT_NS="${VAULT_NS:-vault}"
+VAULT_DEPLOY="${VAULT_DEPLOY:-vault}"
+RX_NS="${RX_NS:-szl-receipts}"
+RX_SELECTOR="${RX_SELECTOR:-app.kubernetes.io/name=szl-receipts-server}"
+RX_CONTAINER="${RX_CONTAINER:-receipts-server}"
+RX_PORT="${RX_PORT:-8080}"
+
+THRESHOLD_SECS="${THRESHOLD_SECS:-300}"     # how long a problem must persist before paging
+KREQ_TIMEOUT="${KREQ_TIMEOUT:-20s}"         # kubectl --request-timeout
+
+STATE_DIR="${STATE_DIR:-/var/lib/szl-signing-health}"
+LOG_DIR="${LOG_DIR:-/var/log/szl-signing-health}"
+LOG="${LOG:-$LOG_DIR/szl-signing-health.log}"
+STATUS="${STATUS:-$STATE_DIR/status.json}"
+SIG_FILE="${SIG_FILE:-$STATE_DIR/problem.sig}"
+SINCE_FILE="${SINCE_FILE:-$STATE_DIR/unhealthy_since}"
+NOTIFY_CMD="${NOTIFY_CMD:-}"                 # external notifier (stdin = message); fail-soft
+ALERT_PREFIX="${ALERT_PREFIX:-}"            # e.g. "[TEST-ignore] " to test without alarming
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
+
+now_epoch=$(date -u +%s)
+now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+log() { printf '%s %s\n' "$now_iso" "$*" >>"$LOG"; }
+
+# push(): fire the external notifier (stdin = message). Fail-soft — a missing or
+# broken notifier never hides the edge, which is always recorded in the log too.
+push() {
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed"
+}
+
+# --- Resolve cluster; no-op if it isn't up (cluster is on-demand on this box) -
+KC="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" || {
+  log "STATE cluster=$CLUSTER absent — signing not applicable, no-op"; exit 0; }
+export KUBECONFIG="$KC"
+# Sanity: can we actually reach the API? If not, treat as cluster-down no-op.
+if ! kubectl --request-timeout="$KREQ_TIMEOUT" version >/dev/null 2>&1 \
+   && ! kubectl --request-timeout="$KREQ_TIMEOUT" get ns >/dev/null 2>&1; then
+  log "STATE cluster=$CLUSTER unreachable (api down) — no-op"; exit 0
+fi
+
+problems=()
+
+# ---- 1. Vault seal status ---------------------------------------------------
+vault_state="absent"
+if kubectl --request-timeout="$KREQ_TIMEOUT" -n "$VAULT_NS" get deploy "$VAULT_DEPLOY" >/dev/null 2>&1; then
+  vstatus="$(kubectl --request-timeout=30s -n "$VAULT_NS" exec "deploy/$VAULT_DEPLOY" -- \
+    sh -c 'VAULT_ADDR=http://127.0.0.1:8200 vault status -format=json' 2>/dev/null)"
+  if [ -z "$vstatus" ]; then
+    vault_state="unreadable"
+    # Vault pod not answering at all is itself a signing risk; count it.
+    problems+=("Vault status unreadable in ns/$VAULT_NS (pod starting or unhealthy?)")
+  else
+    sealed="$(printf '%s' "$vstatus" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("sealed"))' 2>/dev/null)"
+    if [ "$sealed" = "True" ]; then
+      vault_state="SEALED"
+      problems+=("Vault is SEALED in ns/$VAULT_NS — auto-unseal did NOT recover it (check /root/vault-init/init.json + 'journalctl -u vault-auto-unseal')")
+    else
+      vault_state="unsealed"
+    fi
+  fi
+else
+  # No Vault deploy. On this box Vault is persistent, so absence is abnormal, but
+  # it may simply not be deployed yet on a fresh cluster — log, don't page.
+  log "NOTE vault deploy/$VAULT_DEPLOY absent in ns/$VAULT_NS — skipping seal check"
+fi
+
+# ---- 2. Receipts signing status --------------------------------------------
+rx_state="absent"
+signed="n/a"
+if kubectl --request-timeout="$KREQ_TIMEOUT" -n "$RX_NS" get deploy >/dev/null 2>&1 \
+   && [ -n "$(kubectl --request-timeout="$KREQ_TIMEOUT" -n "$RX_NS" get pods -l "$RX_SELECTOR" -o name 2>/dev/null)" ]; then
+  # Find a pod whose receipts-server container is Ready.
+  pods_json="$(kubectl --request-timeout="$KREQ_TIMEOUT" -n "$RX_NS" get pods -l "$RX_SELECTOR" -o json 2>/dev/null)"
+  ready_pod="$(printf '%s' "$pods_json" | RX_CONTAINER="$RX_CONTAINER" python3 -c '
+import sys,json,os
+c=os.environ["RX_CONTAINER"]
+try: d=json.load(sys.stdin)
+except Exception: print(""); sys.exit()
+for p in d.get("items",[]):
+    for cs in (p.get("status",{}).get("containerStatuses") or []):
+        if cs.get("name")==c and cs.get("ready"):
+            print(p["metadata"]["name"]); sys.exit()
+print("")' 2>/dev/null)"
+
+  if [ -z "$ready_pod" ]; then
+    rx_state="not-ready"
+    problems+=("szl-receipts: no Ready '$RX_CONTAINER' container in ns/$RX_NS (crashloop / Pending / scaled to 0) — signing is DOWN")
+  else
+    # Container is Ready — verify it is actually signing (signed=true on /pubkey).
+    signed="$(kubectl --request-timeout=30s -n "$RX_NS" exec "$ready_pod" -c "$RX_CONTAINER" -- \
+      python3 -c 'import json,urllib.request;print(json.load(urllib.request.urlopen("http://127.0.0.1:'"$RX_PORT"'/pubkey",timeout=8)).get("signed"))' 2>/dev/null)"
+    if [ "$signed" = "True" ]; then
+      rx_state="signing"
+    elif [ -z "$signed" ]; then
+      rx_state="pubkey-unreachable"
+      problems+=("szl-receipts: /pubkey unreachable on Ready pod $ready_pod (server up but not answering) — signing likely DOWN")
+    else
+      rx_state="unsigned"
+      problems+=("szl-receipts: /pubkey reports signed=$signed on $ready_pod — receipts are NOT being signed (booted unsigned; Vault signer never initialised)")
+    fi
+  fi
+else
+  log "NOTE no szl-receipts-server pods in ns/$RX_NS — skipping signing check"
+fi
+
+# ---- write status file (always) --------------------------------------------
+overall="OK"; [ "${#problems[@]}" -gt 0 ] && [ -n "${problems[0]:-}" ] && overall="DOWN"
+{
+  printf '{\n'
+  printf '  "checked_at": "%s",\n' "$now_iso"
+  printf '  "cluster": "%s",\n' "$CLUSTER"
+  printf '  "overall": "%s",\n' "$overall"
+  printf '  "vault": "%s",\n' "$vault_state"
+  printf '  "receipts": "%s",\n' "$rx_state"
+  printf '  "signed": "%s",\n' "$signed"
+  printf '  "threshold_secs": %s,\n' "$THRESHOLD_SECS"
+  printf '  "alerting": %s\n' "$( [ "$overall" = "DOWN" ] && echo true || echo false )"
+  printf '}\n'
+} >"$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
+
+prev_sig=""; [ -r "$SIG_FILE" ] && prev_sig=$(cat "$SIG_FILE" 2>/dev/null)
+
+# ---- healthy: clear timers, emit RECOVERED if we had paged -------------------
+if [ "$overall" = "OK" ]; then
+  rm -f "$SINCE_FILE"
+  if [ -n "$prev_sig" ]; then
+    rec="szl-receipts signing RECOVERED on $CLUSTER (Vault unsealed, receipts signed=true)"
+    log "RECOVERED $rec"
+    push "$rec"
+    rm -f "$SIG_FILE"
+  fi
+  log "STATE overall=OK vault=$vault_state receipts=$rx_state signed=$signed"
+  exit 0
+fi
+
+# ---- unhealthy: enforce the grace window before paging ----------------------
+since_epoch=""
+[ -r "$SINCE_FILE" ] && since_epoch=$(cat "$SINCE_FILE" 2>/dev/null)
+case "$since_epoch" in ''|*[!0-9]*) since_epoch="$now_epoch"; printf '%s' "$now_epoch" >"$SINCE_FILE" ;; esac
+elapsed=$(( now_epoch - since_epoch ))
+
+problem_text=$(printf '%s; ' "${problems[@]}"); problem_text="${problem_text%; }"
+cur_sig=$(printf '%s\n' "${problems[@]}" | sort | md5sum | awk '{print $1}')
+
+if [ "$elapsed" -lt "$THRESHOLD_SECS" ]; then
+  log "(pending ${elapsed}s/${THRESHOLD_SECS}s) $problem_text"
+  exit 0
+fi
+
+if [ "$cur_sig" = "$prev_sig" ]; then
+  log "(persisting ${elapsed}s) $problem_text"
+else
+  body="szl-receipts SIGNING DOWN on $CLUSTER for ${elapsed}s: $problem_text"
+  log "ALERT $body"
+  push "$body"
+  printf '%s' "$cur_sig" >"$SIG_FILE"
+fi
+exit 0

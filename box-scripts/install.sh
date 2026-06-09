@@ -7,6 +7,7 @@
 #        szl-core-rightsize   — pin UDS-core HA components to single-replica
 #        istiod-fit-strategy  — keep istiod rollout/HPA fitting on 2 vCPU
 #        receipt-chain-watch  — alarm when signed deploy receipts stop recording
+#        szl-signing-health-check — alert when Vault stays sealed or receipts stop signing
 #   3. the a11oy.net public-site alerting watchers:
 #        a11oy-uptime-check   — probe a11oy.net uptime, alert on the outage edge
 #        a11oy-uptime-notify  — shared push notifier (ntfy/Telegram/webhook)
@@ -38,6 +39,7 @@ install -m 0755 "$here/sbin/a11oy-port-guard"          /usr/local/sbin/a11oy-por
 install -m 0755 "$here/sbin/szl-core-rightsize"        /usr/local/sbin/szl-core-rightsize
 install -m 0755 "$here/sbin/istiod-fit-strategy"       /usr/local/sbin/istiod-fit-strategy
 install -m 0755 "$here/sbin/receipt-chain-watch"       /usr/local/sbin/receipt-chain-watch
+install -m 0755 "$here/sbin/szl-signing-health-check"  /usr/local/sbin/szl-signing-health-check
 install -m 0755 "$here/sbin/szl-ns-scratch"            /usr/local/sbin/szl-ns-scratch
 install -m 0755 "$here/sbin/szl-ns-scratch-watch"      /usr/local/sbin/szl-ns-scratch-watch
 install -m 0755 "$here/sbin/vault-auto-unseal"          /usr/local/sbin/vault-auto-unseal
@@ -59,6 +61,8 @@ install -m 0644 "$here/systemd/istiod-fit-strategy.service"  /etc/systemd/system
 install -m 0644 "$here/systemd/istiod-fit-strategy.timer"    /etc/systemd/system/istiod-fit-strategy.timer
 install -m 0644 "$here/systemd/receipt-chain-watch.service" /etc/systemd/system/receipt-chain-watch.service
 install -m 0644 "$here/systemd/receipt-chain-watch.timer"   /etc/systemd/system/receipt-chain-watch.timer
+install -m 0644 "$here/systemd/szl-signing-health-check.service" /etc/systemd/system/szl-signing-health-check.service
+install -m 0644 "$here/systemd/szl-signing-health-check.timer"   /etc/systemd/system/szl-signing-health-check.timer
 install -m 0644 "$here/systemd/szl-ns-scratch-watch.service" /etc/systemd/system/szl-ns-scratch-watch.service
 install -m 0644 "$here/systemd/szl-ns-scratch-watch.timer"   /etc/systemd/system/szl-ns-scratch-watch.timer
 install -m 0644 "$here/systemd/vault-auto-unseal.service"    /etc/systemd/system/vault-auto-unseal.service
@@ -165,6 +169,7 @@ systemctl enable --now a11oy-port-guard.timer
 systemctl enable --now szl-core-rightsize.timer
 systemctl enable --now istiod-fit-strategy.timer
 systemctl enable --now receipt-chain-watch.timer
+systemctl enable --now szl-signing-health-check.timer
 systemctl enable --now szl-ns-scratch-watch.timer
 systemctl enable --now vault-auto-unseal.timer
 systemctl enable --now szl-receipts-orphan-watch.timer
@@ -179,6 +184,7 @@ systemctl enable --now szl-alert-relay-watch.timer
 [ -x /usr/local/sbin/szl-core-rightsize ]  && /usr/local/sbin/szl-core-rightsize  || true
 [ -x /usr/local/sbin/istiod-fit-strategy ] && /usr/local/sbin/istiod-fit-strategy || true
 [ -x /usr/local/sbin/receipt-chain-watch ]  && /usr/local/sbin/receipt-chain-watch   || true
+[ -x /usr/local/sbin/szl-signing-health-check ] && /usr/local/sbin/szl-signing-health-check || true
 [ -x /usr/local/sbin/szl-ns-scratch-watch ] && /usr/local/sbin/szl-ns-scratch-watch  || true
 [ -x /usr/local/sbin/vault-auto-unseal ]   && /usr/local/sbin/vault-auto-unseal    || true
 [ -x /usr/local/sbin/szl-receipts-orphan-watch ] && /usr/local/sbin/szl-receipts-orphan-watch || true

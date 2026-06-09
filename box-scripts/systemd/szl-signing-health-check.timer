@@ -1,0 +1,15 @@
+[Unit]
+Description=Periodically check szl-receipts signing health (Vault sealed / receipts signed) and alert on a sustained outage
+
+[Timer]
+# First check shortly after boot, then every 2 minutes. The check itself only
+# pages once a problem has persisted past THRESHOLD_SECS (default 5 min), so a
+# normal ~1-min Vault auto-unseal cycle or a brief pod restart never alerts.
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Persistent=true
+Unit=szl-signing-health-check.service
+
+[Install]
+WantedBy=timers.target
