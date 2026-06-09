@@ -26,7 +26,7 @@ metadata:
     szl.io/mesh-version: v0.4.0
   annotations:
     szl.io/role: "immune system (sentra.szl-sentra.svc.cluster.local:8080)"
-    szl.io/blocked-by: "FA-001 — ghcr.io/szl-holdings/sentra image not yet pushed"
+    szl.io/image-status: "PUBLISHED + cosign-signed — ghcr.io/szl-holdings/sentra:uds-v0.2.0@sha256:60a0efc14366ba392bfe3f3cd4196863fe148bb87a17428be6a57f0a05ac3639 (.sig + .att SLSA attestation present in GHCR; FA-001 resolved)"
 spec:
   sso:
     - name: SZL sentra Immune
