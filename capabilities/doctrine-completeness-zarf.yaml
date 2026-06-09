@@ -21,7 +21,7 @@ metadata:
   description: |
     SZL DoctrineCompleteness Zarf gate (E-04).
     Verifies doctrine/manifest.json counts match v11 LOCKED: 749/14/163 at c7c0ba17.
-    Blocks deploy if drift detected — prevents Doctrine v12 bleed.
+    Blocks deploy if drift detected — any post-v11 doctrine version is REJECTED (out of scope).
     Proof label: POLICY (infrastructure invariant, not a mathematical theorem).
 
 variables:
@@ -66,7 +66,7 @@ components:
 
               if [ "$VERSION" != "$REQUIRED_VERSION" ]; then
                 echo "ERROR: Doctrine version mismatch. Got '$VERSION', expected '$REQUIRED_VERSION'."
-                echo "FORBIDDEN: Doctrine v12 must never appear in deployed packages."
+                echo "FORBIDDEN: only v11 is in scope — any post-v11 doctrine version is REJECTED in deployed packages."
                 exit 1
               fi
               if [ "$THEOREMS" -ne "$REQUIRED_THEOREMS" ] || \
@@ -82,3 +82,4 @@ components:
               echo "SZL E-04 DoctrineCompleteness PASSED: $VERSION T=$THEOREMS A=$AXIOMS D=$DEFS kernel=$KERNEL lambda=$LAMBDA"
             description: "Doctrine v11 completeness gate (749 theorems / 14 axioms / 163 definitions). POLICY label."
             mute: false
+
