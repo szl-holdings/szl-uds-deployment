@@ -31,7 +31,7 @@ metadata:
   url: "https://szlholdings.com"
   authors: "SZL Holdings <eng@szlholdings.com>"
   documentation: "https://github.com/szl-holdings/szl-uds-deployment"
-  image: "ghcr.io/szl-holdings/killinchu:###ZARF_PKG_TMPL_VERSION###"
+  image: "ghcr.io/szl-holdings/killinchu:uds-v0.2.0@sha256:12563c1a3c29bc894e23bc67676b1b8b6243ef459574884a65b442845023fbfc"
   uncompressed: false
 
 variables:
@@ -70,7 +70,7 @@ components:
       Deploy the killinchu workload from the live signed image
       ghcr.io/szl-holdings/killinchu:###ZARF_PKG_TMPL_VERSION###.
     images:
-      - ghcr.io/szl-holdings/killinchu:###ZARF_PKG_TMPL_VERSION###
+      - ghcr.io/szl-holdings/killinchu:uds-v0.2.0@sha256:12563c1a3c29bc894e23bc67676b1b8b6243ef459574884a65b442845023fbfc
     manifests:
       - name: szl-killinchu-workload
         namespace: szl-killinchu

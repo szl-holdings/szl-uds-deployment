@@ -31,7 +31,7 @@ metadata:
   url: "https://szlholdings.com"
   authors: "SZL Holdings <eng@szlholdings.com>"
   documentation: "https://github.com/szl-holdings/szl-uds-deployment"
-  image: "ghcr.io/szl-holdings/a11oy:###ZARF_PKG_TMPL_VERSION###"
+  image: "ghcr.io/szl-holdings/a11oy:uds-v0.2.0@sha256:88bc323cd81c799b486c88fec5a04f110e4cd495e4acbc373e0d8d3b31d6881a"
   uncompressed: false
 
 variables:
@@ -70,7 +70,7 @@ components:
       Deploy the a11oy workload from the live signed image
       ghcr.io/szl-holdings/a11oy:###ZARF_PKG_TMPL_VERSION###.
     images:
-      - ghcr.io/szl-holdings/a11oy:###ZARF_PKG_TMPL_VERSION###
+      - ghcr.io/szl-holdings/a11oy:uds-v0.2.0@sha256:88bc323cd81c799b486c88fec5a04f110e4cd495e4acbc373e0d8d3b31d6881a
     manifests:
       - name: szl-a11oy-workload
         namespace: szl-a11oy

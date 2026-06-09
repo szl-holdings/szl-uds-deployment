@@ -8,7 +8,7 @@
 # DIGEST HONESTY (re-probed against GHCR 2026-06; anonymous token + manifest HEAD):
 #   VERIFIED-LIVE (HTTP 200):
 #     ghcr.io/szl-holdings/killinchu:uds-v0.2.0
-#       @sha256:e0fb6c3aeaddadfbabc3ca7c5f29ef7b3ba31370b5ffb816e12495d5f29ca548
+#       @sha256:12563c1a3c29bc894e23bc67676b1b8b6243ef459574884a65b442845023fbfc
 #   NOT-YET-PUBLISHED (HTTP 404 -> 'verify before deploy'):
 #     ghcr.io/szl-holdings/killinchu:0.5.0-wolfi  (404)  <- unicorn flavor target
 #     ghcr.io/szl-holdings/killinchu-relay:0.5.0  (404)
@@ -58,7 +58,7 @@ components:
           - manifests/deployment.yaml
     images:
       # VERIFIED-LIVE on GHCR (HTTP 200). Digest pinned for supply-chain integrity.
-      - ghcr.io/szl-holdings/killinchu:uds-v0.2.0@sha256:e0fb6c3aeaddadfbabc3ca7c5f29ef7b3ba31370b5ffb816e12495d5f29ca548
+      - ghcr.io/szl-holdings/killinchu:uds-v0.2.0@sha256:12563c1a3c29bc894e23bc67676b1b8b6243ef459574884a65b442845023fbfc
     actions:
       onDeploy:
         after:
