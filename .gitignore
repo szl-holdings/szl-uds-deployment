@@ -7,3 +7,10 @@ __pycache__/
 sbom/
 zarf-sbom/
 .uds-build-tmp/
+
+# CI-ephemeral vendored/stub subcharts. .github/scripts/stub_missing_deps.py
+# copies the real local subchart (e.g. charts/szl-receipts) and drops
+# template-less placeholders for staged subcharts into <umbrella>/charts/ before
+# rendering. These must NEVER be committed — Helm would then treat the snapshot
+# as the source of truth and the umbrella would drift / go stale.
+charts/*/charts/
