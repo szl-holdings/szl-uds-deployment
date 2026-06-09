@@ -1,0 +1,67 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# zarf-action-var-guard.yml — Catch a silently-broken setting inside a deploy action.
+#
+# Why this exists
+# ---------------
+# Zarf substitutes the ###ZARF_VAR_NAME### template form inside component files,
+# manifests and chart values — but NOT inside an action's `cmd:` block. There a
+# variable only arrives as the $ZARF_VAR_NAME *environment variable*. So a `cmd`
+# that writes `###ZARF_VAR_NAME###` never substitutes: the literal text is passed
+# through with no error, and any comparison/interpolation against it is always
+# wrong. This is exactly how the "born rightsized" small-server deploy step
+# silently did nothing for as long as it existed (Task #274) — it compared an
+# un-substituted `###ZARF_VAR_...###` literal, always took the skip branch, and
+# never rightsized; it only looked healthy because a background timer masked it.
+#
+# This is a whole CLASS of bug. A tiny lint catches it in seconds and protects
+# every future deploy action.
+#
+# What it asserts (no cluster, no zarf, no images)
+# ------------------------------------------------
+#   For EVERY zarf.yaml in the repo, no `cmd:` reached through components[].actions
+#   contains the ###ZARF_VAR_*### template form. The check is YAML-aware and scoped
+#   to action cmd blocks only, so a legitimate ###ZARF_VAR_*### in files / manifests
+#   / chart values is left alone (where it really does substitute).
+#
+# Complements (does not duplicate):
+#   - clean-deploy-guard.yml   (grep of the four clean-deploy invariant files)
+#   - package-build-guard.yml  (zarf package render/build dry-run)
+#   - image-pin-guard.yml      (image pin + bundle-task wiring)
+#   - chart-guard.yml          (helm lint/template + keygen script contract)
+
+name: Zarf Action Var Guard
+
+on:
+  pull_request:
+    paths:
+      - "**/zarf.yaml"
+      - "scripts/lint-zarf-action-vars.py"
+      - ".github/workflows/zarf-action-var-guard.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/zarf.yaml"
+      - "scripts/lint-zarf-action-vars.py"
+      - ".github/workflows/zarf-action-var-guard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-action-vars:
+    name: No ###ZARF_VAR_*### inside action cmd blocks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      # No args -> the script globs every **/zarf.yaml in the repo, so a new
+      # package's zarf.yaml is covered automatically without editing this workflow.
+      - name: Lint zarf action cmd blocks
+        run: python3 scripts/lint-zarf-action-vars.py
