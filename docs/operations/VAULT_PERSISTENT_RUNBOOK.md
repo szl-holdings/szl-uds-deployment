@@ -327,8 +327,83 @@ Ampere A1** VM with the Transit secrets engine and point this box's seal at it
 Oracle's, at the cost of maintaining a second Vault. Migration mechanics are
 identical (`-migrate`); only the seal stanza differs.
 
+## 7. Preserving the signing key across `uds run recreate-full`
 
-## 7. Off-box disaster recovery — the box itself is gone (Task #670)
+`recreate-full` **deletes the k3d cluster**, which drops the local-path
+PersistentVolume backing Vault. That PV holds Vault's file storage — the
+*encrypted barrier* that contains the Transit signing key
+(`transit/keys/szl-receipts`). Without protection, the re-applied Vault comes up
+**fresh/uninitialized**, a brand-new key is generated, its public key changes,
+and **every previously issued receipt fails verification**.
+
+The Transit key is created `exportable=false`, so it cannot be dumped and
+re-imported as plaintext. Instead we snapshot the *whole encrypted file-store*
+plus the matching **unseal share(s)** and restore both — which reproduces the
+**identical** key (same private material, same pubkey).
+
+### What runs automatically
+
+`recreate-full` is gated by two variables (both have safe defaults):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PRESERVE_SIGNING_KEY` | `true` | Snapshot before teardown + restore after re-apply. |
+| `VAULT_KEYSTORE_BACKUP_DIR` | `/root/vault-keystore-backup` | Host-local snapshot store (keep it OFF the k3d PV). |
+
+With the defaults, `uds run recreate-full` will:
+
+1. **Before teardown** — `scripts/vault-keystore-backup.sh` snapshots
+   `/vault/data` (the encrypted barrier, ~20K) into a timestamped dir under
+   `VAULT_KEYSTORE_BACKUP_DIR` and copies the matching unseal share(s) from
+   `/root/vault-init/init.json`, recording the current Transit pubkey + a
+   sha256 of the snapshot in `meta.json`. A `latest` symlink points at it.
+2. **After re-applying the persistent Vault** —
+   `scripts/vault-keystore-restore.sh --namespace vault --backup <dir>/latest`
+   extracts the snapshot over `/vault/data`, restarts Vault, unseals it with the
+   saved share(s), and **verifies the restored pubkey matches** the one in
+   `meta.json`. On success it drops the sentinel `/tmp/szl-vault-restore.ok`.
+3. The final status step reads that sentinel: if present it reports
+   **SIGNING KEY PRESERVED**; if absent (e.g. `PRESERVE_SIGNING_KEY=false` or no
+   backup found) it prints the manual fresh-key re-init instructions instead.
+
+To intentionally rotate the key on recreate, run:
+
+```bash
+uds run recreate-full --set PRESERVE_SIGNING_KEY=false
+```
+
+### Manual backup / restore (outside recreate-full)
+
+```bash
+# Snapshot the live signing keystore at any time:
+scripts/vault-keystore-backup.sh                       # -> /root/vault-keystore-backup/<ts>/ (+ latest)
+
+# Restore a snapshot into a (fresh) Vault and verify the pubkey:
+scripts/vault-keystore-restore.sh \
+    --namespace vault \
+    --backup /root/vault-keystore-backup/latest \
+    --expect-pubkey hm3uWDiF1bzWP7gxYGK5mPxnEhOdVSss2HSDEJke+Rs=
+```
+
+The restore **refuses to clobber an already-initialized Vault** unless given
+`--force`, and **fails loudly** if the restored pubkey does not match the
+expected one — so a botched restore can never silently rotate the key.
+
+> **Security note.** A keystore backup contains the encrypted barrier **and** the
+> unseal share(s) needed to open it — i.e. everything required to use the signing
+> key. Treat `VAULT_KEYSTORE_BACKUP_DIR` as secret material: keep it host-local
+> (root-only, mode 700), never commit it, and never copy it onto the k3d PV.
+
+### Verified
+
+The full round-trip was validated live on box `167.233.50.75` against cluster
+`uds-szl-demo`: a backup of the real Vault was restored into a throwaway
+`vault-restore-test` namespace and the restored Transit key reproduced the exact
+pre-recreate pubkey `hm3uWDiF1bzWP7gxYGK5mPxnEhOdVSss2HSDEJke+Rs=`
+(`PASS: restored signing key matches the pre-recreate pubkey`). The real `vault`
+namespace and the production cluster were never recreated.
+
+## 8. Off-box disaster recovery — the box itself is gone (Task #670)
 
 §4/§5 (`scripts/vault-keystore-backup.sh` + `vault-keystore-restore.sh`) make the
 signing key survive a **cluster** recreate, but the snapshot lives only host-local

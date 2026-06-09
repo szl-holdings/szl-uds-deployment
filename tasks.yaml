@@ -83,6 +83,19 @@ variables:
   - name: IDLE_WINDOW_MINUTES
     default: "10"
 
+  # Preserve the Ed25519 Transit signing key across recreate-full so old
+  # receipts still verify. When true, the Vault file-store (encrypted barrier)
+  # + matching unseal shares are snapshotted BEFORE teardown and restored AFTER
+  # the persistent Vault is re-applied, reproducing the IDENTICAL signing key.
+  - name: PRESERVE_SIGNING_KEY
+    default: "true"
+
+  # Where vault-keystore-backup.sh writes snapshots (and where restore reads
+  # `latest`). Snapshots hold the encrypted barrier + unseal shares — keep this
+  # host-local, OFF the k3d PV (the default /root path is host-local on the box).
+  - name: VAULT_KEYSTORE_BACKUP_DIR
+    default: "/root/vault-keystore-backup"
+
 includes:
   - test: ./tasks/test.yaml
   - demo: ./tasks/demo.yaml
@@ -539,6 +552,15 @@ tasks:
           echo "Namespaces present BEFORE recreate:"
           kubectl get ns -o name 2>/dev/null | sed 's#namespace/#  - #' || echo "  (no reachable cluster)"
 
+      - description: "Back up the Vault signing keystore BEFORE teardown (preserve receipt signing history)"
+        cmd: |
+          if [ "${PRESERVE_SIGNING_KEY}" = "true" ]; then
+            echo "PRESERVE_SIGNING_KEY=true — snapshotting the Vault file-store + unseal shares before teardown."
+            bash scripts/vault-keystore-backup.sh --backup-dir "${VAULT_KEYSTORE_BACKUP_DIR}"
+          else
+            echo "PRESERVE_SIGNING_KEY=false — SKIPPING backup; the signing key WILL rotate on recreate."
+          fi
+
       - description: "Tear down the existing cluster"
         cmd: |
           if k3d cluster list 2>/dev/null | grep -q "${CLUSTER_NAME}"; then
@@ -574,6 +596,18 @@ tasks:
           kubectl apply -f k8s/vault/vault-persistent.yaml
           kubectl -n vault rollout status deploy/vault --timeout=120s || \
             echo "WARN: vault not Ready yet — it is intentionally Ready-while-sealed; continuing."
+
+      - description: "Restore the Vault signing keystore AFTER re-applying Vault (reproduce the pre-recreate signing key)"
+        cmd: |
+          rm -f /tmp/szl-vault-restore.ok
+          if [ "${PRESERVE_SIGNING_KEY}" != "true" ]; then
+            echo "PRESERVE_SIGNING_KEY=false — not restoring; a fresh signing key will be initialized."
+          elif [ -e "${VAULT_KEYSTORE_BACKUP_DIR}/latest" ]; then
+            echo "PRESERVE_SIGNING_KEY=true — restoring the signing keystore from ${VAULT_KEYSTORE_BACKUP_DIR}/latest."
+            bash scripts/vault-keystore-restore.sh --namespace vault --backup "${VAULT_KEYSTORE_BACKUP_DIR}/latest"
+          else
+            echo "WARN: PRESERVE_SIGNING_KEY=true but no backup at ${VAULT_KEYSTORE_BACKUP_DIR}/latest — falling back to fresh re-init guidance."
+          fi
 
       - description: "Build + load the szl-receipts-server image into the cluster (mirrors start; bundle also bakes it)"
         cmd: |
@@ -660,20 +694,29 @@ tasks:
           [ -x /usr/local/sbin/pepr-key-mount ] && /usr/local/sbin/pepr-key-mount || true
           echo "pepr-szl webhook deployed."
 
-      - description: "Coexistence safety net + Vault re-init guidance"
+      - description: "Coexistence safety net + Vault signing-key status"
         cmd: |
           # Belt-and-suspenders in case anything re-grabbed host 80/443.
           [ -x /usr/local/sbin/a11oy-serverlb-deconflict ] && /usr/local/sbin/a11oy-serverlb-deconflict || true
           echo ""
-          echo "NOTE: the teardown dropped the Vault PV, so Vault is now FRESH/UNINITIALIZED."
-          echo "      A NEW Transit signing key must be created — OLD receipt signatures will"
-          echo "      NOT verify against the new pubkey. Initialize it once (off-cluster):"
-          echo "        kubectl -n vault exec deploy/vault -- vault operator init -key-shares=1 -key-threshold=1 -format=json   # store OFF-cluster"
-          echo "        kubectl -n vault exec deploy/vault -- vault operator unseal <unseal-key>"
-          echo "        VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=<root> scripts/setup-vault-transit.sh --k8s-auth --k8s-namespace szl-receipts --k8s-sa szl-receipts"
-          echo "      On box 167.233.50.75, refresh /root/vault-init/init.json with the new"
-          echo "      shares so the vault-auto-unseal timer keeps Vault unsealed across restarts,"
-          echo "      then delete the receipts pod so it re-inits its Vault signer."
+          if [ -f /tmp/szl-vault-restore.ok ]; then
+            echo "SIGNING KEY PRESERVED: the pre-recreate Transit key was restored from backup."
+            echo "  Restored pubkey: $(cat /tmp/szl-vault-restore.ok 2>/dev/null || echo '(see restore log)')"
+            echo "  Old receipt signatures STILL verify against the same /pubkey — no re-init needed."
+            echo "  (The restore already unsealed Vault; the auto-unseal timer keeps it unsealed.)"
+          else
+            echo "NOTE: the teardown dropped the Vault PV and NO backup was restored, so Vault is"
+            echo "      now FRESH/UNINITIALIZED. A NEW Transit signing key must be created — OLD"
+            echo "      receipt signatures will NOT verify against the new pubkey. To preserve the"
+            echo "      key across recreate, re-run with PRESERVE_SIGNING_KEY=true (the default)."
+            echo "      To initialize a fresh key now (off-cluster):"
+            echo "        kubectl -n vault exec deploy/vault -- vault operator init -key-shares=1 -key-threshold=1 -format=json   # store OFF-cluster"
+            echo "        kubectl -n vault exec deploy/vault -- vault operator unseal <unseal-key>"
+            echo "        VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=<root> scripts/setup-vault-transit.sh --k8s-auth --k8s-namespace szl-receipts --k8s-sa szl-receipts"
+            echo "      On box 167.233.50.75, refresh /root/vault-init/init.json with the new"
+            echo "      shares so the vault-auto-unseal timer keeps Vault unsealed across restarts,"
+            echo "      then delete the receipts pod so it re-inits its Vault signer."
+          fi
 
       - description: "Verify: full workload set present + Ready, serverlb clean, a11oy.net reachable"
         cmd: |
