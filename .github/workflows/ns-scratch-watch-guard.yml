@@ -1,0 +1,93 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# ns-scratch-watch-guard.yml — Guard the `szl-ns-scratch-watch` box alarm (the
+# untracked scratch-namespace alarm on the uds-szl-demo cluster) from silently
+# regressing.
+#
+# szl-ns-scratch-watch (box-scripts/sbin/szl-ns-scratch-watch) wraps
+# `szl-ns-scratch list-unlabeled` every ~10 min and pages the team the moment an
+# UNKNOWN (unmanaged + unlabeled) scratch namespace appears — so it gets labeled
+# or removed while it is still obvious who made it, before a later cleanup
+# mistakes it for live work. Its value rests on a few fragile invariants that
+# produce NO visible symptom when broken until a real drift goes unalerted:
+#   * it still ASKS the audit tool (`szl-ns-scratch list-unlabeled`);
+#   * it is EDGE-triggered (reads + writes a last_status state file) so it pages
+#     exactly once on OK->problem and once on RECOVERED, never every cycle;
+#   * it NO-OPs (exit 0, no page) when the cluster is absent/unreachable;
+#   * it stays WIRED into install.sh (copied + timer enabled) and documented in
+#     README.md, or a box rebuild silently ships without the alarm.
+# A sibling refactor of the script, install.sh, or README could quietly drop any
+# of these, re-opening the exact "an untracked scratch goes unalerted" hole this
+# alarm closed.
+#
+# The check logic lives in scripts/ns-scratch-watch-guard-checks.sh (pure
+# text/lint, no cluster). It was extracted from this workflow so it can be UNIT
+# TESTED: scripts/ns-scratch-watch-guard-checks.test.sh feeds each check a
+# deliberately-BROKEN fixture and asserts the check FAILS, plus asserts the
+# pristine repo PASSES. That self-test runs as the `self-test` job below, so a
+# future edit that neuters a check (passing vacuously — green while guarding
+# nothing) is caught here.
+#
+# The asserted invariants:
+#   chk1  szl-ns-scratch-watch exists and parses clean (bash -n)
+#   chk2  it shells out to `$SCRATCH_BIN list-unlabeled` (the audit tool)
+#   chk3  edge-triggered: reads+writes last_status, both edge guards present, and
+#         makes EXACTLY TWO notify calls (one OK->ALERT, one RECOVERED)
+#   chk4  cluster-absent AND cluster-unreachable paths both no-op (exit 0)
+#   chk5  wired into install.sh (script + units copied, timer enabled)
+#   chk6  documented in README.md (scratch-namespace alarm section)
+
+name: NS Scratch Watch Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves each check
+  # still FAILS on bad input (i.e. is not silently passing). The guard job
+  # depends on it so a broken check blocks the build before it can wave a
+  # regression through.
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/ns-scratch-watch-guard-checks.test.sh
+
+  guard:
+    name: Assert the scratch-namespace alarm is intact
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check 1 — szl-ns-scratch-watch exists and parses clean
+        run: bash scripts/ns-scratch-watch-guard-checks.sh chk1 .
+
+      - name: Check 2 — shells out to szl-ns-scratch list-unlabeled
+        run: bash scripts/ns-scratch-watch-guard-checks.sh chk2 .
+
+      - name: Check 3 — edge-triggered (state file + exactly two pushes)
+        run: bash scripts/ns-scratch-watch-guard-checks.sh chk3 .
+
+      - name: Check 4 — cluster-absent / unreachable no-op
+        run: bash scripts/ns-scratch-watch-guard-checks.sh chk4 .
+
+      - name: Check 5 — wired into install.sh (script + timer enabled)
+        run: bash scripts/ns-scratch-watch-guard-checks.sh chk5 .
+
+      - name: Check 6 — documented in README.md
+        run: bash scripts/ns-scratch-watch-guard-checks.sh chk6 .
+
+      - name: Scratch-namespace alarm is intact
+        run: echo "The szl-ns-scratch-watch untracked-scratch-namespace alarm is intact."
