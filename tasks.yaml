@@ -240,6 +240,13 @@ tasks:
             --output packages/szl-receipts \
             --confirm \
             --no-progress
+      - description: "Pre-build the szl-a11oy Zarf package into packages/a11oy/ (baked a11oy image)"
+        cmd: |
+          zarf package create packages/a11oy \
+            --flavor ${FLAVOR} \
+            --output packages/a11oy \
+            --confirm \
+            --no-progress
       - description: "Create the UDS bundle (--skip-signature-validation: init/core are keyless-signed by different identities)"
         cmd: |
           uds create . \
