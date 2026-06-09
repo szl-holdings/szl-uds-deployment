@@ -1,0 +1,75 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# cosign-identity-pin-guard.yml — Keep the szl-receipts cosign verify commands
+# pinned to an EXACT signer identity.
+#
+# Why this exists
+# ---------------
+# The published szl-receipts PACKAGE (signed keyless by zarf-package-sign.yml) and
+# the receipts-server IMAGE (signed keyless by receipts-server-image.yml) were once
+# documented with `--certificate-identity-regexp`, which accepts a signature made by
+# that workflow on ANY ref OR ANY fork — a materially weaker check than an exact
+# `--certificate-identity`. Both were pinned to exact identities; nothing else
+# stopped a future doc edit from re-introducing the loose form. This guard does.
+#
+# What it asserts (no cluster, no cosign, no network)
+# ---------------------------------------------------
+#   For every cosign verify command in tracked .md / .sh files that targets a
+#   szl-receipts artifact: it must NOT use --certificate-identity-regexp and MUST
+#   carry an exact --certificate-identity. The exact identity is per-artifact (the
+#   image is signed per-tag, the package per-branch), so the guard only requires
+#   that *an* exact identity is present — never a specific ref string.
+#
+# Intentional exemptions: loose regexp verifies for OTHER artifacts (killinchu,
+# fleet-overlay, the uds bundles, a generic repo image) are left alone, and the
+# legacy key-pair path (`cosign verify --key ...`) is identity-less by design.
+#
+# The guard is self-tested (tests/test-lint-cosign-identity-pin.sh) so a future
+# refactor cannot quietly turn the linter into a no-op or start flagging legit uses.
+#
+# Complements (does not duplicate): image-pin-guard.yml, zarf-action-var-guard.yml,
+# teardown-guard.yml, clean-deploy-guard.yml.
+
+name: Cosign Identity Pin Guard
+
+on:
+  pull_request:
+    paths:
+      - "**/*.md"
+      - "**/*.sh"
+      - "scripts/lint-cosign-identity-pin.py"
+      - "tests/test-lint-cosign-identity-pin.sh"
+      - "tests/fixtures/cosign-identity-pin/**"
+      - ".github/workflows/cosign-identity-pin-guard.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.md"
+      - "**/*.sh"
+      - "scripts/lint-cosign-identity-pin.py"
+      - "tests/test-lint-cosign-identity-pin.sh"
+      - "tests/fixtures/cosign-identity-pin/**"
+      - ".github/workflows/cosign-identity-pin-guard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cosign-identity-pin:
+    name: Receipts cosign verify uses an exact identity
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Lock in the linter's own behavior FIRST: if the guard has been refactored
+      # into a false-negative/false-positive, fail fast before trusting it below.
+      - name: Self-test the guard against fixtures
+        run: bash tests/test-lint-cosign-identity-pin.sh
+
+      # No args -> the script globs tracked .md / .sh (excluding tests/fixtures),
+      # so a new doc is covered automatically without editing this workflow.
+      - name: Lint receipts cosign verify identities
+        run: python3 scripts/lint-cosign-identity-pin.py

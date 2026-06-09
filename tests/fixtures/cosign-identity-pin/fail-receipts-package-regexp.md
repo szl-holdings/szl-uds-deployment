@@ -1,0 +1,1 @@
+Verify the package: `cosign verify ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream --certificate-identity-regexp 'zarf-package-sign.yml' --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
