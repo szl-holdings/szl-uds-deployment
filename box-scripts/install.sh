@@ -7,7 +7,8 @@
 #        szl-core-rightsize   — pin UDS-core HA components to single-replica
 #        istiod-fit-strategy  — keep istiod rollout/HPA fitting on 2 vCPU
 #        receipt-chain-watch  — alarm when signed deploy receipts stop recording
-#        szl-signing-health-check — alert when Vault stays sealed or receipts stop signing
+#                               (primary uds-szl-demo + templated
+#                               receipt-chain-watch@<cluster> for extra clusters)
 #   3. the a11oy.net public-site alerting watchers:
 #        a11oy-uptime-check   — probe a11oy.net uptime, alert on the outage edge
 #        a11oy-uptime-notify  — shared push notifier (ntfy/Telegram/webhook)
@@ -17,13 +18,6 @@
 #        operator helper, see docs/SCRATCH_NAMESPACE_CONVENTION.md), plus
 #        szl-ns-scratch-watch — periodic guard that alerts when an untracked
 #        (unlabeled + unmanaged) scratch namespace appears on uds-szl-demo
-#   5. vault-auto-unseal — hands-off re-unseal of the persistent szl-receipts
-#        Vault after a restart/reboot, with a key/PVC-mismatch alarm that
-#        pages a11oy-uptime-notify when auto-unseal cannot recover signing
-#        (see box-scripts/vault-auto-unseal.README.md)
-#   5. szl-receipts-orphan-watch — periodic guard that flags an ORPHANED
-#        (untracked: no Helm/zarf/UDS-Package/VirtualService owner) duplicate
-#        receipts-server namespace on uds-szl-demo (never deletes, only alerts)
 #
 # Run as root from this directory:  sudo ./install.sh
 set -euo pipefail
@@ -39,17 +33,13 @@ install -m 0755 "$here/sbin/a11oy-port-guard"          /usr/local/sbin/a11oy-por
 install -m 0755 "$here/sbin/szl-core-rightsize"        /usr/local/sbin/szl-core-rightsize
 install -m 0755 "$here/sbin/istiod-fit-strategy"       /usr/local/sbin/istiod-fit-strategy
 install -m 0755 "$here/sbin/receipt-chain-watch"       /usr/local/sbin/receipt-chain-watch
-install -m 0755 "$here/sbin/szl-signing-health-check"  /usr/local/sbin/szl-signing-health-check
 install -m 0755 "$here/sbin/szl-ns-scratch"            /usr/local/sbin/szl-ns-scratch
 install -m 0755 "$here/sbin/szl-ns-scratch-watch"      /usr/local/sbin/szl-ns-scratch-watch
-install -m 0755 "$here/sbin/vault-auto-unseal"          /usr/local/sbin/vault-auto-unseal
-install -m 0755 "$here/sbin/szl-receipts-orphan-watch"    /usr/local/sbin/szl-receipts-orphan-watch
 install -m 0755 "$here/sbin/a11oy-uptime-check"        /usr/local/sbin/a11oy-uptime-check
 install -m 0755 "$here/sbin/a11oy-uptime-notify"       /usr/local/sbin/a11oy-uptime-notify
 install -m 0755 "$here/sbin/dns-drift-check"           /usr/local/sbin/dns-drift-check
 install -m 0755 "$here/sbin/box-scripts-drift-check"     /usr/local/sbin/box-scripts-drift-check
 install -m 0755 "$here/sbin/szl-alert-relay"           /usr/local/sbin/szl-alert-relay
-install -m 0755 "$here/sbin/szl-alert-relay-watch"     /usr/local/sbin/szl-alert-relay-watch
 
 echo "[install] copying systemd units to /etc/systemd/system ..."
 install -m 0644 "$here/systemd/a11oy-coexist.service"        /etc/systemd/system/a11oy-coexist.service
@@ -61,14 +51,10 @@ install -m 0644 "$here/systemd/istiod-fit-strategy.service"  /etc/systemd/system
 install -m 0644 "$here/systemd/istiod-fit-strategy.timer"    /etc/systemd/system/istiod-fit-strategy.timer
 install -m 0644 "$here/systemd/receipt-chain-watch.service" /etc/systemd/system/receipt-chain-watch.service
 install -m 0644 "$here/systemd/receipt-chain-watch.timer"   /etc/systemd/system/receipt-chain-watch.timer
-install -m 0644 "$here/systemd/szl-signing-health-check.service" /etc/systemd/system/szl-signing-health-check.service
-install -m 0644 "$here/systemd/szl-signing-health-check.timer"   /etc/systemd/system/szl-signing-health-check.timer
+install -m 0644 "$here/systemd/receipt-chain-watch@.service" /etc/systemd/system/receipt-chain-watch@.service
+install -m 0644 "$here/systemd/receipt-chain-watch@.timer"   /etc/systemd/system/receipt-chain-watch@.timer
 install -m 0644 "$here/systemd/szl-ns-scratch-watch.service" /etc/systemd/system/szl-ns-scratch-watch.service
 install -m 0644 "$here/systemd/szl-ns-scratch-watch.timer"   /etc/systemd/system/szl-ns-scratch-watch.timer
-install -m 0644 "$here/systemd/vault-auto-unseal.service"    /etc/systemd/system/vault-auto-unseal.service
-install -m 0644 "$here/systemd/vault-auto-unseal.timer"      /etc/systemd/system/vault-auto-unseal.timer
-install -m 0644 "$here/systemd/szl-receipts-orphan-watch.service" /etc/systemd/system/szl-receipts-orphan-watch.service
-install -m 0644 "$here/systemd/szl-receipts-orphan-watch.timer"   /etc/systemd/system/szl-receipts-orphan-watch.timer
 install -m 0644 "$here/systemd/a11oy-uptime-check.service"  /etc/systemd/system/a11oy-uptime-check.service
 install -m 0644 "$here/systemd/a11oy-uptime-check.timer"    /etc/systemd/system/a11oy-uptime-check.timer
 install -m 0644 "$here/systemd/dns-drift-check.service"     /etc/systemd/system/dns-drift-check.service
@@ -76,8 +62,6 @@ install -m 0644 "$here/systemd/dns-drift-check.timer"       /etc/systemd/system/
 install -m 0644 "$here/systemd/box-scripts-drift-check.service" /etc/systemd/system/box-scripts-drift-check.service
 install -m 0644 "$here/systemd/box-scripts-drift-check.timer"   /etc/systemd/system/box-scripts-drift-check.timer
 install -m 0644 "$here/systemd/szl-alert-relay.service"      /etc/systemd/system/szl-alert-relay.service
-install -m 0644 "$here/systemd/szl-alert-relay-watch.service" /etc/systemd/system/szl-alert-relay-watch.service
-install -m 0644 "$here/systemd/szl-alert-relay-watch.timer"   /etc/systemd/system/szl-alert-relay-watch.timer
 
 # The uptime/DNS watchers read their push-notification channel from
 # /etc/a11oy-uptime.env. That channel is a PRIVATE secret (an ntfy topic, etc.)
@@ -162,6 +146,29 @@ else
   echo "[install] NOTE: $vhost not found; copy the snippet's location block into the a11oy 443 server block manually."
 fi
 
+# receipt-chain-watch additional clusters: the primary uds-szl-demo cluster is
+# watched by the plain receipt-chain-watch.timer; every OTHER cluster on this box
+# (e.g. the multi-node uds-tenant cluster) is watched by a TEMPLATED instance
+# receipt-chain-watch@<cluster>.timer that runs the SAME guard with CLUSTER set
+# to the systemd instance name. Per-cluster tunables (KUBECONFIG_FILE, namespaces,
+# SINCE, ...) live in /etc/receipt-chain-watch/<cluster>.env. Override the set of
+# extra clusters with RECEIPT_WATCH_EXTRA_CLUSTERS="a b c" ./install.sh.
+install -d -m 0755 /etc/receipt-chain-watch
+read -r -a receipt_extra_clusters <<< "${RECEIPT_WATCH_EXTRA_CLUSTERS:-uds-tenant}"
+for c in "${receipt_extra_clusters[@]}"; do
+  [ -n "$c" ] || continue
+  envf="/etc/receipt-chain-watch/${c}.env"
+  if [ ! -e "$envf" ]; then
+    if [ -f "$here/etc/receipt-chain-watch/${c}.env" ]; then
+      install -m 0644 "$here/etc/receipt-chain-watch/${c}.env" "$envf"
+    else
+      printf '# receipt-chain-watch tunables for cluster %s (see box-scripts/README.md).\n#KUBECONFIG_FILE=\n#RNS=szl-receipts\n#RDEPLOY=szl-receipts-server\n#PNS=pepr-system\n#PDEPLOY=pepr-szl\n#SINCE=8m\n' "$c" > "$envf"
+      chmod 0644 "$envf"
+    fi
+    echo "[install] seeded $envf"
+  fi
+done
+
 echo "[install] reloading systemd + enabling units ..."
 systemctl daemon-reload
 systemctl enable --now a11oy-coexist.service
@@ -169,25 +176,26 @@ systemctl enable --now a11oy-port-guard.timer
 systemctl enable --now szl-core-rightsize.timer
 systemctl enable --now istiod-fit-strategy.timer
 systemctl enable --now receipt-chain-watch.timer
-systemctl enable --now szl-signing-health-check.timer
+for c in "${receipt_extra_clusters[@]}"; do
+  [ -n "$c" ] || continue
+  systemctl enable --now "receipt-chain-watch@${c}.timer"
+done
 systemctl enable --now szl-ns-scratch-watch.timer
-systemctl enable --now vault-auto-unseal.timer
-systemctl enable --now szl-receipts-orphan-watch.timer
 systemctl enable --now a11oy-uptime-check.timer
 systemctl enable --now dns-drift-check.timer
 systemctl enable --now box-scripts-drift-check.timer
 systemctl enable --now szl-alert-relay.service
-systemctl enable --now szl-alert-relay-watch.timer
 
 # Bring the cluster guards into a conformant state right now (idempotent no-ops
 # if the cluster is down or already conformant).
 [ -x /usr/local/sbin/szl-core-rightsize ]  && /usr/local/sbin/szl-core-rightsize  || true
 [ -x /usr/local/sbin/istiod-fit-strategy ] && /usr/local/sbin/istiod-fit-strategy || true
 [ -x /usr/local/sbin/receipt-chain-watch ]  && /usr/local/sbin/receipt-chain-watch   || true
-[ -x /usr/local/sbin/szl-signing-health-check ] && /usr/local/sbin/szl-signing-health-check || true
+for c in "${receipt_extra_clusters[@]}"; do
+  [ -n "$c" ] || continue
+  systemctl start "receipt-chain-watch@${c}.service" || true
+done
 [ -x /usr/local/sbin/szl-ns-scratch-watch ] && /usr/local/sbin/szl-ns-scratch-watch  || true
-[ -x /usr/local/sbin/vault-auto-unseal ]   && /usr/local/sbin/vault-auto-unseal    || true
-[ -x /usr/local/sbin/szl-receipts-orphan-watch ] && /usr/local/sbin/szl-receipts-orphan-watch || true
 
 echo "[install] done. current status:"
 a11oy-mode status || true

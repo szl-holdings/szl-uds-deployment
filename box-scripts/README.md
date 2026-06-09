@@ -194,10 +194,14 @@ alert.
 
 ```
 sbin/
-  receipt-chain-watch          # detect stalled/failing receipt recording, alert on the edge
+  receipt-chain-watch              # detect stalled/failing receipt recording, alert on the edge
 systemd/
-  receipt-chain-watch.service  # oneshot: runs receipt-chain-watch
-  receipt-chain-watch.timer    # every 5 min: triggers receipt-chain-watch.service
+  receipt-chain-watch.service      # oneshot: runs receipt-chain-watch for the primary uds-szl-demo cluster
+  receipt-chain-watch.timer        # every 5 min: triggers receipt-chain-watch.service
+  receipt-chain-watch@.service     # templated oneshot: runs the guard for cluster %i
+  receipt-chain-watch@.timer       # every 5 min: triggers receipt-chain-watch@%i.service
+etc/
+  receipt-chain-watch/<cluster>.env  # optional per-cluster tunables (KUBECONFIG_FILE, namespaces, SINCE)
 ```
 
 ## What it detects (any one → ALERT)
@@ -211,9 +215,9 @@ systemd/
   but nothing lands in the chain.
 
 It is **edge-triggered**: it fires the notifier only on the healthy→problem edge
-and once on RECOVERED, never every cycle (de-duped via `/var/lib/receipt-chain-watch/last_status`).
-Every run still appends to `/var/log/receipt-chain-watch/receipt-chain-watch.log`
-and writes `/var/lib/receipt-chain-watch/status.json`, so a broken notifier can
+and once on RECOVERED, never every cycle (de-duped via `/var/lib/receipt-chain-watch/<cluster>.last_status`).
+Every run still appends to `/var/log/receipt-chain-watch/<cluster>.log`
+and writes `/var/lib/receipt-chain-watch/<cluster>.status.json`, so a broken notifier can
 never hide a stall. A stopped cluster or a cluster without the receipts module is
 a true no-op (no alarm).
 
@@ -232,6 +236,45 @@ Unit-tested with promtool + a render drift guard under
 `charts/szl-receipts/tests/alerts/` (`run-alert-tests.sh`). The two layers are
 complementary: this box guard additionally watches pepr-log signals (dropped
 POSTs / signed-but-not-accepted) that pepr does not export to Prometheus.
+
+## Watching more than one cluster
+
+Every cluster-specific input is a **parameter** (env override), not a baked-in
+constant, so one script body watches any number of clusters:
+
+| env | meaning | default |
+| --- | --- | --- |
+| `CLUSTER` | cluster name (resolved to a kubeconfig via `k3d kubeconfig write`) | `uds-szl-demo` |
+| `KUBECONFIG_FILE` | explicit kubeconfig path, used **verbatim** instead of `k3d kubeconfig write` (for a cluster that is not a local-k3d-by-name cluster, e.g. an external/multi-node tenant) | _(unset)_ |
+| `RNS` / `RDEPLOY` | receipts-server namespace / Deployment | `szl-receipts` / `szl-receipts-server` |
+| `PNS` / `PDEPLOY` / `PCONTAINER` | pepr controller namespace / Deployment / container | `pepr-system` / `pepr-szl` / `server` |
+| `SINCE` | pepr-log scan window (>= timer interval) | `8m` |
+
+State, log and status files are namespaced by `$CLUSTER`
+(`/var/lib/receipt-chain-watch/<cluster>.{last_status,status.json}`,
+`/var/log/receipt-chain-watch/<cluster>.log`) so concurrent instances never
+clobber each other's edge-trigger state.
+
+- The **primary** `uds-szl-demo` cluster is watched by the plain
+  `receipt-chain-watch.timer`.
+- **Every other cluster** (e.g. the multi-node `uds-tenant` cluster) is watched
+  by a **templated** instance `receipt-chain-watch@<cluster>.timer` that runs the
+  same guard with `CLUSTER=<cluster>`. Per-cluster tunables live in the optional
+  `/etc/receipt-chain-watch/<cluster>.env` (read by the `@` unit).
+
+`install.sh` enables a templated instance for each name in
+`RECEIPT_WATCH_EXTRA_CLUSTERS` (default `uds-tenant`). Add another cluster by
+hand with:
+
+```bash
+sudo install -d -m 0755 /etc/receipt-chain-watch
+# optional tunables (KUBECONFIG_FILE, namespaces, ...):
+sudoedit /etc/receipt-chain-watch/<cluster>.env
+sudo systemctl enable --now receipt-chain-watch@<cluster>.timer
+```
+
+A cluster that is stopped or has no receipts module is a true no-op (no alarm),
+so enabling an instance for a cluster that is not currently up is harmless.
 
 ## Notification channel
 
@@ -259,7 +302,7 @@ sudo systemctl enable --now receipt-chain-watch.timer
 
 ```bash
 systemctl is-enabled receipt-chain-watch.timer
-/usr/local/sbin/receipt-chain-watch && cat /var/lib/receipt-chain-watch/status.json
+/usr/local/sbin/receipt-chain-watch && cat /var/lib/receipt-chain-watch/uds-szl-demo.status.json
 # Force an alert (safe, reversible): scale the sink to 0, run with a test prefix,
 # confirm the push fires, then restore.
 kubectl -n szl-receipts scale deploy szl-receipts-server --replicas=0 && sleep 12

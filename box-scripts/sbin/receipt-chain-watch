@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # receipt-chain-watch — alarm when signed deploy receipts stop being recorded on
-# the k3d uds-szl-demo cluster (box 167.233.50.75), so a silently-stalled receipt
-# chain reaches a human instead of waiting for a manual log inspection.
+# a k3d/UDS cluster (box 167.233.50.75), so a silently-stalled receipt chain
+# reaches a human instead of waiting for a manual log inspection.
 #
 # WHY: the Pepr admission controller (pepr-szl, ns pepr-system) signs a DSSE
 # deploy receipt for every Deployment/Job and POSTs it to the layer-2
@@ -30,17 +30,35 @@
 # Cluster intentionally stopped (k3d down) or receipts module not deployed = a
 # true no-op (exit 0, no alert) — we only alarm when the chain SHOULD be working.
 #
+# MULTI-CLUSTER: every cluster-specific input is a parameter (env override), not
+# a baked-in constant, so one script body watches any number of clusters:
+#   CLUSTER          cluster name (k3d cluster, used to resolve a kubeconfig)
+#   KUBECONFIG_FILE  explicit kubeconfig path; when set it is used verbatim
+#                    instead of `k3d kubeconfig write $CLUSTER` (for clusters
+#                    that are not local-k3d-by-name, e.g. a multi-node tenant)
+#   RNS / RDEPLOY    receipts-server namespace / Deployment
+#   PNS / PDEPLOY / PCONTAINER   pepr controller namespace / Deployment / container
+# State/log/status files are namespaced by $CLUSTER so multiple instances (one
+# per cluster, driven by receipt-chain-watch@<cluster>.timer) never clobber each
+# other's de-dup state. See receipt-chain-watch@.service.
+#
 # NOTIFY: pipes the alert text on STDIN to NOTIFY_CMD (default the box's working
 # push channel /usr/local/sbin/a11oy-uptime-notify -> ntfy/Telegram/webhook).
 # This box has NO Gmail/nodemailer transport and outbound TCP 465 is firewalled,
 # so SMS/email is not used here (see memory sms-alerts-on-hetzner.md /
 # a11oy-uptime-channel-restore.md); the ntfy push IS the existing alert path.
 #
-# Driven by receipt-chain-watch.timer (every 5 min). Mirrors the
-# szl-core-rightsize / pepr-key-mount / istiod-fit-strategy self-heal pattern.
+# Driven by receipt-chain-watch.timer (uds-szl-demo) and
+# receipt-chain-watch@<cluster>.timer (additional clusters), every 5 min.
+# Mirrors the szl-core-rightsize / pepr-key-mount / istiod-fit-strategy pattern.
 set -uo pipefail
 
 CLUSTER="${CLUSTER:-uds-szl-demo}"
+# Explicit kubeconfig override. When empty, the kubeconfig is resolved from the
+# local k3d cluster named $CLUSTER; when set, it is used verbatim (so a cluster
+# that is not a local k3d cluster — e.g. an external/multi-node tenant — can be
+# watched by pointing this at its kubeconfig).
+KUBECONFIG_FILE="${KUBECONFIG_FILE:-}"
 RNS="${RNS:-szl-receipts}"
 RDEPLOY="${RDEPLOY:-szl-receipts-server}"
 PNS="${PNS:-pepr-system}"
@@ -52,9 +70,10 @@ SINCE="${SINCE:-8m}"
 
 STATE_DIR="${STATE_DIR:-/var/lib/receipt-chain-watch}"
 LOG_DIR="${LOG_DIR:-/var/log/receipt-chain-watch}"
-LAST_FILE="${LAST_FILE:-$STATE_DIR/last_status}"
-STATUS="${STATUS:-$STATE_DIR/status.json}"
-LOG="${LOG:-$LOG_DIR/receipt-chain-watch.log}"
+# Per-cluster file names so concurrent instances stay isolated. Overridable.
+LAST_FILE="${LAST_FILE:-$STATE_DIR/$CLUSTER.last_status}"
+STATUS="${STATUS:-$STATE_DIR/$CLUSTER.status.json}"
+LOG="${LOG:-$LOG_DIR/$CLUSTER.log}"
 
 # Notifier: stdin = message. Default to the box's working push channel.
 NOTIFY_CMD="${NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
@@ -79,8 +98,16 @@ write_status() {
 }
 
 # ---- Resolve cluster; no-op if it is down (intentionally stopped) -----------
-KC="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" || { log "INFO cluster '$CLUSTER' absent — skip"; write_status UNKNOWN "cluster absent"; exit 0; }
-export KUBECONFIG="$KC"
+if [ -n "$KUBECONFIG_FILE" ]; then
+  # Explicit kubeconfig: use verbatim. Unreadable = treat as absent (no-op).
+  if [ ! -r "$KUBECONFIG_FILE" ]; then
+    log "INFO KUBECONFIG_FILE '$KUBECONFIG_FILE' unreadable — skip"; write_status UNKNOWN "kubeconfig unreadable"; exit 0
+  fi
+  export KUBECONFIG="$KUBECONFIG_FILE"
+else
+  KC="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" || { log "INFO cluster '$CLUSTER' absent — skip"; write_status UNKNOWN "cluster absent"; exit 0; }
+  export KUBECONFIG="$KC"
+fi
 kubectl --request-timeout=20s get --raw='/readyz' >/dev/null 2>&1 \
   || { log "INFO cluster '$CLUSTER' not reachable — skip"; write_status UNKNOWN "cluster unreachable"; exit 0; }
 

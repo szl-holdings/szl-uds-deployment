@@ -1,0 +1,14 @@
+[Unit]
+Description=Alarm when signed deploy receipts stop being recorded on cluster %i (receipts-server sink down / Pepr POST drops / chain not advancing)
+Documentation=file:///usr/local/sbin/receipt-chain-watch
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The systemd instance name (%i) is the cluster to watch. Per-cluster tunables
+# (KUBECONFIG_FILE, namespaces, SINCE, ...) live in an OPTIONAL env file so a
+# cluster that is not a local-k3d-by-name cluster can still be watched.
+Environment=CLUSTER=%i
+EnvironmentFile=-/etc/receipt-chain-watch/%i.env
+ExecStart=/usr/local/sbin/receipt-chain-watch
