@@ -82,4 +82,3 @@ components:
               echo "SZL E-04 DoctrineCompleteness PASSED: $VERSION T=$THEOREMS A=$AXIOMS D=$DEFS kernel=$KERNEL lambda=$LAMBDA"
             description: "Doctrine v11 completeness gate (749 theorems / 14 axioms / 163 definitions). POLICY label."
             mute: false
-
