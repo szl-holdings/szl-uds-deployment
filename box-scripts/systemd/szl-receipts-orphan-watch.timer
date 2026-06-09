@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically check for orphaned receipts-server namespaces on uds-szl-demo and alert on the edge
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

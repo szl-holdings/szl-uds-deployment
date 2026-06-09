@@ -1,0 +1,9 @@
+[Unit]
+Description=Flag orphaned (untracked) duplicate receipts-server namespaces on uds-szl-demo
+Documentation=file:///usr/local/sbin/szl-receipts-orphan-watch
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/szl-receipts-orphan-watch

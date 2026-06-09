@@ -503,3 +503,66 @@ STATE_DIR=/tmp/nsw/state LOG_DIR=/tmp/nsw/log NOTIFY_CMD=/bin/cat \
   /usr/local/sbin/szl-ns-scratch-watch                                 # -> RECOVERED
 kubectl delete ns szl-scratch-selftest; rm -rf /tmp/nsw
 ```
+
+
+---
+
+# box-scripts (part 7) — orphaned receipts-server alarm (uds-szl-demo)
+
+On the 2-vCPU box a hand-made scratch namespace (e.g. `szl-receipts-demo`) keeps
+reappearing after every cluster rebuild. It runs a `szl-receipts-server` workload
+but is owned by **nothing** — no Helm release, no zarf package, no UDS Package, no
+VirtualService — so it signs nothing, holds no durable data, and just burns CPU on
+an already-loaded node. Finding it used to be a manual hunt (Task #283).
+
+**`szl-receipts-orphan-watch`** turns that hunt into a periodic guard. Every
+10 min it lists every namespace running a receipts-server Deployment (matched by
+name `szl-receipts-server` **or** a container image matching `receipts-server`),
+drops the canonical `szl-receipts`, and flags any remaining namespace that is
+**not** owned by any of:
+
+- **Helm** — the Deployment carries `app.kubernetes.io/managed-by=Helm` or a
+  `meta.helm.sh/release-name` annotation, or `helm list -A` shows a release in
+  that namespace. (zarf and UDS deploy *through* Helm here, so this is also the
+  `zarf package list` / UDS-Package ownership signal.)
+- **UDS** — a `packages.uds.dev` CR exists in the namespace.
+- **Istio** — a `VirtualService` exists in the namespace.
+
+Anything left is an **orphan** → one push via `/usr/local/sbin/a11oy-uptime-notify`.
+It **never deletes** (an orphan is sometimes a teammate's live scratch — deletion
+stays a human call); it only logs + alerts.
+
+Edge-triggered + de-duped via `/var/lib/szl-receipts-orphan-watch/last_status`:
+one push on the healthy→orphan edge, one on RECOVERED, never every cycle. Always
+writes `/var/lib/szl-receipts-orphan-watch/status.json` + appends
+`/var/log/szl-receipts-orphan-watch/szl-receipts-orphan-watch.log`. Cluster
+stopped/unreachable = a true no-op (no false alarm). Mirrors the
+`receipt-chain-watch` / `szl-ns-scratch-watch` guard pattern.
+
+## Reinstall
+
+The top-level `./install.sh` installs + enables this guard. Manually:
+
+```bash
+sudo install -m 0755 sbin/szl-receipts-orphan-watch /usr/local/sbin/szl-receipts-orphan-watch
+sudo install -m 0644 systemd/szl-receipts-orphan-watch.service /etc/systemd/system/
+sudo install -m 0644 systemd/szl-receipts-orphan-watch.timer   /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now szl-receipts-orphan-watch.timer
+```
+
+## Verify (safe, reversible — isolated state + captured notifier)
+
+```bash
+rm -rf /tmp/rospan; mkdir -p /tmp/rospan/state /tmp/rospan/log
+RUN(){ STATE_DIR=/tmp/rospan/state LOG_DIR=/tmp/rospan/log NOTIFY_CMD=/bin/cat \
+       ALERT_PREFIX="[TEST] " /usr/local/sbin/szl-receipts-orphan-watch; }
+RUN                                              # baseline -> OK, no push
+kubectl create ns szl-receipts-selftest
+kubectl -n szl-receipts-selftest create deploy receipts-dupe \
+  --image=127.0.0.1:31999/szl-receipts-server:v0.4.0-src --replicas=0
+RUN                                              # -> ALERT, one [TEST] push
+RUN                                              # -> DEDUP, no push
+kubectl delete ns szl-receipts-selftest
+RUN                                              # -> RECOVERED, one [TEST] push
+rm -rf /tmp/rospan
+```

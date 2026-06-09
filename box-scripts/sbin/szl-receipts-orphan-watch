@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+#
+# szl-receipts-orphan-watch — flag any ORPHANED duplicate receipts server on the
+# k3d uds-szl-demo cluster (box 167.233.50.75), so an unsigned, untracked copy
+# eating CPU on an already-loaded 2-vCPU node gets noticed automatically instead
+# of being hunted down by hand (as in Task #283).
+#
+# WHY: a hand-made scratch namespace (e.g. szl-receipts-demo) keeps reappearing
+# after each cluster rebuild. It runs a szl-receipts-server workload but is owned
+# by NOTHING — no Helm release, no zarf package, no UDS Package, no
+# VirtualService — so it holds no durable data, signs nothing, and just burns CPU.
+# The canonical szl-receipts (Helm/zarf/UDS-Package/VS owned) must never be
+# flagged; only untracked duplicates.
+#
+# WHAT IT DETECTS: every namespace running a receipts-server Deployment (matched
+# by name == szl-receipts-server OR a container image matching IMAGE_MATCH), minus
+# the canonical namespace, that is NOT owned by ANY of:
+#   - Helm   : deploy carries app.kubernetes.io/managed-by=Helm or a
+#              meta.helm.sh/release-name annotation, OR `helm list -A` shows a
+#              release in that namespace (this is also how zarf/UDS deploy here,
+#              so it doubles as the `zarf package list` / UDS ownership signal).
+#   - UDS    : a packages.uds.dev CR exists in the namespace.
+#   - Istio  : a VirtualService exists in the namespace.
+# Any receipts-server namespace with none of those = an ORPHAN -> alert.
+#
+# It NEVER deletes anything (an orphan is sometimes a teammate's live scratch —
+# deletion stays a human call). It only logs + edge-pushes.
+#
+# EDGE-triggered + de-duped via a state file: pushes the notifier once on the
+# healthy->problem edge (a new orphan appears) and once on RECOVERED (all orphans
+# gone), never every cycle (honours "recurring alerts = one ping").
+#
+# Cluster intentionally stopped (k3d down) or unreachable = a true no-op (exit 0,
+# no alert). Mirrors the receipt-chain-watch / szl-ns-scratch-watch guard pattern
+# (kubeconfig resolve + cluster-absent no-op + a11oy-uptime-notify push channel).
+#
+# Driven by szl-receipts-orphan-watch.timer (every 10 min).
+set -uo pipefail
+
+CLUSTER="${SZL_RECEIPTS_CLUSTER:-uds-szl-demo}"
+CANONICAL_NS="${SZL_RECEIPTS_CANONICAL_NS:-szl-receipts}"
+# A Deployment is a receipts-server workload if its name is this OR any container
+# image matches IMAGE_MATCH (catches a renamed copy / local v0.4.0-src builds).
+DEPLOY_NAME="${SZL_RECEIPTS_DEPLOY_NAME:-szl-receipts-server}"
+IMAGE_MATCH="${SZL_RECEIPTS_IMAGE_MATCH:-receipts-server}"
+
+STATE_DIR="${STATE_DIR:-/var/lib/szl-receipts-orphan-watch}"
+LOG_DIR="${LOG_DIR:-/var/log/szl-receipts-orphan-watch}"
+LAST_FILE="${LAST_FILE:-$STATE_DIR/last_status}"
+STATUS="${STATUS:-$STATE_DIR/status.json}"
+LOG="${LOG:-$LOG_DIR/szl-receipts-orphan-watch.log}"
+
+# Notifier: stdin = message. Default to the box's working push channel.
+NOTIFY_CMD="${NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
+ALERT_PREFIX="${ALERT_PREFIX:-}"
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
+
+log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$1" >>"$LOG" 2>/dev/null; }
+
+notify() {
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed (alert was logged only)"
+}
+
+write_status() {
+  # $1 = overall (OK|ALERT|UNKNOWN)  $2 = reason
+  printf '{"overall":"%s","reason":"%s","checked_at":"%s","cluster":"%s"}\n' \
+    "$1" "$(printf '%s' "$2" | sed 's/"/\\"/g')" "$(date -u +%FT%TZ)" "$CLUSTER" \
+    >"$STATUS" 2>/dev/null
+}
+
+# ---- Resolve cluster; no-op if it is down (intentionally stopped) -----------
+KC="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" || { log "INFO cluster '$CLUSTER' absent — skip"; write_status UNKNOWN "cluster absent"; exit 0; }
+export KUBECONFIG="$KC"
+kubectl --request-timeout=20s get --raw='/readyz' >/dev/null 2>&1 \
+  || { log "INFO cluster '$CLUSTER' not reachable — skip"; write_status UNKNOWN "cluster unreachable"; exit 0; }
+
+# ---- Enumerate every Deployment: ns, name, images, helm-ownership signals ----
+# Tab-separated: ns \t name \t images(space-joined) \t managed-by \t helm-release
+rows="$(kubectl get deploy -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{range .spec.template.spec.containers[*]}{.image}{" "}{end}{"\t"}{.metadata.labels.app\.kubernetes\.io/managed-by}{"\t"}{.metadata.annotations.meta\.helm\.sh/release-name}{"\n"}{end}' 2>/dev/null)" \
+  || { log "WARN kubectl get deploy failed — skip"; write_status UNKNOWN "kubectl error"; exit 0; }
+
+# Namespaces that have ANY Helm release (covers zarf- and UDS-deployed releases).
+helm_ns="$(helm list -A 2>/dev/null | awk 'NR>1{print $2}' | sort -u)"
+
+is_helm_ns()  { printf '%s\n' "$helm_ns" | grep -qx "$1"; }
+has_uds_pkg() { kubectl get packages.uds.dev -n "$1" --no-headers 2>/dev/null | grep -q .; }
+has_vs()      { kubectl get virtualservices.networking.istio.io -n "$1" --no-headers 2>/dev/null | grep -q .; }
+
+orphans=""
+# De-dupe candidate namespaces first (a ns may have >1 matching deploy).
+cand_ns="$(printf '%s\n' "$rows" | while IFS=$'\t' read -r ns name images managedby relname; do
+  [ -z "$ns" ] && continue
+  [ "$ns" = "$CANONICAL_NS" ] && continue
+  if [ "$name" = "$DEPLOY_NAME" ] || printf '%s' "$images" | grep -q "$IMAGE_MATCH"; then
+    printf '%s\n' "$ns"
+  fi
+done | sort -u)"
+
+for ns in $cand_ns; do
+  [ -z "$ns" ] && continue
+  # Pull this ns's strongest helm signal straight off its matching deploy(s).
+  deploy_helm="$(printf '%s\n' "$rows" | awk -F'\t' -v n="$ns" '$1==n && ($4=="Helm" || $5!=""){print "yes"; exit}')"
+  if [ "$deploy_helm" = "yes" ] || is_helm_ns "$ns" || has_uds_pkg "$ns" || has_vs "$ns"; then
+    log "TRACKED ns=$ns (helm/uds/vs owned) — not an orphan"
+    continue
+  fi
+  orphans="${orphans:+$orphans }$ns"
+done
+
+count=0
+[ -n "$orphans" ] && count="$(printf '%s\n' $orphans | grep -c .)"
+list_csv="$(printf '%s' "$orphans" | tr ' ' '\n' | paste -sd ', ' - 2>/dev/null)"
+
+# ---- Decide + edge-trigger --------------------------------------------------
+prev="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
+
+if [ "$count" -gt 0 ] 2>/dev/null; then
+  write_status ALERT "$count orphaned receipts-server namespace(s): ${list_csv}"
+  log "STATE ALERT count=$count :: $list_csv"
+  if [ "$prev" != "ALERT" ]; then
+    notify "ALERT: $count orphaned receipts-server namespace(s) on $CLUSTER NOT owned by Helm/zarf/UDS-Package/VirtualService (canonical '$CANONICAL_NS' excluded): ${list_csv}. These run unsigned, hold no durable data, and burn CPU on the 2-vCPU node. Investigate and remove by hand if they're stray (e.g. 'kubectl delete ns <ns>') — this guard never deletes."
+    log "EDGE OK->ALERT notified"
+  else
+    log "DEDUP still ALERT — no re-notify"
+  fi
+  echo ALERT >"$LAST_FILE" 2>/dev/null
+else
+  write_status OK "no orphaned receipts-server namespaces"
+  log "STATE OK count=0"
+  if [ "$prev" = "ALERT" ]; then
+    notify "RECOVERED: no orphaned receipts-server namespaces remain on $CLUSTER (all stray duplicates removed or now tracked)."
+    log "EDGE ALERT->OK recovered, notified"
+  fi
+  echo OK >"$LAST_FILE" 2>/dev/null
+fi
+
+exit 0
