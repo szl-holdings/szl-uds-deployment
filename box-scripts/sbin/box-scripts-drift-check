@@ -25,11 +25,19 @@
 # because a host edit may legitimately be a hot-fix that should be back-ported to
 # the repo, not clobbered.
 #
-# WHAT IT COMPARES (default set; override via WATCH_SBIN / WATCH_UNITS):
-#   /usr/local/sbin/{a11oy-uptime-check,a11oy-uptime-notify,dns-drift-check}
-#     vs $REPO/box-scripts/sbin/<name>
-#   /etc/systemd/system/{a11oy-uptime-check,dns-drift-check}.{service,timer}
-#     vs $REPO/box-scripts/systemd/<name>
+# WHAT IT COMPARES (self-maintaining — derived, NOT a fixed list):
+#   The watch set is DERIVED from the `install -m ... "$here/sbin/X" ...` /
+#   `"$here/systemd/Y" ...` mapping in box-scripts/install.sh, so every helper
+#   install.sh actually installs is watched automatically — adding a new helper
+#   to install.sh covers it here with zero edits to this script. Each derived
+#   name is compared:
+#     /usr/local/sbin/<name>        vs $REPO/box-scripts/sbin/<name>      (scripts)
+#     /etc/systemd/system/<name>    vs $REPO/box-scripts/systemd/<name>   (units)
+#   Override the derived set explicitly with WATCH_SBIN / WATCH_UNITS (used by
+#   the isolated test recipe), drop entries that legitimately have no committed
+#   copy with WATCH_EXCLUDE, and point INSTALL_SH elsewhere if needed. If
+#   install.sh is unreadable/yields nothing the original static set is used as a
+#   fallback so the guard never silently watches nothing.
 # Per file the status is one of:
 #   MATCH        live == committed (good)
 #   DRIFT        both exist but differ (live edited, or repo lagging)
@@ -75,11 +83,21 @@ BOX_SCRIPTS="${BOX_SCRIPTS:-$REPO/box-scripts}"
 SBIN_DIR="${SBIN_DIR:-/usr/local/sbin}"
 UNIT_DIR="${UNIT_DIR:-/etc/systemd/system}"
 
-# Watched host-level helper scripts (live in $SBIN_DIR, committed in
-# $BOX_SCRIPTS/sbin). Space-separated basenames.
-WATCH_SBIN="${WATCH_SBIN:-a11oy-uptime-check a11oy-uptime-notify dns-drift-check}"
-# Watched systemd units (live in $UNIT_DIR, committed in $BOX_SCRIPTS/systemd).
-WATCH_UNITS="${WATCH_UNITS:-a11oy-uptime-check.service a11oy-uptime-check.timer dns-drift-check.service dns-drift-check.timer}"
+# Watched host-level helper scripts/units. By DEFAULT the watch set is DERIVED
+# from the install -m mapping in box-scripts/install.sh (see derive_install_set
+# + resolve_watch_set below), so the guard self-maintains as box-scripts/ grows.
+# Set WATCH_SBIN / WATCH_UNITS explicitly (space-separated basenames) to OVERRIDE
+# derivation (used by the isolated test recipe / a manual narrowing). They are
+# left UNSET here on purpose so "unset" means "derive"; an explicit empty string
+# also overrides (watch nothing of that kind).
+INSTALL_SH="${INSTALL_SH:-$BOX_SCRIPTS/install.sh}"
+# Drop basenames that legitimately have no committed copy / should not be watched
+# (space-separated, matches scripts and units alike).
+WATCH_EXCLUDE="${WATCH_EXCLUDE:-}"
+# Static fallback used only when derivation yields nothing (install.sh missing /
+# unreadable) so the guard never silently watches nothing.
+FALLBACK_SBIN="a11oy-uptime-check a11oy-uptime-notify dns-drift-check"
+FALLBACK_UNITS="a11oy-uptime-check.service a11oy-uptime-check.timer dns-drift-check.service dns-drift-check.timer"
 
 STATE_DIR="${STATE_DIR:-/var/lib/box-scripts-drift}"
 LOG_DIR="${LOG_DIR:-/var/log/box-scripts-drift}"
@@ -129,6 +147,36 @@ compare_one() {
   if cmp -s "$live" "$repo"; then echo "MATCH"; else echo "DRIFT"; fi
 }
 
+# derive_install_set KIND -> echo newline-separated basenames pulled from the
+# `install -m ... "$here/<KIND>/NAME" DEST` mapping in $INSTALL_SH. KIND is
+# "sbin" or "systemd". We classify by the install SOURCE ("$here/sbin/..." /
+# "$here/systemd/...") and watch the DEST basename (source basename == dest
+# basename in install.sh), so installs into other trees (e.g. /etc/nginx) and
+# `install -d` directory lines are ignored. De-duplicated, order preserved.
+derive_install_set() {
+  local kind="$1"
+  [ -r "$INSTALL_SH" ] || return 0
+  # grep -F: the literal `"$here/<kind>/` (the `$` is a literal char in the file).
+  grep -F "\"\$here/$kind/" "$INSTALL_SH" 2>/dev/null \
+    | grep -E '(^|[[:space:]])install([[:space:]]|$)' \
+    | awk '{print $NF}' \
+    | sed -E 's#.*/##' \
+    | awk 'NF && !seen[$0]++'
+}
+
+# filter_excluded LIST... -> echo the space/newline-separated LIST with any
+# basename present in $WATCH_EXCLUDE removed.
+filter_excluded() {
+  local name out=""
+  for name in "$@"; do
+    case " $WATCH_EXCLUDE " in
+      *" $name "*) continue ;;
+    esac
+    out="$out $name"
+  done
+  printf '%s' "${out# }"
+}
+
 # ---- repo present? ----------------------------------------------------------
 if [ ! -d "$REPO/.git" ] || [ ! -d "$BOX_SCRIPTS" ]; then
   log "STATE repo/box-scripts absent ($BOX_SCRIPTS) — no-op"
@@ -144,6 +192,21 @@ if [ ! -d "$REPO/.git" ] || [ ! -d "$BOX_SCRIPTS" ]; then
   } >"$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
   exit 0
 fi
+
+# ---- resolve the watch set --------------------------------------------------
+# Default = DERIVE from install.sh's install -m mapping; an explicit WATCH_SBIN /
+# WATCH_UNITS (even empty) overrides. Fall back to the static set only if
+# derivation produced nothing. WATCH_EXCLUDE drops un-watchable basenames.
+if [ -z "${WATCH_SBIN+set}" ]; then
+  WATCH_SBIN="$(derive_install_set sbin)"
+  [ -n "$WATCH_SBIN" ] || { WATCH_SBIN="$FALLBACK_SBIN"; log "WARN derived sbin watch set empty — using static fallback (INSTALL_SH=$INSTALL_SH)"; }
+fi
+if [ -z "${WATCH_UNITS+set}" ]; then
+  WATCH_UNITS="$(derive_install_set systemd)"
+  [ -n "$WATCH_UNITS" ] || { WATCH_UNITS="$FALLBACK_UNITS"; log "WARN derived unit watch set empty — using static fallback (INSTALL_SH=$INSTALL_SH)"; }
+fi
+WATCH_SBIN="$(filter_excluded $WATCH_SBIN)"
+WATCH_UNITS="$(filter_excluded $WATCH_UNITS)"
 
 # ---- walk the watch set -----------------------------------------------------
 problems=()         # human-readable "name: STATUS" for each drifted file

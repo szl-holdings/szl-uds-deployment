@@ -13,19 +13,39 @@ real source of truth. By default it only reports — it never auto-reinstalls.
 An opt-in self-heal mode (`SELF_HEAL=1`, default off) can additionally restore a
 drifted host file from its committed copy on the drift edge (see below).
 
-## What it watches (default)
+## What it watches (self-maintaining — derived, not a fixed list)
+
+The watch set is **derived from `box-scripts/install.sh`** — specifically the
+`install -m … "$here/sbin/X" …` and `install -m … "$here/systemd/Y" …` mapping.
+Every helper that `install.sh` actually installs is watched automatically, so
+adding a new script/unit to `install.sh` covers it here with **no edit to this
+script**. Each derived name `X` is compared:
 
 | live path | committed copy |
 |---|---|
-| `/usr/local/sbin/a11oy-uptime-check`  | `box-scripts/sbin/a11oy-uptime-check` |
-| `/usr/local/sbin/a11oy-uptime-notify` | `box-scripts/sbin/a11oy-uptime-notify` |
-| `/usr/local/sbin/dns-drift-check`     | `box-scripts/sbin/dns-drift-check` |
-| `/etc/systemd/system/a11oy-uptime-check.service` | `box-scripts/systemd/a11oy-uptime-check.service` |
-| `/etc/systemd/system/a11oy-uptime-check.timer`   | `box-scripts/systemd/a11oy-uptime-check.timer` |
-| `/etc/systemd/system/dns-drift-check.service`    | `box-scripts/systemd/dns-drift-check.service` |
-| `/etc/systemd/system/dns-drift-check.timer`      | `box-scripts/systemd/dns-drift-check.timer` |
+| `/usr/local/sbin/X`            | `box-scripts/sbin/X`    |
+| `/etc/systemd/system/Y`        | `box-scripts/systemd/Y` |
 
-Override the set with `WATCH_SBIN` / `WATCH_UNITS` (space-separated basenames).
+Lines that install into other trees (e.g. `/etc/nginx/...`) and `install -d`
+directory lines are ignored (classified by the `"$here/sbin/"` / `"$here/systemd/"`
+source prefix).
+
+Knobs (all env-overridable):
+
+- `WATCH_SBIN` / `WATCH_UNITS` — set explicitly (space-separated basenames) to
+  **override** derivation entirely. Used by the isolated test recipe below. An
+  explicit empty string watches nothing of that kind.
+- `WATCH_EXCLUDE` — space-separated basenames to **drop** from the derived set
+  (entries that legitimately have no committed copy / should not be watched).
+- `INSTALL_SH` — path to the install script to parse (default
+  `$BOX_SCRIPTS/install.sh`).
+- If `install.sh` is unreadable / yields nothing, the original static set
+  (`a11oy-uptime-check`, `a11oy-uptime-notify`, `dns-drift-check` + their units)
+  is used as a fallback so the guard never silently watches nothing.
+
+Files committed under `box-scripts/{sbin,systemd}/` but installed by a **different**
+mechanism (e.g. `szl-box-sync*`, which has its own installer) are intentionally
+**not** in `install.sh` and therefore out of this guard's scope.
 
 Per-file status: `MATCH`, `DRIFT` (both exist but differ), `LIVE-MISSING`
 (committed copy exists, host file gone), `REPO-MISSING` (host file exists,
@@ -113,5 +133,41 @@ Self-heal (add `SELF_HEAL=1`):
 run SELF_HEAL=1                        # DRIFT alert + REPAIRED push; host file restored to "committed v1"
 cat "$T/sbin/demo-script"             # -> echo committed v1
 run SELF_HEAL=1                        # RECOVERED (drift cleared)
+rm -rf "$T"
+```
+
+## Test the derivation (no override, parse a stub install.sh)
+
+Leave `WATCH_SBIN` / `WATCH_UNITS` UNSET so the watch set is derived from a stub
+`install.sh`, and confirm only the `"$here/sbin|systemd/"` installs are picked up
+(the `/etc/nginx` install + `install -d` line are ignored), `WATCH_EXCLUDE` drops
+an entry, and `LIVE-MISSING` / `REPO-MISSING` still report:
+
+```bash
+T=$(mktemp -d)
+mkdir -p "$T/repo/.git" "$T/repo/box-scripts/sbin" "$T/repo/box-scripts/systemd" \
+         "$T/sbin" "$T/units" "$T/state" "$T/log"
+cat > "$T/repo/box-scripts/install.sh" <<'EOF'
+install -m 0755 "$here/sbin/foo"            /usr/local/sbin/foo
+install -m 0755 "$here/sbin/bar"            /usr/local/sbin/bar
+install -d -m 0755 /etc/nginx/snippets
+install -m 0644 "$here/web.conf"            /etc/nginx/snippets/web.conf
+install -m 0644 "$here/systemd/foo.timer"   /etc/systemd/system/foo.timer
+EOF
+for f in foo bar; do printf 'v1\n' > "$T/repo/box-scripts/sbin/$f"; cp "$T/repo/box-scripts/sbin/$f" "$T/sbin/$f"; done
+printf '[Unit]\n' > "$T/repo/box-scripts/systemd/foo.timer"; cp "$T/repo/box-scripts/systemd/foo.timer" "$T/units/foo.timer"
+
+derun() {
+  REPO="$T/repo" BOX_SCRIPTS="$T/repo/box-scripts" SBIN_DIR="$T/sbin" UNIT_DIR="$T/units" \
+  STATE_DIR="$T/state" LOG_DIR="$T/log" LOG="$T/log/x.log" STATUS="$T/state/status.json" \
+  SIG_FILE="$T/state/problem.sig" NOTIFY_CMD=cat ALERT_PREFIX="[TEST-ignore] " "$@" \
+  /usr/local/sbin/box-scripts-drift-check
+}
+
+derun                                 # OK — derives foo,bar (+foo.timer); web.conf ignored
+grep -o '"name": "[^"]*"' "$T/state/status.json"   # foo, bar, foo.timer only
+rm "$T/sbin/bar"                       # committed copy with no host counterpart
+derun                                  # one DRIFT alert: script bar: LIVE-MISSING
+WATCH_EXCLUDE="bar" derun              # RECOVERED — bar excluded, back to all-MATCH
 rm -rf "$T"
 ```
