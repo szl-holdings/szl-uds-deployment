@@ -7,7 +7,7 @@
 # additions are Ed25519 signing, canonical DSSE PAE, chain rehydration, and
 # OTLP spans (see server.py header).
 
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # OCI image metadata.
 LABEL org.opencontainers.image.title="szl-receipts-server" \
