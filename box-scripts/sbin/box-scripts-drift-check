@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+#
+# box-scripts-drift-check — catch the box's host-level helper scripts/units
+# drifting away from their committed copies in szl-holdings/szl-uds-deployment on
+# Stephen's box (167.233.50.75).
+#
+# WHY: scripts like a11oy-uptime-check, a11oy-uptime-notify and dns-drift-check
+# are the source of truth and get edited IN PLACE under /usr/local/sbin (and
+# their units under /etc/systemd/system). Those host paths live OUTSIDE any git
+# checkout, so even though their canonical copies are committed under
+# box-scripts/{sbin,systemd}/, the live versions can silently diverge again (the
+# repo copies lagged until they were last hand-pulled). The BOX-SYNC rule only
+# guards the git working tree, not these host files. This watcher byte-compares
+# each live file against its committed box-scripts/ copy and alerts on drift, so
+# the repo copy stays the real source of truth.
+#
+# It only REPORTS — it does NOT auto-reinstall. Re-syncing the host file with the
+# repo (or committing the live edit back into box-scripts/) is a human/agent call
+# (run box-scripts/install.sh to push repo->host, or copy host->repo + commit).
+#
+# WHAT IT COMPARES (default set; override via WATCH_SBIN / WATCH_UNITS):
+#   /usr/local/sbin/{a11oy-uptime-check,a11oy-uptime-notify,dns-drift-check}
+#     vs $REPO/box-scripts/sbin/<name>
+#   /etc/systemd/system/{a11oy-uptime-check,dns-drift-check}.{service,timer}
+#     vs $REPO/box-scripts/systemd/<name>
+# Per file the status is one of:
+#   MATCH        live == committed (good)
+#   DRIFT        both exist but differ (live edited, or repo lagging)
+#   LIVE-MISSING committed copy exists but the host file is gone (not installed)
+#   REPO-MISSING host file exists but the committed copy is gone (lost source)
+#
+# ALERTING
+#   Edge-triggered: alerts ONCE on the healthy->drift edge, de-duped via an md5
+#   signature of the current drift set, so a persisting drift does not spam. A
+#   return to all-MATCH logs/pushes RECOVERED and clears the signature so a fresh
+#   drift re-alerts. Mirrors the dns-drift / repo-drift / a11oy-uptime monitors.
+#
+#   The path is always a clearly-named LOG + a machine-readable STATUS FILE. On
+#   top of that it sends a REAL push on the drift edge / RECOVERED via the SAME
+#   notifier the a11oy-uptime + dns-drift monitors use
+#   (/usr/local/sbin/a11oy-uptime-notify -> ntfy / Telegram / Slack-Discord
+#   webhook), wired through NOTIFY_CMD in the service unit. SMS/email is NOT used
+#   (no Gmail/nodemailer transport on this box; outbound TCP 465 is firewalled —
+#   see sms-alerts-on-hetzner). NOTIFY_CMD reads the alert on stdin and is
+#   fail-soft. Because it only fires on the EDGE and on RECOVERED it respects the
+#   standing "recurring alerts = the owner only" policy by construction.
+#
+# Idempotent and safe to run on a short timer. Repo-absent = clean no-op.
+set -uo pipefail
+
+# ---- config (overridable via env for testing) -------------------------------
+REPO="${REPO:-/opt/szl/szl-uds-deployment}"
+BOX_SCRIPTS="${BOX_SCRIPTS:-$REPO/box-scripts}"
+SBIN_DIR="${SBIN_DIR:-/usr/local/sbin}"
+UNIT_DIR="${UNIT_DIR:-/etc/systemd/system}"
+
+# Watched host-level helper scripts (live in $SBIN_DIR, committed in
+# $BOX_SCRIPTS/sbin). Space-separated basenames.
+WATCH_SBIN="${WATCH_SBIN:-a11oy-uptime-check a11oy-uptime-notify dns-drift-check}"
+# Watched systemd units (live in $UNIT_DIR, committed in $BOX_SCRIPTS/systemd).
+WATCH_UNITS="${WATCH_UNITS:-a11oy-uptime-check.service a11oy-uptime-check.timer dns-drift-check.service dns-drift-check.timer}"
+
+STATE_DIR="${STATE_DIR:-/var/lib/box-scripts-drift}"
+LOG_DIR="${LOG_DIR:-/var/log/box-scripts-drift}"
+LOG="${LOG:-$LOG_DIR/box-scripts-drift.log}"
+STATUS="${STATUS:-$STATE_DIR/status.json}"
+SIG_FILE="${SIG_FILE:-$STATE_DIR/problem.sig}"
+NOTIFY_CMD="${NOTIFY_CMD:-}"          # optional external notifier (stdin = message)
+ALERT_PREFIX="${ALERT_PREFIX:-}"      # e.g. "[TEST-ignore] " to test without alarming
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
+
+now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+log() { printf '%s %s\n' "$now_iso" "$*" >>"$LOG"; }
+
+# push(): fire the external notifier (stdin = message). Fail-soft — a missing or
+# broken notifier never hides the edge, which is always recorded in the log too.
+push() {
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed"
+}
+
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+# compare_one LIVE REPO -> echoes status (MATCH|DRIFT|LIVE-MISSING|REPO-MISSING)
+compare_one() {
+  local live="$1" repo="$2"
+  if [ ! -e "$repo" ] && [ ! -e "$live" ]; then
+    echo "BOTH-MISSING"; return
+  fi
+  if [ ! -e "$live" ]; then echo "LIVE-MISSING"; return; fi
+  if [ ! -e "$repo" ]; then echo "REPO-MISSING"; return; fi
+  if cmp -s "$live" "$repo"; then echo "MATCH"; else echo "DRIFT"; fi
+}
+
+# ---- repo present? ----------------------------------------------------------
+if [ ! -d "$REPO/.git" ] || [ ! -d "$BOX_SCRIPTS" ]; then
+  log "STATE repo/box-scripts absent ($BOX_SCRIPTS) — no-op"
+  {
+    printf '{\n'
+    printf '  "checked_at": "%s",\n' "$now_iso"
+    printf '  "repo": "%s",\n' "$(json_escape "$REPO")"
+    printf '  "overall": "ABSENT",\n'
+    printf '  "drift_count": 0,\n'
+    printf '  "alerting": false,\n'
+    printf '  "files": []\n'
+    printf '}\n'
+  } >"$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
+  exit 0
+fi
+
+# ---- walk the watch set -----------------------------------------------------
+problems=()         # human-readable "name: STATUS" for each drifted file
+files_json=()       # per-file json objects for status.json
+
+add_file_json() {   # name kind live repo status
+  files_json+=("$(printf '{ "name": "%s", "kind": "%s", "live": "%s", "repo": "%s", "status": "%s" }' \
+    "$(json_escape "$1")" "$2" "$(json_escape "$3")" "$(json_escape "$4")" "$5")")
+}
+
+check_set() {       # kind live_dir repo_dir names...
+  local kind="$1" live_dir="$2" repo_dir="$3"; shift 3
+  local name live repo st
+  for name in "$@"; do
+    live="$live_dir/$name"
+    repo="$repo_dir/$name"
+    st=$(compare_one "$live" "$repo")
+    add_file_json "$name" "$kind" "$live" "$repo" "$st"
+    [ "$st" = "MATCH" ] || problems+=("$kind $name: $st")
+  done
+}
+
+check_set "script" "$SBIN_DIR" "$BOX_SCRIPTS/sbin"    $WATCH_SBIN
+check_set "unit"   "$UNIT_DIR" "$BOX_SCRIPTS/systemd" $WATCH_UNITS
+
+drift_count=${#problems[@]}
+overall="OK"; [ "$drift_count" -gt 0 ] && overall="DRIFT"
+
+# ---- write the status file (always) ----------------------------------------
+{
+  printf '{\n'
+  printf '  "checked_at": "%s",\n' "$now_iso"
+  printf '  "repo": "%s",\n' "$(json_escape "$REPO")"
+  printf '  "box_scripts": "%s",\n' "$(json_escape "$BOX_SCRIPTS")"
+  printf '  "overall": "%s",\n' "$overall"
+  printf '  "drift_count": %s,\n' "$drift_count"
+  printf '  "alerting": %s,\n' "$( [ "$drift_count" -gt 0 ] && echo true || echo false )"
+  printf '  "files": [\n'
+  i=0
+  for obj in "${files_json[@]}"; do
+    i=$(( i + 1 ))
+    if [ "$i" -lt "${#files_json[@]}" ]; then
+      printf '    %s,\n' "$obj"
+    else
+      printf '    %s\n' "$obj"
+    fi
+  done
+  printf '  ]\n'
+  printf '}\n'
+} >"$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
+
+# ---- transition de-dup + alert ---------------------------------------------
+prev_sig=""; [ -r "$SIG_FILE" ] && prev_sig=$(cat "$SIG_FILE" 2>/dev/null)
+
+if [ "$drift_count" -eq 0 ]; then
+  if [ -n "$prev_sig" ]; then
+    rec="all watched box-scripts host files match their committed box-scripts/ copies again"
+    log "RECOVERED $rec"
+    push "box-scripts-drift RECOVERED: $rec"
+    rm -f "$SIG_FILE"
+  fi
+  log "STATE overall=OK drift=0 (checked $(( $(printf '%s\n' $WATCH_SBIN | grep -c .) + $(printf '%s\n' $WATCH_UNITS | grep -c .) )) files)"
+  exit 0
+fi
+
+problem_text=$(printf '%s; ' "${problems[@]}"); problem_text="${problem_text%; }"
+cur_sig=$(printf '%s\n' "${problems[@]}" | sort | md5sum | awk '{print $1}')
+
+if [ "$cur_sig" = "$prev_sig" ]; then
+  log "(persisting) DRIFT $drift_count file(s): $problem_text"
+else
+  body="$drift_count box-scripts host file(s) DRIFTED from the committed box-scripts/ copies on $REPO:
+$(printf '    %s\n' "${problems[@]}")
+Reconcile: copy host->repo + commit if the live edit is intended, or re-run box-scripts/install.sh to push repo->host."
+  log "ALERT $body"
+  push "box-scripts-drift DRIFT: $body"
+  printf '%s' "$cur_sig" >"$SIG_FILE"
+fi
+
+log "STATE overall=DRIFT drift=$drift_count"
+exit 0

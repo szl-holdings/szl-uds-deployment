@@ -1,0 +1,15 @@
+[Unit]
+Description=Periodically check the box's host helper scripts/units against their committed box-scripts/ copies
+
+[Timer]
+# First check shortly after boot, then every 15 minutes thereafter. Drift is
+# only created by a manual host edit, so a tight cadence is unnecessary; this
+# matches the dns-drift watcher's interval.
+OnBootSec=6min
+OnUnitActiveSec=15min
+AccuracySec=30s
+Persistent=true
+Unit=box-scripts-drift-check.service
+
+[Install]
+WantedBy=timers.target

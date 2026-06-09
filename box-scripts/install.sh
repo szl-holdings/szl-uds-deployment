@@ -11,6 +11,7 @@
 #        a11oy-uptime-check   — probe a11oy.net uptime, alert on the outage edge
 #        a11oy-uptime-notify  — shared push notifier (ntfy/Telegram/webhook)
 #        dns-drift-check      — alert if a11oy.net DNS stops pointing at the box
+#        box-scripts-drift-check — alert if a host sbin/unit drifts from its committed box-scripts/ copy
 #   4. szl-ns-scratch — scratch-namespace cleanup-safety tool (no systemd unit;
 #        on-demand operator helper, see docs/SCRATCH_NAMESPACE_CONVENTION.md)
 #
@@ -32,6 +33,7 @@ install -m 0755 "$here/sbin/szl-ns-scratch"            /usr/local/sbin/szl-ns-sc
 install -m 0755 "$here/sbin/a11oy-uptime-check"        /usr/local/sbin/a11oy-uptime-check
 install -m 0755 "$here/sbin/a11oy-uptime-notify"       /usr/local/sbin/a11oy-uptime-notify
 install -m 0755 "$here/sbin/dns-drift-check"           /usr/local/sbin/dns-drift-check
+install -m 0755 "$here/sbin/box-scripts-drift-check"     /usr/local/sbin/box-scripts-drift-check
 
 echo "[install] copying systemd units to /etc/systemd/system ..."
 install -m 0644 "$here/systemd/a11oy-coexist.service"        /etc/systemd/system/a11oy-coexist.service
@@ -47,6 +49,8 @@ install -m 0644 "$here/systemd/a11oy-uptime-check.service"  /etc/systemd/system/
 install -m 0644 "$here/systemd/a11oy-uptime-check.timer"    /etc/systemd/system/a11oy-uptime-check.timer
 install -m 0644 "$here/systemd/dns-drift-check.service"     /etc/systemd/system/dns-drift-check.service
 install -m 0644 "$here/systemd/dns-drift-check.timer"       /etc/systemd/system/dns-drift-check.timer
+install -m 0644 "$here/systemd/box-scripts-drift-check.service" /etc/systemd/system/box-scripts-drift-check.service
+install -m 0644 "$here/systemd/box-scripts-drift-check.timer"   /etc/systemd/system/box-scripts-drift-check.timer
 
 # The uptime/DNS watchers read their push-notification channel from
 # /etc/a11oy-uptime.env. That channel is a PRIVATE secret (an ntfy topic, etc.)
@@ -83,6 +87,7 @@ systemctl enable --now istiod-fit-strategy.timer
 systemctl enable --now receipt-chain-watch.timer
 systemctl enable --now a11oy-uptime-check.timer
 systemctl enable --now dns-drift-check.timer
+systemctl enable --now box-scripts-drift-check.timer
 
 # Bring the cluster guards into a conformant state right now (idempotent no-ops
 # if the cluster is down or already conformant).
