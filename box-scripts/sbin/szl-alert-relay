@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""
+szl-alert-relay — tiny localhost relay that turns a Slack-format webhook
+payload into a CLEAN ntfy push.
+
+WHY: several GitHub Actions alert steps (e.g. szl-holdings/a11oy
+.github/workflows/rekor-recheck.yml) POST a Slack incoming-webhook body
+`{"text": "..."}` to whatever `SLACK_WEBHOOK_URL` points at. The team's only
+watched push channel is the ntfy topic in /etc/a11oy-uptime.env. ntfy accepts
+that JSON and returns HTTP 200, but it does NOT understand the Slack schema —
+it renders the raw `{"text": ...}` JSON wrapper as the message body, which is
+ugly for an urgent page. This relay sits behind the existing nginx, extracts
+`.text`, cleans it up (per-line de-indent, Slack emoji shortcodes -> unicode,
+strip `*bold*` markers), and republishes it as plain text via the shared
+notifier /usr/local/sbin/a11oy-uptime-notify (which reads NTFY_URL from
+/etc/a11oy-uptime.env), so the page reads as clean text.
+
+CONTRACT:
+  POST  /relay/ntfy/<RELAY_TOKEN>   body = Slack `{"text": "..."}`  -> 200 on
+        successful republish, 502 if the notifier failed, 400 on bad body,
+        404 on a wrong/absent token (token is never echoed).
+  GET   /relay/health               -> 200 "ok" (no token; for nginx/smoke).
+
+CONFIG (env file, default /etc/szl-alert-relay.env; real env wins):
+  RELAY_TOKEN=<unguessable>     # REQUIRED; must match the path segment
+  RELAY_PORT=9099              # listen port on 127.0.0.1 (default 9099)
+  NOTIFY_CMD=/usr/local/sbin/a11oy-uptime-notify   # text arrives on its stdin
+  NOTIFY_TITLE=Rekor receipt re-check               # ntfy Title header
+  NTFY_PRIORITY=high           # passed through to the notifier
+
+It is deliberately FAIL-LOUD on delivery: if the notifier exits non-zero the
+relay returns 502 so the calling workflow's 2xx gate surfaces the problem.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+ENV_FILE = os.environ.get("SZL_ALERT_RELAY_ENV", "/etc/szl-alert-relay.env")
+
+
+def load_env(path):
+    """Load KEY=VALUE lines without clobbering the real environment."""
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip()
+                if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+                    val = val[1:-1]
+                if key and key not in os.environ:
+                    os.environ[key] = val
+    except OSError:
+        pass
+
+
+load_env(ENV_FILE)
+
+RELAY_TOKEN = os.environ.get("RELAY_TOKEN", "").strip()
+RELAY_PORT = int(os.environ.get("RELAY_PORT", "9099"))
+NOTIFY_CMD = os.environ.get("NOTIFY_CMD", "/usr/local/sbin/a11oy-uptime-notify")
+NOTIFY_TITLE = os.environ.get("NOTIFY_TITLE", "Rekor receipt re-check")
+NTFY_PRIORITY = os.environ.get("NTFY_PRIORITY", "high")
+
+# Slack emoji shortcodes seen in the alert payloads -> unicode.
+EMOJI = {
+    ":rotating_light:": "\U0001F6A8",  # 🚨
+    ":white_check_mark:": "\u2705",     # ✅
+    ":warning:": "\u26A0\uFE0F",        # ⚠️
+    ":x:": "\u274C",                     # ❌
+    ":fire:": "\U0001F525",             # 🔥
+}
+
+_BOLD = re.compile(r"\*(.+?)\*")
+_EMOJI = re.compile(r":[a-z0-9_+\-]+:")
+
+
+def clean_text(text):
+    """Turn Slack mrkdwn into a clean plain-text ntfy body."""
+    # De-indent each line (the workflow heredoc carries YAML leading spaces).
+    lines = [ln.strip() for ln in text.replace("\r\n", "\n").split("\n")]
+    s = "\n".join(lines).strip()
+    # Strip *bold* markers (ntfy plaintext won't render them).
+    s = _BOLD.sub(r"\1", s)
+    # Map known emoji shortcodes; leave unknown ones untouched.
+    s = _EMOJI.sub(lambda m: EMOJI.get(m.group(0), m.group(0)), s)
+    return s
+
+
+def republish(text):
+    """Pipe the cleaned text to the shared notifier. Returns True on success."""
+    env = dict(os.environ)
+    env["NOTIFY_TITLE"] = NOTIFY_TITLE
+    env["NTFY_PRIORITY"] = NTFY_PRIORITY
+    try:
+        proc = subprocess.run(
+            [NOTIFY_CMD],
+            input=text.encode("utf-8"),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        sys.stderr.write("[alert-relay] notifier invocation failed: %s\n" % exc)
+        return False
+    if proc.stdout:
+        sys.stderr.write("[alert-relay] notifier: %s\n"
+                         % proc.stdout.decode("utf-8", "replace").strip())
+    return proc.returncode == 0
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "szl-alert-relay/1.0"
+
+    def _send(self, code, body=""):
+        payload = body.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        try:
+            self.wfile.write(payload)
+        except BrokenPipeError:
+            pass
+
+    def log_message(self, fmt, *args):  # quieter, go to stderr (journald)
+        sys.stderr.write("[alert-relay] %s - %s\n"
+                         % (self.address_string(), fmt % args))
+
+    def do_GET(self):
+        if self.path == "/relay/health":
+            self._send(200, "ok")
+        else:
+            self._send(404, "not found")
+
+    def do_POST(self):
+        if not RELAY_TOKEN:
+            sys.stderr.write("[alert-relay] RELAY_TOKEN not configured; refusing\n")
+            self._send(503, "relay not configured")
+            return
+        expected = "/relay/ntfy/" + RELAY_TOKEN
+        if self.path != expected:
+            self._send(404, "not found")
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 1_000_000:
+            self._send(400, "bad request")
+            return
+        raw = self.rfile.read(length)
+        try:
+            data = json.loads(raw.decode("utf-8"))
+            text = data.get("text")
+        except (ValueError, AttributeError):
+            text = None
+        if not text or not isinstance(text, str):
+            self._send(400, "missing .text")
+            return
+        if republish(clean_text(text)):
+            self._send(200, "ok")
+        else:
+            self._send(502, "republish failed")
+
+
+def main():
+    if not RELAY_TOKEN:
+        sys.stderr.write(
+            "[alert-relay] WARNING: RELAY_TOKEN is empty (set it in %s); "
+            "all POSTs will be refused with 503 until it is set.\n" % ENV_FILE)
+    httpd = ThreadingHTTPServer(("127.0.0.1", RELAY_PORT), Handler)
+    sys.stderr.write("[alert-relay] listening on 127.0.0.1:%d -> %s\n"
+                     % (RELAY_PORT, NOTIFY_CMD))
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,23 @@
+[Unit]
+Description=szl-alert-relay — Slack-format webhook -> clean ntfy push relay (box 167.233.50.75)
+Documentation=https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/szl-alert-relay.README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# RELAY_TOKEN + (optional) overrides live here; PRIVATE, not in git. Optional
+# so a fresh box still starts the unit (it refuses POSTs with 503 until the
+# token is set), mirroring the a11oy-uptime.env pattern.
+EnvironmentFile=-/etc/szl-alert-relay.env
+ExecStart=/usr/local/sbin/szl-alert-relay
+Restart=on-failure
+RestartSec=3
+# Hardening — it only needs loopback networking + to exec the notifier.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -12,8 +12,10 @@
 #        a11oy-uptime-notify  — shared push notifier (ntfy/Telegram/webhook)
 #        dns-drift-check      — alert if a11oy.net DNS stops pointing at the box
 #        box-scripts-drift-check — alert if a host sbin/unit drifts from its committed box-scripts/ copy
-#   4. szl-ns-scratch — scratch-namespace cleanup-safety tool (no systemd unit;
-#        on-demand operator helper, see docs/SCRATCH_NAMESPACE_CONVENTION.md)
+#   4. szl-ns-scratch — scratch-namespace cleanup-safety tool (on-demand
+#        operator helper, see docs/SCRATCH_NAMESPACE_CONVENTION.md), plus
+#        szl-ns-scratch-watch — periodic guard that alerts when an untracked
+#        (unlabeled + unmanaged) scratch namespace appears on uds-szl-demo
 #
 # Run as root from this directory:  sudo ./install.sh
 set -euo pipefail
@@ -30,10 +32,12 @@ install -m 0755 "$here/sbin/szl-core-rightsize"        /usr/local/sbin/szl-core-
 install -m 0755 "$here/sbin/istiod-fit-strategy"       /usr/local/sbin/istiod-fit-strategy
 install -m 0755 "$here/sbin/receipt-chain-watch"       /usr/local/sbin/receipt-chain-watch
 install -m 0755 "$here/sbin/szl-ns-scratch"            /usr/local/sbin/szl-ns-scratch
+install -m 0755 "$here/sbin/szl-ns-scratch-watch"      /usr/local/sbin/szl-ns-scratch-watch
 install -m 0755 "$here/sbin/a11oy-uptime-check"        /usr/local/sbin/a11oy-uptime-check
 install -m 0755 "$here/sbin/a11oy-uptime-notify"       /usr/local/sbin/a11oy-uptime-notify
 install -m 0755 "$here/sbin/dns-drift-check"           /usr/local/sbin/dns-drift-check
 install -m 0755 "$here/sbin/box-scripts-drift-check"     /usr/local/sbin/box-scripts-drift-check
+install -m 0755 "$here/sbin/szl-alert-relay"           /usr/local/sbin/szl-alert-relay
 
 echo "[install] copying systemd units to /etc/systemd/system ..."
 install -m 0644 "$here/systemd/a11oy-coexist.service"        /etc/systemd/system/a11oy-coexist.service
@@ -45,12 +49,15 @@ install -m 0644 "$here/systemd/istiod-fit-strategy.service"  /etc/systemd/system
 install -m 0644 "$here/systemd/istiod-fit-strategy.timer"    /etc/systemd/system/istiod-fit-strategy.timer
 install -m 0644 "$here/systemd/receipt-chain-watch.service" /etc/systemd/system/receipt-chain-watch.service
 install -m 0644 "$here/systemd/receipt-chain-watch.timer"   /etc/systemd/system/receipt-chain-watch.timer
+install -m 0644 "$here/systemd/szl-ns-scratch-watch.service" /etc/systemd/system/szl-ns-scratch-watch.service
+install -m 0644 "$here/systemd/szl-ns-scratch-watch.timer"   /etc/systemd/system/szl-ns-scratch-watch.timer
 install -m 0644 "$here/systemd/a11oy-uptime-check.service"  /etc/systemd/system/a11oy-uptime-check.service
 install -m 0644 "$here/systemd/a11oy-uptime-check.timer"    /etc/systemd/system/a11oy-uptime-check.timer
 install -m 0644 "$here/systemd/dns-drift-check.service"     /etc/systemd/system/dns-drift-check.service
 install -m 0644 "$here/systemd/dns-drift-check.timer"       /etc/systemd/system/dns-drift-check.timer
 install -m 0644 "$here/systemd/box-scripts-drift-check.service" /etc/systemd/system/box-scripts-drift-check.service
 install -m 0644 "$here/systemd/box-scripts-drift-check.timer"   /etc/systemd/system/box-scripts-drift-check.timer
+install -m 0644 "$here/systemd/szl-alert-relay.service"      /etc/systemd/system/szl-alert-relay.service
 
 # The uptime/DNS watchers read their push-notification channel from
 # /etc/a11oy-uptime.env. That channel is a PRIVATE secret (an ntfy topic, etc.)
@@ -78,6 +85,63 @@ EOF
   echo "[install] seeded commented-out /etc/a11oy-uptime.env (alerts log-only until a channel is set)"
 fi
 
+# szl-alert-relay config (RELAY_TOKEN). PRIVATE — not in git. Seed a stub with a
+# freshly generated token if absent (never clobber a hand-filled one). The relay
+# refuses POSTs with 503 until RELAY_TOKEN is non-empty.
+if [ ! -e /etc/szl-alert-relay.env ]; then
+  gen_tok="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' 2>/dev/null || true)"
+  cat > /etc/szl-alert-relay.env <<EOF
+# szl-alert-relay config (PRIVATE — keep out of git).
+# The public webhook URL is https://a11oy.net/relay/ntfy/<RELAY_TOKEN> — point
+# the szl-holdings/a11oy SLACK_WEBHOOK_URL secret at it. See
+# box-scripts/szl-alert-relay.README.md.
+RELAY_TOKEN=${gen_tok}
+RELAY_PORT=9099
+NOTIFY_CMD=/usr/local/sbin/a11oy-uptime-notify
+NOTIFY_TITLE=Rekor receipt re-check
+NTFY_PRIORITY=high
+EOF
+  chmod 600 /etc/szl-alert-relay.env
+  echo "[install] seeded /etc/szl-alert-relay.env with a fresh RELAY_TOKEN"
+fi
+
+# Install the nginx location snippet and idempotently wire it into the a11oy.net
+# vhost just before `location / {`. nginx loads EVERY file in sites-enabled/, so
+# relocate any stray backup out of the include glob before testing/reloading,
+# else nginx -t fails on a duplicate default_server and it looks like this broke
+# nginx (it didn't). See memory: nginx-sites-enabled-loads-everything.
+install -d -m 0755 /etc/nginx/snippets
+install -m 0644 "$here/szl-alert-relay-nginx.snippet.conf" /etc/nginx/snippets/szl-alert-relay.conf
+vhost=/etc/nginx/sites-available/a11oy
+if [ -f "$vhost" ]; then
+  if ! grep -q 'snippets/szl-alert-relay.conf' "$vhost"; then
+    # Insert the include before the FIRST `location / {` in the file.
+    awk '
+      !done && /^[[:space:]]*location[[:space:]]*\/[[:space:]]*\{/ {
+        print "    include /etc/nginx/snippets/szl-alert-relay.conf;";
+        print "";
+        done=1
+      }
+      { print }
+    ' "$vhost" > "${vhost}.relaywire.$$" && mv "${vhost}.relaywire.$$" "$vhost"
+    echo "[install] wired szl-alert-relay include into $vhost"
+  fi
+  # Relocate stray non-config files out of sites-enabled before testing.
+  for f in /etc/nginx/sites-enabled/*.bak* /etc/nginx/sites-enabled/*.orig \
+           /etc/nginx/sites-enabled/*.emergency /etc/nginx/sites-enabled/*~; do
+    [ -e "$f" ] || continue
+    install -d -m 0755 /etc/nginx/backups-relay
+    mv "$f" /etc/nginx/backups-relay/ && echo "[install] relocated stray $f out of sites-enabled"
+  done
+  if nginx -t 2>/dev/null; then
+    systemctl reload nginx && echo "[install] nginx reloaded with relay location"
+  else
+    echo "[install] WARNING: nginx -t failed; NOT reloading. Inspect 'nginx -t'." >&2
+  fi
+else
+  echo "[install] NOTE: $vhost not found; copy the snippet's location block into the a11oy 443 server block manually."
+fi
+
 echo "[install] reloading systemd + enabling units ..."
 systemctl daemon-reload
 systemctl enable --now a11oy-coexist.service
@@ -85,15 +149,18 @@ systemctl enable --now a11oy-port-guard.timer
 systemctl enable --now szl-core-rightsize.timer
 systemctl enable --now istiod-fit-strategy.timer
 systemctl enable --now receipt-chain-watch.timer
+systemctl enable --now szl-ns-scratch-watch.timer
 systemctl enable --now a11oy-uptime-check.timer
 systemctl enable --now dns-drift-check.timer
 systemctl enable --now box-scripts-drift-check.timer
+systemctl enable --now szl-alert-relay.service
 
 # Bring the cluster guards into a conformant state right now (idempotent no-ops
 # if the cluster is down or already conformant).
 [ -x /usr/local/sbin/szl-core-rightsize ]  && /usr/local/sbin/szl-core-rightsize  || true
 [ -x /usr/local/sbin/istiod-fit-strategy ] && /usr/local/sbin/istiod-fit-strategy || true
 [ -x /usr/local/sbin/receipt-chain-watch ]  && /usr/local/sbin/receipt-chain-watch   || true
+[ -x /usr/local/sbin/szl-ns-scratch-watch ] && /usr/local/sbin/szl-ns-scratch-watch  || true
 
 echo "[install] done. current status:"
 a11oy-mode status || true
