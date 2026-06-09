@@ -36,8 +36,11 @@ syft "registry:$IMG" -o spdx-json=sbom/szl-receipts-server-image.spdx.json \
 - The image these SBOMs describe is cosign keyless-signed in CI
   (`receipts-server-image.yml`); see `warhacker-deliverables/SIGNED-SBOMED-PACKAGE-PUBLISH-2026-06-07.md`
   for the full signing + publish + round-trip evidence.
-- SLSA honesty: build provenance is GitHub-Actions keyless attestation (SLSA L1/L2
-  class). No SLSA L3, Iron Bank, FedRAMP, or CMMC claims are made.
+- SLSA honesty: build provenance is GitHub-Actions keyless attestation. SLSA L1
+  honest on this bundle; the verified L2 on organ images is attested on the five
+  organ images only — bundle-level SLSA attestation is **NOT earned** (the cosign
+  signature is the bundle provenance). This is **not L3**. No Iron Bank, no
+  FedRAMP, no CMMC claims are made.
 
 
 ## Public pull + verify (no login, no key file)
