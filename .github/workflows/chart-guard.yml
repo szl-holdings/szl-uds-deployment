@@ -52,6 +52,8 @@ on:
       - "charts/**"
       - "scripts/chart-guard-checks.py"
       - "scripts/chart-guard-checks.test.py"
+      - "scripts/check-no-committed-subcharts.sh"
+      - "scripts/check-no-committed-subcharts.test.sh"
       - ".github/workflows/chart-guard.yml"
   push:
     branches: [main]
@@ -59,6 +61,8 @@ on:
       - "charts/**"
       - "scripts/chart-guard-checks.py"
       - "scripts/chart-guard-checks.test.py"
+      - "scripts/check-no-committed-subcharts.sh"
+      - "scripts/check-no-committed-subcharts.test.sh"
       - ".github/workflows/chart-guard.yml"
   workflow_dispatch:
 
@@ -83,6 +87,12 @@ jobs:
         run: python3 -m pip install --quiet pyyaml
       - name: Run chart-guard checks self-test
         run: python3 scripts/chart-guard-checks.test.py
+      # The no-committed-snapshots job is a one-line `git ls-files` guard that
+      # could be neutered (wrong pathspec, dropped `exit 1`) and pass vacuously.
+      # This builds throwaway git repos and asserts the SHARED guard script fails
+      # on a committed snapshot and passes on a clean tree.
+      - name: Run no-committed-subcharts guard self-test
+        run: sh scripts/check-no-committed-subcharts.test.sh
 
   # ── No committed umbrella subchart snapshots ────────────────────────────────
   # .gitignore (charts/*/charts/) keeps the CI-ephemeral vendored/stub subcharts
@@ -91,26 +101,20 @@ jobs:
   # still carry a stale snapshot — and once committed, Helm treats that snapshot
   # as the source of truth and the umbrella silently drifts. This job is the hard
   # guard: it fails if `git ls-files 'charts/*/charts/*'` lists anything tracked.
-  # It runs straight off the checkout (no stub_missing_deps.py, so the render-time
-  # snapshots are never present) so it only ever sees what is actually committed.
+  # The check lives in scripts/check-no-committed-subcharts.sh so the self-test
+  # job above can exercise the SAME code against negative fixtures (a regressed
+  # check then turns CI red there — this job `needs: self-test`). It runs straight
+  # off the checkout (no stub_missing_deps.py, so the render-time snapshots are
+  # never present) so it only ever sees what is actually committed.
   no-committed-snapshots:
     name: No committed umbrella subchart snapshots
+    needs: self-test
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v6
       - name: Assert no generated subchart snapshot is tracked in git
-        run: |
-          set -euo pipefail
-          tracked="$(git ls-files 'charts/*/charts/*')"
-          if [ -n "$tracked" ]; then
-            echo "::error::A generated umbrella subchart snapshot is tracked in git. These are written by .github/scripts/stub_missing_deps.py at render time and MUST NOT be committed — Helm would then treat the snapshot as the source of truth and the umbrella would drift / go stale. Remove it with 'git rm -r --cached <path>' and rely on the .gitignore rule 'charts/*/charts/'. Offending paths:"
-            echo "$tracked" | while IFS= read -r p; do
-              echo "::error file=${p}::committed generated subchart snapshot (matched 'charts/*/charts/*')"
-            done
-            exit 1
-          fi
-          echo "OK: no generated umbrella subchart snapshot is tracked under charts/*/charts/*"
+        run: sh scripts/check-no-committed-subcharts.sh
 
   chart-guard:
     name: Render + lint receipt-deploy charts
