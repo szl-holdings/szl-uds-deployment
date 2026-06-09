@@ -39,6 +39,14 @@ server:
 
   # Volume for persisting receipts across pod restarts.
   # v0.3.1: PVC-backed by default so the receipt chain survives reschedule.
+  #
+  # RETENTION: the server shards new receipts into <store>/shards/<bucket>/ so a
+  # single directory never holds more than SZL_RECEIPT_SHARD_SIZE (default 10000)
+  # files, and sealed shards can be rolled off to cold storage with
+  # `server.py archive-shards --delete`. Size this PVC for the hot working set you
+  # keep live (=~ unarchived buckets x shard size x avg receipt bytes); periodic
+  # archival keeps it bounded. Full procedure + the bounded `verify-store` audit:
+  # docs/operations/RECEIPT_STORE_RETENTION_RUNBOOK.md.
   persistence:
     enabled: true
     size: "5Gi"

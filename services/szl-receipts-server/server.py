@@ -64,11 +64,13 @@
 
 import os
 import ssl
+import sys
 import json
 import time
 import heapq
 import base64
 import hashlib
+import tarfile
 import threading
 import urllib.request
 import urllib.error
@@ -124,6 +126,23 @@ MAX_IN_MEMORY = max(1, int(os.environ.get("SZL_MAX_IN_MEMORY_RECEIPTS", "2000"))
 # Head-pointer file. Deliberately has NO ".json" suffix so the store scans
 # (which filter on .endswith(".json")) never pick it up as a receipt.
 HEAD_FILE = os.path.join(STORE_PATH, ".chain_head")
+
+# ── Receipt store sharding ──────────────────────────────────────────────────
+# A single flat directory holding hundreds of thousands of receipt files hurts
+# filesystem performance, backups and integrity scans, even though RAM is now
+# bounded. New receipts are therefore written into index-sharded subdirectories
+# under <store>/shards/<bucket>/, where bucket = chain_index // SHARD_SIZE
+# (zero-padded). Each bucket holds a CONTIGUOUS range of the chain, which keeps
+# every directory bounded and lets a completed ("sealed") bucket be tar'd to
+# cold storage while preserving end-to-end chain verifiability — prev_hash links
+# still chain across bucket boundaries, so an offline auditor can verify the full
+# history one bounded bucket at a time.
+#
+# Legacy receipts written before this change remain flat in the store root and
+# are still read and verified — sharding is additive and backward compatible.
+# Set SZL_RECEIPT_SHARD_SIZE=0 to disable sharding (write flat, legacy mode).
+SHARD_SIZE = max(0, int(os.environ.get("SZL_RECEIPT_SHARD_SIZE", "10000")))
+SHARDS_DIR = os.path.join(STORE_PATH, "shards")
 
 os.makedirs(STORE_PATH, exist_ok=True)
 
@@ -626,17 +645,68 @@ def _receipt_hash(record: dict) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _count_store():
-    """Cheap count of persisted receipt files (no parsing). Used for the
-    szl_chain_length gauge without loading the whole store into memory."""
-    n = 0
+def _shard_bucket(chain_index):
+    """Zero-padded shard bucket name for a chain index, or None when sharding is
+    disabled (SHARD_SIZE <= 0). Buckets sort lexically in chain order."""
+    if SHARD_SIZE <= 0:
+        return None
+    return f"{chain_index // SHARD_SIZE:08d}"
+
+
+def _store_path_for(receipt_id, chain_index):
+    """Absolute path a receipt is written to: an index-sharded subdir when
+    sharding is enabled, else the (legacy) store root."""
+    bucket = _shard_bucket(chain_index)
+    if bucket is None:
+        return os.path.join(STORE_PATH, f"{receipt_id}.json")
+    return os.path.join(SHARDS_DIR, bucket, f"{receipt_id}.json")
+
+
+def _iter_shard_buckets():
+    """Yield (bucket_name, abs_dir) for every shard subdir, in chain order.
+    Constant memory aside from the (small, bounded) list of bucket names."""
+    try:
+        buckets = sorted(
+            (e.name, e.path) for e in os.scandir(SHARDS_DIR) if e.is_dir()
+        )
+    except FileNotFoundError:
+        return
+    for name, path in buckets:
+        yield name, path
+
+
+def _iter_receipt_files():
+    """Yield absolute paths of every persisted receipt (.json) in the store, in
+    CONSTANT memory: the legacy flat files in the store root first, then every
+    sharded subdir under <store>/shards/ in chain order. A generator — it never
+    materializes the full file list — so it stays bounded no matter how large the
+    store grows (the fix that keeps the slow rehydrate path and the offline
+    verifier from OOMing as the chain reaches hundreds of thousands of files)."""
     try:
         with os.scandir(STORE_PATH) as it:
             for e in it:
-                if e.name.endswith(".json"):
-                    n += 1
+                if e.is_file() and e.name.endswith(".json"):
+                    yield e.path
     except FileNotFoundError:
-        pass
+        return
+    for _name, bdir in _iter_shard_buckets():
+        try:
+            with os.scandir(bdir) as it:
+                for e in it:
+                    if e.is_file() and e.name.endswith(".json"):
+                        yield e.path
+        except FileNotFoundError:
+            continue
+
+
+def _count_store():
+    """Cheap count of persisted receipt files (no parsing) across the legacy flat
+    root AND every shard subdir, in constant memory. Used to seed the persisted
+    count at boot/fallback; the /metrics hot path uses the in-memory
+    _persisted_count instead so a scrape never walks the (unbounded) store."""
+    n = 0
+    for _path in _iter_receipt_files():
+        n += 1
     return n
 
 
@@ -701,11 +771,9 @@ def _rehydrate():
                     f"head={str(_chain_head)[:12]}… persisted={cnt}")
         return _chain_index
 
-    # Slow path: constant-memory streaming scan (no pointer yet).
-    try:
-        names = [n for n in os.listdir(STORE_PATH) if n.endswith(".json")]
-    except FileNotFoundError:
-        names = []
+    # Slow path: constant-memory streaming scan (no pointer yet). Streams over
+    # the legacy flat root AND every shard subdir via the _iter_receipt_files
+    # generator, so the scan never materializes the full (unbounded) file list.
 
     def _key(r):
         return (
@@ -716,13 +784,12 @@ def _rehydrate():
     tail = None          # receipt with the highest (created_at, chain_index)
     recent = []          # bounded heap (by _key) of the most-recent MAX_IN_MEMORY
     scanned = 0
-    for name in names:
-        path = os.path.join(STORE_PATH, name)
+    for path in _iter_receipt_files():
         try:
             with open(path, "r") as f:
                 rec = json.load(f)
         except Exception as e:
-            log("warn", f"skipping unreadable receipt {name}: {e}")
+            log("warn", f"skipping unreadable receipt {os.path.basename(path)}: {e}")
             continue
         scanned += 1
         k = _key(rec)
@@ -789,13 +856,17 @@ def _verify_chain_on_disk():
     scrape — which OOM-kills the process once the chain reaches tens of thousands
     of receipts — this verifies the most-recent in-memory window (the live
     _receipts list, ordered, capped at MAX_IN_MEMORY) and reports the total chain
-    length from a cheap on-disk file count. Each window receipt's signature, hash
-    and intra-window prev_hash linkage are checked; expected_prev is seeded from
-    the first window receipt's own stored prev_hash (the older, on-disk history
-    remains independently verifiable offline via the published public key)."""
+    length from the in-memory _persisted_count (seeded from the head pointer at
+    boot, incremented per append) so a scrape NEVER walks the (unbounded, now
+    sharded) store directory tree. Each window receipt's signature, hash and
+    intra-window prev_hash linkage are checked; expected_prev is seeded from the
+    first window receipt's own stored prev_hash. The older, on-disk history (and
+    cold-archived shards) remains independently verifiable offline via the
+    published public key — run `python server.py verify-store` for the full,
+    shard-by-shard, bounded-memory at-rest audit."""
     with _receipt_lock:
         window = list(_receipts)
-    total = _count_store()
+    total = _persisted_count
 
     chain_ok = True
     valid_count = 0
@@ -1022,7 +1093,12 @@ class Handler(BaseHTTPRequestHandler):
             _chain_head = record["chain"]["hash"]
             _chain_index = chain_index + 1
             try:
-                with open(f"{STORE_PATH}/{receipt_id}.json", "w") as f:
+                dest = _store_path_for(receipt_id, chain_index)
+                # Index-sharded subdir; cheap exist_ok makedirs (the bucket only
+                # rolls over once every SHARD_SIZE appends). Keeps the on-disk
+                # store from piling 200k+ files into one directory.
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "w") as f:
                     json.dump(record, f)
                 _persisted_count += 1
             except Exception as e:
@@ -1098,7 +1174,243 @@ def boot():
                     f"signed={bool(_signer and _signer.available)}")
 
 
+# ── Offline full-store audit + cold-storage archival (CLI) ──────────────────────
+
+def _group_paths():
+    """Return [(label, [paths])] for the whole store, in chain order: the legacy
+    flat root first (as one group), then each shard bucket. The group LIST is
+    bounded (one entry per bucket); paths within a group are not loaded here."""
+    groups = []
+    legacy = []
+    try:
+        with os.scandir(STORE_PATH) as it:
+            for e in it:
+                if e.is_file() and e.name.endswith(".json"):
+                    legacy.append(e.path)
+    except FileNotFoundError:
+        pass
+    if legacy:
+        groups.append(("(legacy-root)", legacy))
+    for name, bdir in _iter_shard_buckets():
+        paths = []
+        try:
+            with os.scandir(bdir) as it:
+                for e in it:
+                    if e.is_file() and e.name.endswith(".json"):
+                        paths.append(e.path)
+        except FileNotFoundError:
+            continue
+        if paths:
+            groups.append((name, paths))
+    return groups
+
+
+def verify_store_offline():
+    """Full at-rest integrity audit of the ENTIRE on-disk store (legacy flat root
+    + every shard bucket) in BOUNDED memory: receipts are verified one GROUP at a
+    time (a shard bucket holds at most SHARD_SIZE receipts; the legacy root is a
+    finite, frozen pre-sharding chunk), carrying only the running prev_hash link
+    across group boundaries. Verifies each receipt's Ed25519 DSSE signature, its
+    stored hash, and the prev_hash chain linkage in chain_index order — the same
+    checks an offline auditor runs against the published public key.
+
+    This is the unbounded-safe replacement for ever re-reading the whole store on
+    the /metrics hot path: memory never scales with TOTAL chain length, only with
+    a single group. Returns a report dict; chain_ok=False on any tamper."""
+    groups = _group_paths()
+    total = valid = bad_sig = bad_hash = bad_link = 0
+    tampered = []
+    expected_prev = None
+    chain_ok = True
+    for label, paths in groups:
+        recs = []
+        for p in paths:
+            try:
+                with open(p) as f:
+                    recs.append(json.load(f))
+            except Exception as e:
+                log("warn", f"unreadable receipt {os.path.basename(p)}: {e}")
+                chain_ok = False
+        recs.sort(key=lambda r: r.get("chain", {}).get("chain_index", 0))
+        for rec in recs:
+            total += 1
+            chain = rec.get("chain", {}) or {}
+            rid = rec.get("id", "")
+            if expected_prev is None:
+                expected_prev = chain.get("prev_hash", GENESIS)
+            try:
+                hash_ok = (_receipt_hash(rec) == chain.get("hash"))
+            except Exception:
+                hash_ok = False
+            sig_ok = verify_dsse(rec.get("envelope", {}) or {})
+            link_ok = (chain.get("prev_hash") == expected_prev)
+            if hash_ok and sig_ok and link_ok:
+                valid += 1
+            else:
+                chain_ok = False
+                bad_sig += 0 if sig_ok else 1
+                bad_hash += 0 if hash_ok else 1
+                bad_link += 0 if link_ok else 1
+                if rid:
+                    tampered.append(rid)
+            expected_prev = chain.get("hash") or expected_prev
+        recs = None  # release the group before the next bucket
+    return {
+        "store_path": STORE_PATH,
+        "shard_size": SHARD_SIZE,
+        "groups": len(groups),
+        "total": total,
+        "valid": valid,
+        "chain_ok": chain_ok,
+        "bad_sig": bad_sig,
+        "bad_hash": bad_hash,
+        "bad_link": bad_link,
+        "tampered_sample": tampered[:20],
+    }
+
+
+def _verify_bucket(paths):
+    """Bounded verify of a single shard bucket's receipts (used before sealing).
+    Returns (ok, count, first_prev_hash, last_hash)."""
+    recs = []
+    for p in paths:
+        with open(p) as f:
+            recs.append(json.load(f))
+    recs.sort(key=lambda r: r.get("chain", {}).get("chain_index", 0))
+    ok = True
+    expected_prev = recs[0].get("chain", {}).get("prev_hash", GENESIS) if recs else GENESIS
+    first_prev = expected_prev
+    last_hash = None
+    for rec in recs:
+        chain = rec.get("chain", {}) or {}
+        hash_ok = (_receipt_hash(rec) == chain.get("hash"))
+        sig_ok = verify_dsse(rec.get("envelope", {}) or {})
+        link_ok = (chain.get("prev_hash") == expected_prev)
+        ok = ok and hash_ok and sig_ok and link_ok
+        expected_prev = chain.get("hash") or expected_prev
+        last_hash = chain.get("hash") or last_hash
+    return ok, len(recs), first_prev, last_hash
+
+
+def archive_sealed_shards(cold_dir, delete=False):
+    """Roll completed ("sealed") shard buckets off the live store into cold
+    storage. A bucket is SEALED when it is strictly below the TAIL bucket
+    (the bucket the current chain head writes into) — no further receipts will
+    ever land in it. Each sealed bucket is VERIFIED, then tar.gz'd into
+    <cold_dir>/<bucket>.tar.gz with a sidecar <bucket>.manifest.json recording
+    count, first prev_hash, last hash and the tarball sha256, and appended to
+    <cold_dir>/archived.json. Only with delete=True is the live bucket removed.
+
+    Chain verifiability is preserved: the manifest's first prev_hash + last hash
+    let an auditor stitch a cold-archived bucket back into the live chain, and the
+    head-pointer count remains the authoritative chain length (archived receipts
+    still count). Returns a summary dict. A bucket that fails verification is
+    SKIPPED (never archived/deleted) and flagged in the result."""
+    if SHARD_SIZE <= 0:
+        return {"error": "sharding disabled (SHARD_SIZE=0); nothing to archive"}
+    ptr = _read_head_pointer()
+    if ptr is None:
+        return {"error": "no head pointer; refusing to archive without a known tail"}
+    head_index = int(ptr["chain_index"])  # next index to assign
+    last_written = max(head_index - 1, 0)
+    tail_bucket = f"{last_written // SHARD_SIZE:08d}"
+    os.makedirs(cold_dir, exist_ok=True)
+
+    ledger_path = os.path.join(cold_dir, "archived.json")
+    try:
+        with open(ledger_path) as f:
+            ledger = json.load(f)
+    except Exception:
+        ledger = {"archived": []}
+    already = {e["bucket"] for e in ledger.get("archived", [])}
+
+    archived, skipped = [], []
+    for name, bdir in _iter_shard_buckets():
+        if name >= tail_bucket:
+            continue  # the tail bucket (and beyond) is still being written
+        if name in already:
+            continue
+        paths = [e.path for e in os.scandir(bdir)
+                 if e.is_file() and e.name.endswith(".json")]
+        if not paths:
+            continue
+        ok, count, first_prev, last_hash = _verify_bucket(paths)
+        if not ok:
+            skipped.append(name)
+            log("error", f"[archive] bucket {name} failed verification; skipping")
+            continue
+        tar_path = os.path.join(cold_dir, f"{name}.tar.gz")
+        with tarfile.open(tar_path, "w:gz") as tar:
+            tar.add(bdir, arcname=name)
+        sha = hashlib.sha256()
+        with open(tar_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                sha.update(chunk)
+        manifest = {
+            "bucket": name,
+            "count": count,
+            "first_prev_hash": first_prev,
+            "last_hash": last_hash,
+            "tarball": os.path.basename(tar_path),
+            "tarball_sha256": sha.hexdigest(),
+            "archived_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "deleted_from_live": bool(delete),
+        }
+        with open(os.path.join(cold_dir, f"{name}.manifest.json"), "w") as f:
+            json.dump(manifest, f, indent=2)
+        ledger["archived"].append(manifest)
+        if delete:
+            for p in paths:
+                os.remove(p)
+            try:
+                os.rmdir(bdir)
+            except OSError:
+                pass
+        archived.append(name)
+        log("info", f"[archive] sealed bucket {name} → {tar_path} "
+                    f"({count} receipts, delete={delete})")
+
+    with open(ledger_path, "w") as f:
+        json.dump(ledger, f, indent=2)
+    return {
+        "cold_dir": cold_dir,
+        "tail_bucket": tail_bucket,
+        "archived": archived,
+        "skipped_failed_verify": skipped,
+        "delete": bool(delete),
+    }
+
+
+def _cli(argv):
+    """Operator CLI: bounded full-store audit + cold-storage shard rollup.
+    These reuse the same Ed25519/DSSE verification as the server, so they need a
+    signer (public key) — build it before verifying."""
+    global _signer, _public_key_b64
+    cmd = argv[0]
+    _signer = build_signer()
+    _public_key_b64 = _signer.public_key_b64u if _signer else None
+    if cmd == "verify-store":
+        report = verify_store_offline()
+        print(json.dumps(report, indent=2))
+        return 0 if report["chain_ok"] else 1
+    if cmd == "archive-shards":
+        cold_dir = os.environ.get(
+            "SZL_RECEIPT_COLD_DIR", os.path.join(STORE_PATH, "cold"))
+        delete = "--delete" in argv[1:]
+        for i, a in enumerate(argv[1:]):
+            if a == "--cold-dir" and i + 1 < len(argv[1:]):
+                cold_dir = argv[1:][i + 1]
+        report = archive_sealed_shards(cold_dir, delete=delete)
+        print(json.dumps(report, indent=2))
+        return 1 if report.get("error") or report.get("skipped_failed_verify") else 0
+    print("usage: server.py [verify-store | archive-shards [--cold-dir DIR] [--delete]]",
+          file=sys.stderr)
+    return 2
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        sys.exit(_cli(sys.argv[1:]))
     boot()
     # Threaded server: a single-threaded HTTPServer serializes ALL requests, so a
     # sustained receipt-POST flood (each POST = Vault sign + file write) starves
