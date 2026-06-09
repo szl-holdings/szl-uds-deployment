@@ -10,13 +10,22 @@ image:
   pullPolicy: IfNotPresent
 
 service:
+  # mesh / NetworkPolicy-facing port (UDS expose, default-deny rules)
   port: 8080
+  # port the killinchu app actually listens on inside the container
+  targetPort: 7860
 
 healthPath: "/api/killinchu/healthz"
 
 # Receipt-signing key (Ed25519). Provisioned by the szl-key-init pre-install hook
 # into Secret `receiptKeySecret` unless it already exists (BYOK supported).
 receiptKeySecret: szl-receipts-ed25519
+
+# Pre-install Ed25519 key-init hook. Off by default: the Secret is mounted
+# optional:true, and the hook pod needs root+kubectl (incompatible with the
+# restricted PSA / ambient cluster). Enable only on a cluster that supports it.
+receiptKeyInit:
+  enabled: false
 
 # Cross-organ DSSE receipt sink (amaru/killinchu courier targets this).
 receiptsSink:

@@ -1,328 +1,193 @@
-# SZL Vessels Demo — Deployment Operator Guide
+# SZL UDS Deployment — Operator Guide (killinchu + a11oy)
 
-**szl-uds-deployment** · Warhacker 2026 · Built with Zarf v0.77.0 + UDS + keyless Sigstore signing
+**szl-uds-deployment** · Built with Zarf + UDS Core + keyless Sigstore signing
+
+This repo deploys the SZL flagships onto a UDS (Defense Unicorns) cluster:
+
+| Flagship | What it is | Chart | Image |
+|---|---|---|---|
+| **a11oy** | Governed multi-model assistant + receipts console | `charts/a11oy` | `ghcr.io/szl-holdings/a11oy:uds-v0.2.0` |
+| **killinchu** | Andean Drone Intelligence (Doctrine v11) | `charts/killinchu` | `ghcr.io/szl-holdings/killinchu:uds-v0.2.0` |
+
+> **Note — "vessels" is retired.** The legacy `szl-vessels-demo` package
+> (`zarf-package-szl-vessels-demo-*`, `svc/vessels-web`, ns `szl-vessels`) was
+> **consolidated into killinchu**. There is no longer a vessels package, chart,
+> namespace, or service. Any doc, script, or screenshot referencing
+> `vessels-web` / `szl-vessels` / `zarf-package-szl-vessels-demo-amd64-0.3.1`
+> is stale — substitute **killinchu** (ns `szl-killinchu`, `svc/szl-killinchu`).
+
+---
+
+## Live cluster facts (read this first)
+
+The reference cluster (k3d `uds-szl-demo`) is small (2 vCPU) and runs the **Istio
+ambient dataplane**, not sidecars. Both flagships are deployed accordingly:
+
+- **Ambient mesh, no sidecar.** Namespaces carry `istio.io/dataplane-mode: ambient`.
+  A sidecar (`istio-injection=enabled` or any `sidecar.istio.io/inject` annotation)
+  is **rejected** by the `pepr-uds-core.pepr.dev` admission webhook and also fails to
+  pull the proxy image offline. Do not add it.
+- **Restricted PodSecurity.** Namespaces enforce `pod-security.kubernetes.io/enforce: restricted`.
+  Pods run `runAsNonRoot`, `readOnlyRootFilesystem`, drop `ALL` caps.
+- **Ports.** Both apps listen on container port **7860**. The Service exposes the
+  mesh / NetworkPolicy-facing port **8080** and targets **7860**
+  (`service.port: 8080`, `service.targetPort: 7860`).
+- **Health.** killinchu readiness: `GET /api/killinchu/healthz` on :7860.
 
 ---
 
 ## Prerequisites
 
-| Tool | Minimum version | Install |
-|---|---|---|
-| Docker | 24.0 | https://docs.docker.com/engine/install/ |
-| k3d | 5.6.0 | `brew install k3d` or https://k3d.io/v5.6.0/#installation |
-| zarf | 0.77.0 | https://github.com/zarf-dev/zarf/releases/tag/v0.77.0 |
-| kubectl | 1.29 | https://kubernetes.io/docs/tasks/tools/ |
-| helm | 3.14 | https://helm.sh/docs/intro/install/ |
-| cosign | 2.4.3 | `brew install cosign` or https://docs.sigstore.dev/system_config/installation/ |
-| jq | 1.7 | `brew install jq` |
-| curl | 7.88 | pre-installed on most systems |
-| Defense Unicorns registry account | (free) | https://registry.defenseunicorns.com (see "UDS Core registry login" below) |
+| Tool | Minimum version |
+|---|---|
+| Docker | 24.0 |
+| k3d | 5.6.0 |
+| zarf | 0.77.0 |
+| kubectl | 1.29 |
+| helm | 3.14 |
+| cosign | 2.4.x |
+| jq | 1.7 |
+
+```bash
+for t in docker k3d zarf kubectl helm cosign jq curl; do
+  command -v "$t" >/dev/null && echo "ok: $t" || echo "MISSING: $t"
+done
+```
+
+**Disk**: ~4 GB free · **RAM**: 8 GB min (16 GB recommended).
 
 ### UDS Core registry login (required before `uds run start` / `uds run bundle`)
 
-The UDS bundle pulls UDS Core from `registry.defenseunicorns.com/public/core:1.5.0-upstream`.
-That registry is **not anonymous** (it answers `WWW-Authenticate: Basic`); an
-unauthenticated pull returns `401` and `uds create` fails with
-`GET .../core/manifests/1.5.0-upstream: basic credential not found`. Create a
-**free** account, then log the build box in once:
+The UDS bundle pulls UDS Core from `registry.defenseunicorns.com/public/core:1.5.0-upstream`,
+which is **not anonymous** (an unauthenticated pull returns `401`). Create a free
+account at https://registry.defenseunicorns.com, then log the build box in once:
 
 ```bash
 echo "$DU_REGISTRY_TOKEN" | zarf tools registry login registry.defenseunicorns.com \
   -u "$DU_REGISTRY_USERNAME" --password-stdin
-# verify: zarf tools registry digest registry.defenseunicorns.com/public/core:1.5.0-upstream
-```
-
-This is an environment prerequisite (like the tools above), not a repo defect — the
-bundle ref is correct. Full walkthrough: `docs/INSTALL.md` → "UDS Core registry login".
-
-Verify all tools are present:
-
-```bash
-for tool in docker k3d zarf kubectl helm cosign jq curl; do
-  command -v "$tool" && $tool version 2>/dev/null | head -1 || echo "MISSING: $tool"
-done
-```
-
-**Disk space**: ~4 GB free (Docker images + Zarf package cache)  
-**RAM**: 8 GB minimum; 16 GB recommended for stable k3d operation  
-**Network**: Required for first run (image pulls); subsequent runs use the Zarf internal registry  
-
----
-
-## Single Command
-
-```bash
-make demo
-```
-
-This runs `demo/warhacker_demo.sh`, which executes all 7 steps end-to-end.
-
-If `make` is unavailable:
-
-```bash
-chmod +x demo/warhacker_demo.sh
-./demo/warhacker_demo.sh
-```
-
-Expected runtime: **45–60 seconds** with a warm Docker image cache.  
-First run (cold): add 5–10 minutes for image pulls.
-
----
-
-## Manual Step-by-Step
-
-### Step 1 — Create k3d cluster
-
-```bash
-k3d cluster create szl-demo \
-  --k3s-arg "--disable=traefik@server:0" \
-  --port "8080:80@loadbalancer" \
-  --wait \
-  --timeout 120s
-
-k3d kubeconfig merge szl-demo --kubeconfig-merge-default
-kubectl config use-context k3d-szl-demo
-```
-
-### Step 2 — Zarf init (signed)
-
-```bash
-# Download Zarf init package
-curl -fsSL https://github.com/zarf-dev/zarf/releases/download/v0.77.0/zarf-init-amd64-v0.77.0.tar.zst \
-  -o zarf-init-amd64-v0.77.0.tar.zst
-
-# Verify the init package signature (Zarf 0.77 keyless)
-zarf package verify zarf-init-amd64-v0.77.0.tar.zst \
-  --certificate-identity "https://github.com/zarf-dev/zarf/.github/workflows/release.yml@refs/tags/v0.77.0" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
-
-# Initialize
-zarf init --components=git-server --confirm --no-progress \
-  init-package zarf-init-amd64-v0.77.0.tar.zst
-```
-
-### Step 3 — Deploy vessels demo package
-
-```bash
-# Verify package signature (keyless cosign)
-cosign verify-blob \
-  --bundle zarf-package-szl-vessels-demo-amd64-0.3.1.tar.zst.cosign.bundle \
-  --certificate-identity "https://github.com/szl-holdings/vessels/.github/workflows/uds-package-release.yml@refs/tags/v0.3.1" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  zarf-package-szl-vessels-demo-amd64-0.3.1.tar.zst
-
-# Deploy
-zarf package deploy zarf-package-szl-vessels-demo-amd64-0.3.1.tar.zst \
-  --confirm --no-progress --set DOMAIN=localhost
-```
-
-### Step 4 — Port-forward
-
-```bash
-kubectl rollout status deployment/vessels-web -n szl-vessels --timeout=120s
-kubectl port-forward -n szl-vessels svc/vessels-web 8080:80 &
-```
-
-### Step 5 — Query the API
-
-```bash
-curl -s localhost:8080/api/check?imo=9999001 | jq '.'
-```
-
-Expected response structure:
-
-```json
-{
-  "imo": "9999001",
-  "sanctions_hit": false,
-  "dark_vessel": false,
-  "receipt": {
-    "receipt_id": "<sha256>",
-    "envelope": {
-      "payload": "<base64>",
-      "payloadType": "application/vnd.szl.receipt.v1+json",
-      "signatures": [{ "keyid": "szl-vessels-demo-hmac-sha256-2026", "sig": "<base64>" }]
-    },
-    "sig_placeholder": "cosign verify-blob --bundle ..."
-  }
-}
-```
-
-### Step 6 — Verify receipt
-
-```bash
-# Check Kubernetes annotation on the Deployment
-kubectl get deploy vessels-web -n szl-vessels \
-  -o jsonpath='{.metadata.annotations}' | jq '.'
-
-# Verify the Zarf package itself (the canonical supply-chain check)
-zarf package verify zarf-package-szl-vessels-demo-amd64-0.3.1.tar.zst \
-  --certificate-identity "https://github.com/szl-holdings/vessels/.github/workflows/uds-package-release.yml@refs/tags/v0.3.1" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
-```
-
-### Step 7 — Cleanup
-
-```bash
-# Stop port-forward
-kill %1 2>/dev/null || true
-# Destroy cluster
-k3d cluster delete szl-demo
 ```
 
 ---
 
-## Verification
+## Option A — Canonical supply-chain deploy (UDS bundle)
 
-### Package signature (cosign keyless)
+The signed, reproducible path. The bundle's Zarf agent mirrors images into the
+in-cluster registry and applies the UDS Package CRs (NetworkPolicies, mTLS,
+monitors). See the available tasks:
 
 ```bash
-cosign verify-blob \
-  --bundle <package>.cosign.bundle \
-  --certificate-identity "https://github.com/szl-holdings/vessels/.github/workflows/uds-package-release.yml@refs/tags/v0.3.1" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  <package>.tar.zst
+uds run --list
+uds run start        # create cluster + uds core + deploy the registered packages
 ```
 
-Output on success: `Verified OK`
-
-### SBOM attestation
+Registered packages live under `packages/` and are wired into `uds-bundle.yaml`.
+Deploy a single flagship package directly:
 
 ```bash
-cosign verify-blob-attestation \
-  --bundle <package>.sbom.bundle \
-  --certificate-identity "https://github.com/szl-holdings/vessels/.github/workflows/uds-package-release.yml@refs/tags/v0.3.1" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  --type spdxjson \
-  <package>.tar.zst
+zarf package deploy zarf-package-a11oy-amd64-uds-v0.2.0.tar.zst --confirm
 ```
 
-Output: SPDX JSON printed to stdout. Verify `spdxVersion` is `SPDX-2.3`.
-
-### Zarf native verify (0.77.0+)
+Verify an image signature (keyless cosign) before deploy:
 
 ```bash
-zarf package verify <package>.tar.zst \
-  --certificate-identity "https://github.com/szl-holdings/vessels/.github/workflows/uds-package-release.yml@refs/tags/v0.3.1" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+cosign verify ghcr.io/szl-holdings/killinchu:uds-v0.2.0 \
+  --certificate-identity-regexp 'https://github.com/szl-holdings/killinchu/.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-### Governance receipts in Kubernetes
+---
+
+## Option B — Direct chart deploy onto the ambient box (validated)
+
+When the full bundle build is too heavy for the box, deploy a flagship straight
+from its chart. The chart already declares the ambient namespace + restricted PSA;
+images pull directly from GHCR because you label the namespace `zarf.dev/agent: ignore`, which tells the Zarf agent to skip image-rewriting for this namespace. (Option B has no in-cluster image mirror; the canonical bundle path in Option A does the mirroring instead, so do **not** bake this label into the chart.)
+The receipt-signing key-init hook is **off by default** (it needs root + kubectl,
+which the restricted/ambient cluster forbids); the receipt key Secret is mounted
+`optional: true`.
 
 ```bash
-# All resources annotated by Pepr governance-receipts controller
-kubectl get deploy,job -A \
-  -o json | jq '
-    .items[]
-    | select(.metadata.annotations["szl.receipt.id"] != null)
-    | { resource: "\(.metadata.namespace)/\(.kind)/\(.metadata.name)",
-        receipt_id: .metadata.annotations["szl.receipt.id"][0:16],
-        ts: .metadata.annotations["szl.receipt.ts"] }'
+# 1) Pre-create the namespace so Helm can store its release secret, then let the
+#    chart's own Namespace template reconcile the ambient + restricted labels.
+kubectl create namespace szl-killinchu
+kubectl label   namespace szl-killinchu app.kubernetes.io/managed-by=Helm --overwrite
+kubectl label   namespace szl-killinchu zarf.dev/agent=ignore --overwrite  # Option B: pull images straight from GHCR
+kubectl annotate namespace szl-killinchu \
+  meta.helm.sh/release-name=killinchu \
+  meta.helm.sh/release-namespace=szl-killinchu --overwrite
+
+# 2) Install (skip hooks; key-init is gated off in values.yaml).
+helm install killinchu charts/killinchu -n szl-killinchu --no-hooks
+
+# 3) Wait + verify.
+kubectl rollout status deploy/killinchu -n szl-killinchu --timeout=180s
+kubectl get pods -n szl-killinchu      # expect 1/1 Running (single container)
+```
+
+a11oy follows the same shape from `charts/a11oy` (ns `szl-a11oy`, port 7860).
+
+### Verify killinchu is serving
+
+```bash
+# In-pod health (kubelet runs this as the readiness probe):
+POD=$(kubectl get pod -n szl-killinchu -l app=killinchu -o jsonpath='{.items[0].metadata.name}')
+kubectl get pod -n szl-killinchu $POD \
+  -o jsonpath='{range .status.conditions[*]}{.type}={.status} {end}{"\n"}'   # Ready=True
+kubectl logs -n szl-killinchu $POD --tail=3   # "Andean Drone Intelligence on :7860 — Doctrine v11"
 ```
 
 ---
 
 ## Troubleshooting
 
-### Error 1: `zarf package verify` returns "certificate not found in Rekor"
+### Pod is `0/2 Init:ErrImagePull` (istio proxyv2)
+A **sidecar is being injected**. The ambient cluster has no proxy image to pull.
+Remove the sidecar trigger: drop `istio-injection=enabled` from the namespace and
+remove the `sidecar.istio.io/inject` annotation from the pod template. The shipped
+charts already avoid both.
 
-**Cause**: The Rekor transparency log entry has not replicated yet, or the bundle was not downloaded with the package.
+### `FailedCreate ... pepr-uds-core.pepr.dev denied the request: ... annotation sidecar.istio.io/inject`
+The UDS webhook forbids the **mere presence** of that annotation in ambient mode —
+true *or* false. It must be absent entirely (the charts do not set it).
 
-**Remediation**:
-```bash
-# Use the cosign bundle file instead of Rekor lookup
-cosign verify-blob \
-  --bundle <package>.cosign.bundle \
-  --certificate-identity <cert-identity> \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  <package>.tar.zst
-```
+### Pod `Running` but `0/1` (never Ready)
+Port mismatch. The app listens on **7860**; an older chart probed **8080**.
+Confirm `service.targetPort: 7860` and the readiness probe port is 7860.
 
-### Error 2: `k3d cluster create` fails with "port already in use"
+### `helm uninstall` deleted the namespace
+The Helm-owned Namespace template is removed on uninstall, which can race a
+reinstall. Wait for `kubectl get ns szl-killinchu` to report NotFound, then redo
+the Option B steps.
 
-**Cause**: Port 8080 (or 80/443) is bound by another process.
-
-**Remediation**:
-```bash
-# Check what is using port 8080
-lsof -i :8080
-# Use a different local port
-PORT_FWD_PORT=9090 ./demo/warhacker_demo.sh
-```
-
-### Error 3: `zarf init` times out waiting for registry
-
-**Cause**: Docker is rate-limiting image pulls, or the internal registry pod is crash-looping.
-
-**Remediation**:
-```bash
-# Check registry pod status
-kubectl get pods -n zarf
-kubectl describe pod -n zarf -l app=zarf-docker-registry
-
-# Retry with increased timeout
-zarf init --timeout 300s --confirm
-```
-
-### Error 4: `kubectl port-forward` exits immediately
-
-**Cause**: The vessels-web pod is not yet running (Deployment rollout incomplete, or image pull failed).
-
-**Remediation**:
-```bash
-# Check pod status
-kubectl get pods -n szl-vessels
-kubectl describe pod -n szl-vessels -l app.kubernetes.io/name=vessels-web
-
-# Check events for image pull errors
-kubectl get events -n szl-vessels --sort-by='.lastTimestamp' | tail -20
-
-# Wait explicitly
-kubectl rollout status deployment/vessels-web -n szl-vessels --timeout=180s
-```
-
-### Error 5: `cosign verify-blob` fails with "CERTIFICATE_VERIFY_FAILED"
-
-**Cause**: The certificate identity or OIDC issuer string does not exactly match what was recorded during signing.
-
-**Remediation**:
-```bash
-# Inspect the bundle to see the recorded identity
-cat <package>.cosign.bundle | jq '.cert' | base64 -d | openssl x509 -noout -text \
-  | grep -A2 "Subject Alternative Name"
-
-# The SubjectAltName URI must match --certificate-identity exactly.
-# Recheck the workflow file path and tag in the cert (look for the URI SAN).
-```
-
-If the identity does not match, the package was signed by a different workflow run.
-Open an issue at https://github.com/szl-holdings/vessels/issues with the bundle output.
+### key-init Job fails (`kubectl: not found` / PSA denied)
+Leave `receiptKeyInit.enabled: false` (default) and install with `--no-hooks`.
+The receipt key Secret is optional; signing falls back to an ephemeral key.
 
 ---
 
 ## Key file locations
 
-| File | Purpose |
+| Path | Purpose |
 |---|---|
-| `uds/zarf.yaml` | Zarf v0.77.0 package manifest |
-| `uds/values.yaml` | Aggregate Helm values |
-| `uds/charts/vessels/` | Helm chart for vessels-web |
-| `uds/pepr/governance-receipts.ts` | Pepr admission controller |
-| `demo/warhacker_demo.sh` | End-to-end demo script |
-| `.github/workflows/uds-package-release.yml` | CI: build + sign + publish |
+| `charts/a11oy/` | Helm chart — a11oy flagship (ambient, port 7860) |
+| `charts/killinchu/` | Helm chart — killinchu flagship (ambient, port 7860) |
+| `charts/killinchu/values.yaml` | `service.port`/`service.targetPort`, `receiptKeyInit.enabled` |
+| `packages/` | Zarf/UDS package manifests per flagship |
+| `uds-bundle.yaml` | Aggregate UDS bundle (registered packages) |
+| `tasks.yaml` | `uds run` tasks (`start`, `bundle`, `smoke`) |
+| `pepr/` | Pepr admission controller (receipt-on-deploy webhook) |
 
 ---
 
 ## References
 
-- [Zarf v0.77.0 release notes](https://github.com/zarf-dev/zarf/releases/tag/v0.77.0) — keyless signing introduction
-- [Sigstore keyless signing](https://docs.sigstore.dev/cosign/signing/keyless/)
 - [Defense Unicorns UDS Core](https://github.com/defenseunicorns/uds-core)
-- [Pepr admission controller framework](https://docs.pepr.dev)
+- [Zarf](https://github.com/zarf-dev/zarf) — keyless package signing
+- [Sigstore keyless signing](https://docs.sigstore.dev/cosign/signing/keyless/)
+- [Istio ambient mesh](https://istio.io/latest/docs/ambient/)
+- [Pepr admission controller](https://docs.pepr.dev)
 - [DSSE envelope spec](https://github.com/secure-systems-lab/dsse)
-- [vsp-otel OTLP exporter](https://github.com/szl-holdings/vsp-otel)
-- [szl-uds-deployment architecture](https://github.com/szl-holdings/szl-uds-deployment/blob/main/docs/ARCHITECTURE.md)
 
 ---
 
-*Defense Unicorns, Pepr, and UDS are trademarks of Defense Unicorns Inc. This project is an independent add-on and is not affiliated with or endorsed by Defense Unicorns.*
+*Defense Unicorns, Pepr, and UDS are trademarks of Defense Unicorns Inc. This project is an independent add-on and is not affiliated with or endorsed by Defense Unicorns Inc.*

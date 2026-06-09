@@ -1,5 +1,7 @@
 # Copyright 2026 SZL Holdings — SPDX-License-Identifier: Apache-2.0
-# Service for killinchu — Istio sidecar provides STRICT mTLS (UDS Operator managed).
+# Service for killinchu — Istio ambient dataplane provides STRICT mTLS (UDS
+# Operator managed). The mesh/policy-facing port is .Values.service.port; the
+# app inside the container listens on .Values.service.targetPort.
 apiVersion: v1
 kind: Service
 metadata:
@@ -14,4 +16,4 @@ spec:
   ports:
     - name: http
       port: {{ .Values.service.port }}
-      targetPort: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}

@@ -1,4 +1,9 @@
 # Copyright 2026 SZL Holdings — SPDX-License-Identifier: Apache-2.0
+# AMBIENT mesh (no sidecar). The live UDS cluster runs the Istio ambient
+# dataplane under restricted PodSecurity; a sidecar (istio-injection / the
+# sidecar.istio.io/inject annotation) is rejected by the pepr-uds-core webhook
+# and violates the restricted PSA. killinchu joins the mesh ambiently, matching
+# the live a11oy flagship.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -6,5 +11,11 @@ metadata:
   labels:
     app.kubernetes.io/name: killinchu
     app.kubernetes.io/part-of: szl-uds-mesh
-    istio-injection: enabled
+    istio.io/dataplane-mode: ambient
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
     szl.ai/doctrine-version: "v11"

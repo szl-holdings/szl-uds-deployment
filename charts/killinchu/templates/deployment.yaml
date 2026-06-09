@@ -1,4 +1,7 @@
 # Copyright 2026 SZL Holdings — SPDX-License-Identifier: Apache-2.0
+# AMBIENT mesh: NO sidecar.istio.io/inject annotation (forbidden by the
+# pepr-uds-core webhook in ambient mode). The container listens on
+# .Values.service.targetPort.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,8 +20,6 @@ spec:
     metadata:
       labels:
         app: killinchu
-      annotations:
-        sidecar.istio.io/inject: "true"
     spec:
       securityContext:
         runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
@@ -30,7 +31,7 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
-            - containerPort: {{ .Values.service.port }}
+            - containerPort: {{ .Values.service.targetPort }}
               name: http
           envFrom:
             - configMapRef:
@@ -47,7 +48,7 @@ spec:
           readinessProbe:
             httpGet:
               path: {{ .Values.healthPath }}
-              port: {{ .Values.service.port }}
+              port: {{ .Values.service.targetPort }}
             initialDelaySeconds: 5
             periodSeconds: 10
           resources: {{ .Values.resources | toYaml | nindent 12 }}
