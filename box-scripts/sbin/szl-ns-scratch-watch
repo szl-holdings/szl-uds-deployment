@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+#
+# szl-ns-scratch-watch — alert the team the moment an UNTRACKED scratch namespace
+# appears on the k3d uds-szl-demo cluster (box 167.233.50.75), so it gets labeled
+# (per the scratch convention) or removed before it becomes ambiguous cruft.
+#
+# WHY: szl-ns-scratch (Task #330) gives operators an on-demand audit that flags
+# UNKNOWN namespaces — ones that are neither a platform/system namespace nor
+# owned by Helm/zarf/a-UDS-Package AND that are missing the szl.io/ephemeral
+# label. The risk is that nobody runs that audit until a cleanup is already
+# underway, by which point an unlabeled scratch is indistinguishable from a
+# teammate's live dev work (this exact ambiguity once nearly destroyed active
+# work). Turning the audit into a periodic guard means the team is pinged at
+# CREATE time, while it is still obvious who made it and why, so it can be
+# labeled or torn down cleanly.
+#
+# WHAT IT DETECTS: any namespace reported by `szl-ns-scratch list-unlabeled`
+# (unmanaged + unlabeled = the UNKNOWN/risky set). Zero such namespaces = OK.
+#
+# It is EDGE-triggered and de-duped via a state file: it pushes the notifier only
+# on the healthy->problem edge (a new UNKNOWN namespace appears) and once on
+# RECOVERED (all UNKNOWN namespaces have been labeled or removed), never every
+# cycle (honours the "recurring alerts = one ping" policy). Every run still
+# appends to the log + writes a status file, so a broken notifier can never hide
+# a drift.
+#
+# Cluster intentionally stopped (k3d down) or unreachable = a true no-op (exit 0,
+# no alert) — we only alarm when the cluster IS up and a scratch escaped the
+# convention. Mirrors the receipt-chain-watch / szl-core-rightsize /
+# istiod-fit-strategy guard pattern (kubeconfig resolve + cluster-absent no-op +
+# a11oy-uptime-notify push channel).
+#
+# Driven by szl-ns-scratch-watch.timer (every 10 min).
+set -uo pipefail
+
+CLUSTER="${SZL_NS_CLUSTER:-uds-szl-demo}"
+# The audit/list tool this guard wraps (installed alongside it).
+SCRATCH_BIN="${SCRATCH_BIN:-/usr/local/sbin/szl-ns-scratch}"
+
+STATE_DIR="${STATE_DIR:-/var/lib/szl-ns-scratch-watch}"
+LOG_DIR="${LOG_DIR:-/var/log/szl-ns-scratch-watch}"
+LAST_FILE="${LAST_FILE:-$STATE_DIR/last_status}"
+STATUS="${STATUS:-$STATE_DIR/status.json}"
+LOG="${LOG:-$LOG_DIR/szl-ns-scratch-watch.log}"
+
+# Notifier: stdin = message. Default to the box's working push channel.
+NOTIFY_CMD="${NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
+ALERT_PREFIX="${ALERT_PREFIX:-}"
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
+
+log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$1" >>"$LOG" 2>/dev/null; }
+
+notify() {
+  # $1 = message. Fail-soft: log a warning if the notifier is missing/fails.
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed (alert was logged only)"
+}
+
+write_status() {
+  # $1 = overall (OK|ALERT|UNKNOWN)  $2 = reason
+  printf '{"overall":"%s","reason":"%s","checked_at":"%s","cluster":"%s"}\n' \
+    "$1" "$(printf '%s' "$2" | sed 's/"/\\"/g')" "$(date -u +%FT%TZ)" "$CLUSTER" \
+    >"$STATUS" 2>/dev/null
+}
+
+# ---- Resolve cluster; no-op if it is down (intentionally stopped) -----------
+KC="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" || { log "INFO cluster '$CLUSTER' absent — skip"; write_status UNKNOWN "cluster absent"; exit 0; }
+export KUBECONFIG="$KC"
+kubectl --request-timeout=20s get --raw='/readyz' >/dev/null 2>&1 \
+  || { log "INFO cluster '$CLUSTER' not reachable — skip"; write_status UNKNOWN "cluster unreachable"; exit 0; }
+
+# Tool present?
+[ -x "$SCRATCH_BIN" ] || { log "WARN scratch tool '$SCRATCH_BIN' missing/not executable — skip"; write_status UNKNOWN "scratch tool missing"; exit 0; }
+
+# ---- Ask the audit tool for the UNKNOWN (unmanaged + unlabeled) set ---------
+# list-unlabeled prints one namespace name per line on stdout, and itself no-ops
+# (empty stdout + a "nothing to do" stderr) if the cluster is absent/unreachable.
+# We already cluster-checked above; still treat that sentinel as a no-op in case
+# the cluster vanished between checks, so we never emit a false RECOVERED.
+err_tmp="$(mktemp 2>/dev/null || echo /tmp/szl-ns-scratch-watch.err.$$)"
+out="$(SZL_NS_CLUSTER="$CLUSTER" "$SCRATCH_BIN" list-unlabeled 2>"$err_tmp")"
+rc=$?
+err="$(cat "$err_tmp" 2>/dev/null)"; rm -f "$err_tmp" 2>/dev/null
+if [ "$rc" -ne 0 ] || printf '%s' "$err" | grep -q 'nothing to do'; then
+  log "INFO scratch tool reported no-op (rc=$rc): ${err:-no stderr} — skip"
+  write_status UNKNOWN "scratch tool no-op"
+  exit 0
+fi
+
+# Collapse to a clean, sorted, de-duplicated list of namespace names.
+unknown="$(printf '%s\n' "$out" | sed 's/[[:space:]].*$//' | grep -v '^$' | sort -u)"
+count=0
+[ -n "$unknown" ] && count="$(printf '%s\n' "$unknown" | grep -c .)"
+
+# ---- Decide + edge-trigger --------------------------------------------------
+prev="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
+list_csv="$(printf '%s' "$unknown" | paste -sd ', ' - 2>/dev/null)"
+
+if [ "$count" -gt 0 ] 2>/dev/null; then
+  write_status ALERT "$count untracked scratch namespace(s): ${list_csv}"
+  log "STATE ALERT count=$count :: $list_csv"
+  if [ "$prev" != "ALERT" ]; then
+    notify "ALERT: $count untracked scratch namespace(s) appeared on $CLUSTER WITHOUT the szl.io/ephemeral label: ${list_csv}. Label them ('szl-ns-scratch label <ns> --owner <who> [--ttl-days N]') or remove them — until then a cleanup can't tell them apart from live work. Full audit: 'szl-ns-scratch audit'."
+    log "EDGE OK->ALERT notified"
+  else
+    log "DEDUP still ALERT — no re-notify"
+  fi
+  echo ALERT >"$LAST_FILE" 2>/dev/null
+else
+  write_status OK "no untracked scratch namespaces"
+  log "STATE OK count=0"
+  if [ "$prev" = "ALERT" ]; then
+    notify "RECOVERED: no untracked scratch namespaces remain on $CLUSTER (all have been labeled per the convention or removed)."
+    log "EDGE ALERT->OK recovered, notified"
+  fi
+  echo OK >"$LAST_FILE" 2>/dev/null
+fi
+
+exit 0

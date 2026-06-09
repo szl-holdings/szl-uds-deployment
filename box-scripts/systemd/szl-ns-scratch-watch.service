@@ -1,0 +1,9 @@
+[Unit]
+Description=Alert when an untracked scratch namespace (unlabeled + unmanaged) appears on uds-szl-demo
+Documentation=file:///usr/local/sbin/szl-ns-scratch-watch
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/szl-ns-scratch-watch

@@ -402,8 +402,10 @@ sbin/
   szl-ns-scratch              # audit | list-unlabeled | list-stale | label
 ```
 
-There is no systemd unit — this is an on-demand operator tool, run at cleanup
-time, not a periodic guard.
+`szl-ns-scratch` itself has no systemd unit — it is an on-demand operator tool,
+run at cleanup time. Its companion **`szl-ns-scratch-watch`** (part 6 below) is
+the periodic guard that wraps `szl-ns-scratch list-unlabeled` and pushes an alert
+the moment an untracked scratch namespace appears.
 
 ## Usage
 
@@ -436,4 +438,68 @@ kubectl create ns szl-scratch-selftest
 szl-ns-scratch label szl-scratch-selftest --owner selftest --created 2000-01-01 --ttl-days 1
 szl-ns-scratch list-stale          # szl-scratch-selftest should appear as expired
 kubectl delete ns szl-scratch-selftest
+```
+
+---
+
+# box-scripts (part 6) — untracked scratch-namespace alarm (uds-szl-demo)
+
+`szl-ns-scratch` (part 5) is only useful if someone runs it. `szl-ns-scratch-watch`
+turns its audit into a **periodic guard**: it wraps `szl-ns-scratch list-unlabeled`
+and pushes an alert the moment an **untracked** scratch namespace (unmanaged +
+missing the `szl.io/ephemeral` label = the UNKNOWN/risky set) appears on the
+`uds-szl-demo` cluster — so it gets labeled or removed while it's still obvious
+who made it and why, before a later cleanup can't tell it apart from live work.
+Like the scripts above it lives ONLY at `/usr/local/sbin` + `/etc/systemd/system`
+on the box and is **not** otherwise under version control, so restore it from
+here after a rebuild.
+
+## Files
+
+```
+sbin/
+  szl-ns-scratch-watch          # alert on the edge when an UNKNOWN scratch ns appears
+systemd/
+  szl-ns-scratch-watch.service  # oneshot: runs szl-ns-scratch-watch
+  szl-ns-scratch-watch.timer    # ~4 min after boot, then every 10 min
+```
+
+It is **edge-triggered**: it fires the notifier only on the healthy→problem edge
+(a new UNKNOWN namespace appears) and once on RECOVERED (all UNKNOWN namespaces
+have been labeled per the convention or removed), never every cycle (de-duped via
+`/var/lib/szl-ns-scratch-watch/last_status`). Every run still appends to
+`/var/log/szl-ns-scratch-watch/szl-ns-scratch-watch.log` and writes
+`/var/lib/szl-ns-scratch-watch/status.json`, so a broken notifier can never hide
+a drift. A stopped/unreachable cluster (k3d nodes are `--restart no`) is a true
+no-op (no alarm). It reuses the same shared push channel as the other guards
+(`/usr/local/sbin/a11oy-uptime-notify` → ntfy/Telegram/webhook in
+`/etc/a11oy-uptime.env`).
+
+## Reinstall
+
+The top-level `./install.sh` installs and enables this guard along with the
+others. To (re)install just this guard manually:
+
+```bash
+sudo install -m 0755 sbin/szl-ns-scratch-watch /usr/local/sbin/szl-ns-scratch-watch
+sudo install -m 0644 systemd/szl-ns-scratch-watch.service /etc/systemd/system/
+sudo install -m 0644 systemd/szl-ns-scratch-watch.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now szl-ns-scratch-watch.timer
+```
+
+## Verify
+
+```bash
+systemctl is-enabled szl-ns-scratch-watch.timer
+/usr/local/sbin/szl-ns-scratch-watch && cat /var/lib/szl-ns-scratch-watch/status.json
+# Force an alert (safe, reversible) into an ISOLATED state dir + a capture
+# notifier so the team channel isn't paged and the real state isn't disturbed:
+kubectl create ns szl-scratch-selftest
+STATE_DIR=/tmp/nsw/state LOG_DIR=/tmp/nsw/log NOTIFY_CMD=/bin/cat \
+  ALERT_PREFIX="[TEST-ignore] " /usr/local/sbin/szl-ns-scratch-watch   # -> ALERT
+szl-ns-scratch label szl-scratch-selftest --owner selftest --ttl-days 1
+STATE_DIR=/tmp/nsw/state LOG_DIR=/tmp/nsw/log NOTIFY_CMD=/bin/cat \
+  /usr/local/sbin/szl-ns-scratch-watch                                 # -> RECOVERED
+kubectl delete ns szl-scratch-selftest; rm -rf /tmp/nsw
 ```
