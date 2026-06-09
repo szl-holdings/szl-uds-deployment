@@ -61,7 +61,7 @@ zarf package pull oci://ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream
 > **Keyless, not key-pair.** The published **package** (`packages/szl-receipts`) is
 > signed keyless via OIDC — no private key is stored and no public key is committed.
 > The receipts **image** is signed the same keyless way:
-> `cosign verify ghcr.io/szl-holdings/szl-receipts-server:uds-v0.4.0 --certificate-identity-regexp 'receipts-server-image.yml' --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
+> `cosign verify ghcr.io/szl-holdings/szl-receipts-server:uds-v0.4.0 --certificate-identity "https://github.com/szl-holdings/szl-uds-deployment/.github/workflows/receipts-server-image.yml@refs/tags/receipts-server-v0.4.0" --certificate-oidc-issuer https://token.actions.githubusercontent.com`.
 >
 > **Retired internal artifact (do not use as a verification path).** The earlier
 > internal package `ghcr.io/szl-holdings/packages/szl-receipts:0.3.1-upstream` is

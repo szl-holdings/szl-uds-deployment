@@ -89,7 +89,7 @@ The image is signed keyless in GitHub Actions (`receipts-server-image.yml`). Ver
 
 ```bash
 cosign verify ghcr.io/szl-holdings/szl-receipts-server:uds-v0.3.1 \
-  --certificate-identity-regexp 'receipts-server-image.yml' \
+  --certificate-identity "https://github.com/szl-holdings/szl-uds-deployment/.github/workflows/receipts-server-image.yml@refs/heads/fix/uds-deploy-stall-gaps" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 # => "signatures were verified against the certificate" (transparency log: Verified OK)
 ```
