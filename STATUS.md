@@ -22,6 +22,18 @@
   individually deployable — it does **not** claim "all five modules boot
   together." The organs still deploy as **separate workloads**; cross-organ
   in-cluster mTLS is v0.5.0 roadmap.
+- **Full-mesh / multi-organ bundle uses only verified images** — the
+  multi-organ UDS bundle `bundles/szl-full-stack/uds-bundle.yaml` now references
+  its organ members (`a11oy`, `sentra`, `amaru`, `rosie`) by LOCAL path to
+  `packages/<organ>/`, which pin the cosign-signed organ images above
+  (amaru/sentra/rosie at `uds-v0.2.0@sha256:…`; a11oy tag-pinned `uds-v0.3.0`
+  by design). The earlier broken `repository: ghcr.io/szl-holdings/<organ>` +
+  `ref: uds-v0.3.1` placeholders (an image-repo coordinate, never a published
+  Zarf package) are gone, so the full-mesh path pulls **only verified images**.
+  `cosign verify` and `cosign verify-attestation --type slsaprovenance` pass for
+  each pinned organ digest. This does **not** change the doctrine above: the
+  organs remain published, signed and **individually deployable** — the bundle
+  does **not** claim all five boot together.
 
 ## What's Experimental
 
