@@ -4,21 +4,25 @@ szl-alert-relay — tiny localhost relay that turns a Slack-format webhook
 payload into a CLEAN ntfy push.
 
 WHY: several GitHub Actions alert steps (e.g. szl-holdings/a11oy
-.github/workflows/rekor-recheck.yml) POST a Slack incoming-webhook body
-`{"text": "..."}` to whatever `SLACK_WEBHOOK_URL` points at. The team's only
-watched push channel is the ntfy topic in /etc/a11oy-uptime.env. ntfy accepts
-that JSON and returns HTTP 200, but it does NOT understand the Slack schema —
-it renders the raw `{"text": ...}` JSON wrapper as the message body, which is
-ugly for an urgent page. This relay sits behind the existing nginx, extracts
-`.text`, cleans it up (per-line de-indent, Slack emoji shortcodes -> unicode,
-strip `*bold*` markers), and republishes it as plain text via the shared
-notifier /usr/local/sbin/a11oy-uptime-notify (which reads NTFY_URL from
-/etc/a11oy-uptime.env), so the page reads as clean text.
+.github/workflows/rekor-recheck.yml + release-receipt-verify.yml, and
+szl-holdings/platform .github/workflows/post-deploy-smoke.yml) POST a Slack
+incoming-webhook body to whatever `SLACK_WEBHOOK_URL` points at. The team's
+only watched push channel is the ntfy topic in /etc/a11oy-uptime.env. ntfy
+accepts that JSON and returns HTTP 200, but it does NOT understand the Slack
+schema — it renders the raw JSON wrapper as the message body, which is ugly for
+an urgent page. This relay sits behind the existing nginx, flattens the Slack
+payload into clean plain text (`.text` plus any `attachments[]` fields/footer),
+cleans it up (per-line de-indent, Slack emoji shortcodes -> unicode, strip
+`*bold*` markers, unwrap `<url|label>` links, drop ``` fences), and republishes
+it as plain text via the shared notifier /usr/local/sbin/a11oy-uptime-notify
+(which reads NTFY_URL from /etc/a11oy-uptime.env), so the page reads as clean
+text.
 
 CONTRACT:
-  POST  /relay/ntfy/<RELAY_TOKEN>   body = Slack `{"text": "..."}`  -> 200 on
-        successful republish, 502 if the notifier failed, 400 on bad body,
-        404 on a wrong/absent token (token is never echoed).
+  POST  /relay/ntfy/<RELAY_TOKEN>   body = Slack webhook JSON (`{"text": ...}`
+        and/or `{"attachments": [...]}`)  -> 200 on successful republish, 502 if
+        the notifier failed, 400 on a body with no usable text, 404 on a
+        wrong/absent token (token is never echoed).
   GET   /relay/health               -> 200 "ok" (no token; for nginx/smoke).
 
 CONFIG (env file, default /etc/szl-alert-relay.env; real env wins):
@@ -81,13 +85,71 @@ EMOJI = {
 
 _BOLD = re.compile(r"\*(.+?)\*")
 _EMOJI = re.compile(r":[a-z0-9_+\-]+:")
+# Slack link markup: <url|label> -> "label (url)"; <url> -> "url".
+_LINK_LABEL = re.compile(r"<([^|>]+)\|([^>]+)>")
+_LINK_BARE = re.compile(r"<(https?://[^>]+)>")
+_FENCE = re.compile(r"```")
+
+
+def _stringy(val):
+    return isinstance(val, str) and val.strip() != ""
+
+
+def build_text(data):
+    """Flatten a Slack webhook payload into a single plain-text block.
+
+    Handles the simple `{"text": ...}` shape (rekor-recheck /
+    release-receipt-verify) and the richer `{"text": ..., "attachments": [...]}`
+    shape (post-deploy-smoke) by appending each attachment's title/text, its
+    `fields[]` as "Title: value" lines, and its footer.
+    """
+    parts = []
+    if _stringy(data.get("text")):
+        parts.append(data["text"])
+
+    attachments = data.get("attachments")
+    if isinstance(attachments, list):
+        for att in attachments:
+            if not isinstance(att, dict):
+                continue
+            if _stringy(att.get("pretext")):
+                parts.append(att["pretext"])
+            if _stringy(att.get("title")):
+                parts.append(att["title"])
+            if _stringy(att.get("text")):
+                parts.append(att["text"])
+            fields = att.get("fields")
+            if isinstance(fields, list):
+                for fld in fields:
+                    if not isinstance(fld, dict):
+                        continue
+                    ftitle = (fld.get("title") or "").strip()
+                    fvalue = (fld.get("value") or "").strip()
+                    if ftitle and fvalue:
+                        sep = "\n" if "\n" in fvalue else " "
+                        parts.append("%s:%s%s" % (ftitle, sep, fvalue))
+                    elif fvalue:
+                        parts.append(fvalue)
+                    elif ftitle:
+                        parts.append(ftitle)
+            if _stringy(att.get("footer")):
+                parts.append(att["footer"])
+
+    return "\n".join(parts)
 
 
 def clean_text(text):
     """Turn Slack mrkdwn into a clean plain-text ntfy body."""
+    # Unwrap Slack link markup before de-indenting.
+    text = _LINK_LABEL.sub(r"\2 (\1)", text)
+    text = _LINK_BARE.sub(r"\1", text)
+    # Drop ``` code fences (ntfy plaintext won't render them).
+    text = _FENCE.sub("", text)
     # De-indent each line (the workflow heredoc carries YAML leading spaces).
     lines = [ln.strip() for ln in text.replace("\r\n", "\n").split("\n")]
     s = "\n".join(lines).strip()
+    # Collapse 3+ consecutive blank lines down to a single blank line.
+    s = re.sub(r"\n{3,}", "\n\n", s)
     # Strip *bold* markers (ntfy plaintext won't render them).
     s = _BOLD.sub(r"\1", s)
     # Map known emoji shortcodes; leave unknown ones untouched.
@@ -119,7 +181,7 @@ def republish(text):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "szl-alert-relay/1.0"
+    server_version = "szl-alert-relay/1.1"
 
     def _send(self, code, body=""):
         payload = body.encode("utf-8")
@@ -161,10 +223,13 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length)
         try:
             data = json.loads(raw.decode("utf-8"))
-            text = data.get("text")
         except (ValueError, AttributeError):
-            text = None
-        if not text or not isinstance(text, str):
+            data = None
+        if not isinstance(data, dict):
+            self._send(400, "bad request")
+            return
+        text = build_text(data)
+        if not text.strip():
             self._send(400, "missing .text")
             return
         if republish(clean_text(text)):
