@@ -209,7 +209,9 @@ jobs:
       # survived packaging: the RequireNonRootUser exemption is present and ordered
       # BEFORE the szl-key-init keygen component (so the root keygen pod is admitted
       # rather than DENIED -> UNSIGNED server), and the server image is pinned
-      # uds-v0.4.0. This asserts the property on the actual build output, not just
+      # with the tag declared in the source package definition (read at run time so
+      # version bumps don't break this guard). This asserts the property on the actual
+      # build output, not just
       # the source file the grep guard reads. The zarf.yaml baked into the tarball
       # is extracted directly (tar/zstd) so the check does not depend on a
       # version-specific `zarf package inspect` subcommand form.
@@ -217,7 +219,7 @@ jobs:
       # NOTE: the absolute-first component is szl-core-rightsize (small-server CPU
       # posture); the invariant that matters for signing is exemption-BEFORE-keygen,
       # which is what is asserted here.
-      - name: Assert built package keeps exemption-before-keygen + uds-v0.4.0 image
+      - name: Assert built package keeps exemption-before-keygen + receipts-server pin
         run: |
           set -euo pipefail
           PKG="$(ls /tmp/zarf-out/zarf-package-szl-receipts-*.tar.zst | head -1)"
@@ -241,10 +243,26 @@ jobs:
               sys.exit(f"::error::szl-key-init-exemption must come BEFORE szl-key-init; "
                        f"component order is {names}")
           blob = yaml.safe_dump(pkg)
-          if "ghcr.io/szl-holdings/szl-receipts-server:uds-v0.4.0" not in blob:
-              sys.exit("::error::built package no longer pins szl-receipts-server:uds-v0.4.0")
-          print("OK: built package keeps szl-key-init-exemption before szl-key-init "
-                "and pins uds-v0.4.0")
+          # Expected receipts-server tag is read from the SOURCE package definition
+          # (kept in lockstep by scripts/pin-receipts-image-digest.sh), so this guard
+          # tracks version bumps instead of hard-coding a release tag.
+          import re
+          srcdocs = [d for d in yaml.safe_load_all(open("packages/szl-receipts/zarf.yaml")) if d]
+          srcpkg = next((d for d in srcdocs if d.get("kind") == "ZarfPackageConfig"), None)
+          srcimgs = [img for c in (srcpkg or {}).get("components", [])
+                     for img in (c.get("images") or [])]
+          ref = next((i for i in srcimgs if "szl-receipts-server" in i), None)
+          if not ref:
+              sys.exit("::error::source packages/szl-receipts/zarf.yaml has no "
+                       "szl-receipts-server image pin")
+          m = re.search(r"szl-receipts-server:([^@\s]+)@sha256:", ref)
+          if not m:
+              sys.exit(f"::error::source receipts-server pin is not tag@digest form: {ref}")
+          tag = m.group(1)
+          if f"ghcr.io/szl-holdings/szl-receipts-server:{tag}" not in blob:
+              sys.exit(f"::error::built package no longer pins szl-receipts-server:{tag}")
+          print(f"OK: built package keeps szl-key-init-exemption before szl-key-init "
+                f"and pins {tag}")
           PY
 
       - name: Package build guard passed
