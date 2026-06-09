@@ -143,6 +143,43 @@ HEAD_FILE = os.path.join(STORE_PATH, ".chain_head")
 # Set SZL_RECEIPT_SHARD_SIZE=0 to disable sharding (write flat, legacy mode).
 SHARD_SIZE = max(0, int(os.environ.get("SZL_RECEIPT_SHARD_SIZE", "10000")))
 SHARDS_DIR = os.path.join(STORE_PATH, "shards")
+# --- Ingest rate limiting (anti-flood) ---------------------------------------
+# A runaway minting loop -- a reconcile hot-loop, a misbehaving emitter, or a
+# stuck test/daemon POSTing to /receipt -- can push thousands of receipts/sec
+# into this append-only chain, ballooning the on-disk store and crash-looping
+# the signer under memory/CPU pressure (observed: chain past 267k, repeated
+# OOMKills on the 2-vCPU box). A token-bucket gate on POST /receipt caps the
+# SUSTAINED accept rate while allowing a short burst, so genuine, spaced events
+# (a real deploy mints a handful of receipts) still chain, but a flood is shed
+# with HTTP 429. The pepr deploy webhook POST path is fail-open, so a 429 just
+# drops the excess receipt without blocking admission. Set rate<=0 to disable.
+INGEST_RATE_LIMIT = float(os.environ.get("SZL_INGEST_RATE_LIMIT", "1.0"))   # receipts/sec sustained
+INGEST_BURST      = max(1.0, float(os.environ.get("SZL_INGEST_BURST", "60")))  # max burst tokens
+_ingest_tokens = INGEST_BURST
+_ingest_last   = time.monotonic()
+_ingest_lock   = threading.Lock()
+
+
+def _ingest_allowed():
+    """Token-bucket gate for POST /receipt. Refills INGEST_RATE_LIMIT tokens/sec
+    up to INGEST_BURST and consumes one token per accepted receipt; returns
+    False (shed the request) when the bucket is empty. Always True when the
+    configured rate is <= 0 (limiter disabled)."""
+    if INGEST_RATE_LIMIT <= 0:
+        return True
+    global _ingest_tokens, _ingest_last
+    with _ingest_lock:
+        now = time.monotonic()
+        _ingest_tokens = min(
+            INGEST_BURST,
+            _ingest_tokens + (now - _ingest_last) * INGEST_RATE_LIMIT,
+        )
+        _ingest_last = now
+        if _ingest_tokens >= 1.0:
+            _ingest_tokens -= 1.0
+            return True
+        return False
+
 
 os.makedirs(STORE_PATH, exist_ok=True)
 
@@ -155,6 +192,7 @@ _counter_valid = 0
 _counter_deny  = 0         # # SZL-METRICS-129 receipts whose verdict is DENY
 _counter_allow = 0         # receipts whose verdict is ALLOW
 _counter_tamper = 0        # persisted receipts found tampered at rest (once per id)
+_counter_throttled = 0     # POST /receipt requests shed by the ingest rate limit
 _chain_head    = GENESIS   # hash of the most recent receipt, or GENESIS
 _chain_index   = 0         # next chain index to assign
 _persisted_count = 0       # receipts on disk; seeded at boot, ++ per append (avoids
@@ -993,6 +1031,9 @@ class Handler(BaseHTTPRequestHandler):
                 f"# HELP szl_receipts_tamper_total Persisted receipts found tampered/invalid at rest\n"
                 f"# TYPE szl_receipts_tamper_total counter\n"
                 f"szl_receipts_tamper_total {_counter_tamper}\n"
+                f"# HELP szl_receipts_throttled_total POST /receipt requests shed by the ingest rate limiter\n"
+                f"# TYPE szl_receipts_throttled_total counter\n"
+                f"szl_receipts_throttled_total {_counter_throttled}\n"
                 f"# HELP szl_chain_index Next chain index (head pointer) of the receipt chain\n"
                 f"# TYPE szl_chain_index gauge\n"
                 f"szl_chain_index {_chain_index}\n"
@@ -1025,7 +1066,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "text/plain", "not found")
 
     def do_POST(self):
-        global _counter_total, _counter_valid, _counter_deny, _counter_allow
+        global _counter_total, _counter_valid, _counter_deny, _counter_allow, _counter_throttled
         global _chain_head, _chain_index, _persisted_count
         path = urlparse(self.path).path
         if path != "/receipt":
@@ -1037,6 +1078,18 @@ class Handler(BaseHTTPRequestHandler):
             incoming = json.loads(body)
         except json.JSONDecodeError:
             self._send(400, "text/plain", "invalid JSON")
+            return
+
+        # Anti-flood: shed receipts that exceed the sustained ingest rate. Checked
+        # BEFORE signing/appending so a runaway loop costs ~nothing and can neither
+        # balloon the chain nor OOM the box. A genuine, spaced deploy receipt still
+        # passes (token burst); the fail-open pepr POST path just drops the 429'd
+        # excess.
+        if not _ingest_allowed():
+            _counter_throttled += 1
+            self._send(429, "application/json",
+                       json.dumps({"error": "rate_limited",
+                                   "detail": "receipt ingest rate exceeded"}))
             return
 
         _counter_total += 1

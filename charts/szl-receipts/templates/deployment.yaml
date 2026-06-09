@@ -64,6 +64,10 @@ spec:
               value: "{{ .Values.server.port }}"
             - name: SZL_LOG_LEVEL
               value: "{{ .Values.server.logLevel }}"
+            - name: SZL_INGEST_RATE_LIMIT
+              value: "{{ .Values.server.ingest.rateLimit }}"
+            - name: SZL_INGEST_BURST
+              value: "{{ .Values.server.ingest.burst }}"
             - name: SZL_RECEIPT_STORE
               value: "{{ .Values.server.persistence.mountPath }}"
             # In-memory /receipts window (full chain stays on disk). Tunable

@@ -178,7 +178,7 @@ components:
           - ../../charts/szl-receipts/values.yaml
     images:
       # v0.4.1: built OCI image (services/szl-receipts-server/Dockerfile)
-      - ghcr.io/szl-holdings/szl-receipts-server:uds-v0.4.1@sha256:a33426d8700066573a444d13bf346feee00e758c7ef2bcf74b9c15171740ebef
+      - ghcr.io/szl-holdings/szl-receipts-server:uds-v0.4.1@sha256:9dba38ba82b82904be357125181beac2a48d79b33aadcdb98ad5a2a451910a83
       - docker.io/library/nginx:1.27-alpine@sha256:62223d644fa234c3a1cc785ee14242ec47a77364226f1c811d2f669f96dc2ac8
     actions:
       onDeploy:

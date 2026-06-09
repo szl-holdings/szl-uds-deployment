@@ -18,12 +18,21 @@ server:
     # Immutable content digest for uds-v0.4.1. Pinning here makes a clean
     # install bit-for-bit reproducible: even if the uds-v0.4.1 tag is later
     # re-pushed with different contents, this digest is what gets deployed.
-    digest: "sha256:a33426d8700066573a444d13bf346feee00e758c7ef2bcf74b9c15171740ebef"
+    digest: "sha256:9dba38ba82b82904be357125181beac2a48d79b33aadcdb98ad5a2a451910a83"
     pullPolicy: IfNotPresent
 
   replicas: 1
 
   logLevel: "info"
+
+  # ── Ingest rate limit (anti-flood, Task #532) ─────────────────────
+  # Source-agnostic token-bucket cap on POST /receipt at the chain authority
+  # so a runaway emitter (any source) cannot OOM/CPU-starve the 2-vCPU node.
+  # The pepr deploy webhook is fail-open, so a shed receipt (HTTP 429) never
+  # blocks admission. rateLimit<=0 disables the limiter.
+  ingest:
+    rateLimit: "1.0"   # receipts/sec sustained
+    burst: "20"        # max burst tokens
 
   # Port the receipts server listens on inside the pod.
   # The OCI image defaults to 8080; the chart sets it explicitly.
