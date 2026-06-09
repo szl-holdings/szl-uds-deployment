@@ -96,7 +96,7 @@ spec:
         - name: keygen
           # The already-baked, cosign-signed a11oy organ image (python3 +
           # cryptography). Zarf rewrites this to the in-cluster registry at deploy.
-          image: ghcr.io/szl-holdings/a11oy:uds-v0.2.0@sha256:88bc323cd81c799b486c88fec5a04f110e4cd495e4acbc373e0d8d3b31d6881a
+          image: ghcr.io/szl-holdings/a11oy:uds-v0.3.0@sha256:0b03632f416fd6539766a5e73a12a18639ade75e66a06a11660a57c73457e170
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

@@ -19,7 +19,7 @@ image:
   # live deploy overrides this to the k3d-imported local image:
   #   --set image.repository=a11oy --set image.tag=local --set zarfAgentIgnore=true
   repository: ghcr.io/szl-holdings/a11oy
-  tag: "uds-v0.2.0"
+  tag: "uds-v0.3.0"
   # Optional exact-image digest pin -- the linux/amd64 CHILD digest (NOT the OCI
   # index). When set, the Deployment renders repository:tag@sha256:... so a
   # re-pushed tag cannot change what runs (supply-chain tamper-proofing). Empty =

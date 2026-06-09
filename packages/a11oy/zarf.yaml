@@ -13,7 +13,7 @@
 # chart's image reference to point at it.
 #
 # Canonical image (published + cosign keyless-signed on GHCR):
-#   ghcr.io/szl-holdings/a11oy:uds-v0.2.0   (single-arch linux/amd64 manifest)
+#   ghcr.io/szl-holdings/a11oy:uds-v0.3.0   (single-arch linux/amd64 manifest)
 # The reference baked here is byte-identical to what charts/a11oy renders
 # (values: image.repository + image.tag), so the agent rewrite resolves cleanly.
 #
@@ -33,7 +33,7 @@ kind: ZarfPackageConfig
 
 metadata:
   name: szl-a11oy
-  version: "0.2.0"
+  version: "0.3.0"
   description: >-
     SZL a11oy — governance + policy + receipt-substrate flagship. Runs inside UDS
     Core (Istio ambient mTLS + NetworkPolicy + ServiceMonitor via its UDS Package
@@ -59,7 +59,7 @@ components:
     charts:
       - name: a11oy
         namespace: szl-a11oy
-        version: 0.2.0
+        version: 0.3.0
         localPath: ../../charts/a11oy
         valuesFiles:
           - ../../charts/a11oy/values.yaml
@@ -73,7 +73,7 @@ components:
     images:
       # Canonical, cosign-signed image. Baked into the tarball at build time and
       # rewritten to the in-cluster registry by the Zarf agent at deploy time.
-      - ghcr.io/szl-holdings/a11oy:uds-v0.2.0
+      - ghcr.io/szl-holdings/a11oy:uds-v0.3.0
     actions:
       onDeploy:
         after:

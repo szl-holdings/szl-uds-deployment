@@ -1,4 +1,4 @@
-SZL a11oy (uds-v0.2.0) deployed to namespace {{ .Values.namespace }}.
+SZL a11oy (uds-v0.3.0) deployed to namespace {{ .Values.namespace }}.
 
   Image:   {{ .Values.image.repository }}:{{ .Values.image.tag }}  (cosign-signed)
   Service: szl-a11oy.{{ .Values.namespace }}.svc:{{ .Values.service.port }}
