@@ -37,7 +37,7 @@ variables:
     default: uds.dev
   - name: A11OY_API_ENDPOINT
     description: "A11oy governed-run API endpoint for receipt gate"
-    default: "http://a11oy-api.a11oy.svc.cluster.local:8081"
+    default: "http://a11oy.a11oy.svc.cluster.local:7860"
 
 components:
   # ── upstream flavor: VERIFIED-LIVE public GHCR image (uds-v0.2.0) ───────────

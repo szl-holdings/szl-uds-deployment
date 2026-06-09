@@ -20,7 +20,7 @@ metadata:
     szl.io/component: uds-package
     szl.io/mesh-version: v0.4.0
   annotations:
-    szl.io/role: "drone/UAV coordination (killinchu.szl-killinchu.svc.cluster.local:8080)"
+    szl.io/role: "drone/UAV coordination (killinchu.szl-killinchu.svc.cluster.local:7860)"
     szl.io/doctrine-version: "v11"
     szl.io/doctrine-pin: "749/14/163"
     szl.io/kernel-commit: "c7c0ba17"
@@ -50,8 +50,8 @@ spec:
       mode: sidecar
     expose:
       - host: killinchu
-        service: szl-killinchu
-        port: 8080
+        service: killinchu
+        port: 7860
         gateway: tenant
         selector:
           app: killinchu
@@ -68,7 +68,7 @@ spec:
         remoteNamespace: szl-a11oy
         remoteSelector:
           app: a11oy
-        port: 8080
+        port: 7860
         description: "killinchu reports drone status to a11oy orchestrator"
       # killinchu -> szl-receipts : ALLOW (telemetry receipt emission)
       - direction: Egress
@@ -86,7 +86,7 @@ spec:
         remoteNamespace: szl-a11oy
         remoteSelector:
           app: a11oy
-        port: 8080
+        port: 7860
         description: "a11oy commands killinchu for drone tasking"
       # IntraNamespace for sidecar communication
       - direction: Ingress
@@ -99,7 +99,7 @@ spec:
     - portName: metrics
       selector:
         app: killinchu
-      targetPort: 8080
+      targetPort: 7860
       path: /metrics
       kind: ServiceMonitor
       description: "killinchu drone coordination metrics scrape"

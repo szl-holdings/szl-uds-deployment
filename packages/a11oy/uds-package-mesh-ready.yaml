@@ -60,40 +60,14 @@ spec:
           app.kubernetes.io/name: a11oy
         gateway: tenant
         host: a11oy
-        port: 8080
-        targetPort: 8080
+        port: 7860
+        targetPort: 7860
         description: A11oy Command Platform UI
         uptime:
           checks:
             paths:
               - /healthz
               - /readyz
-
-      # Warhacker API — governed-run REST endpoint
-      - service: a11oy-api
-        selector:
-          app.kubernetes.io/name: a11oy
-          app.kubernetes.io/component: api
-        gateway: tenant
-        host: a11oy-api
-        port: 8081
-        targetPort: 8081
-        description: A11oy Warhacker API
-        uptime:
-          checks:
-            paths:
-              - /health
-
-      # Admin observability endpoint (admin gateway only)
-      - service: a11oy-metrics
-        selector:
-          app.kubernetes.io/name: a11oy
-          app.kubernetes.io/component: metrics
-        gateway: admin
-        host: a11oy-admin
-        port: 9090
-        targetPort: 9090
-        description: A11oy Admin Metrics
 
     # ── NETWORK ALLOW — NetworkPolicies on top of default-deny ───────────────
     allow:
@@ -113,7 +87,7 @@ spec:
           app.kubernetes.io/name: prometheus
         selector:
           app.kubernetes.io/name: a11oy
-        port: 9090
+        port: 7860
         description: Prometheus metrics scrape
 
       # Keycloak OIDC egress (authservice token exchange)
@@ -212,25 +186,7 @@ spec:
     - selector:
         app.kubernetes.io/name: a11oy
       portName: metrics
-      targetPort: 9090
+      targetPort: 7860
       path: /metrics
       kind: ServiceMonitor
       description: A11oy Application Metrics
-
-    - selector:
-        app.kubernetes.io/name: a11oy
-        app.kubernetes.io/component: api
-      portName: api-metrics
-      targetPort: 9091
-      path: /metrics
-      kind: ServiceMonitor
-      description: A11oy Warhacker API Metrics
-
-    - selector:
-        app.kubernetes.io/name: a11oy
-        app.kubernetes.io/component: ledger
-      portName: ledger-metrics
-      targetPort: 9092
-      path: /metrics
-      kind: ServiceMonitor
-      description: A11oy Ledger Metrics

@@ -58,33 +58,6 @@ spec:
               - /healthz
               - /
 
-      # Fleet status API (vessel/drone state, receipts, interdiction log)
-      - service: killinchu-api
-        selector:
-          app.kubernetes.io/name: killinchu
-          app.kubernetes.io/component: api
-        gateway: tenant
-        host: killinchu-api
-        port: 8082
-        targetPort: 8082
-        description: Killinchu Fleet Status API
-        uptime:
-          checks:
-            paths:
-              - /health
-              - /api/v1/fleet/status
-
-      # Edge relay endpoint — TLS passthrough for raw vessel telemetry
-      - service: killinchu-relay
-        selector:
-          app.kubernetes.io/name: killinchu
-          app.kubernetes.io/component: relay
-        gateway: passthrough
-        host: killinchu-relay
-        port: 9443
-        targetPort: 9443
-        description: Killinchu Edge Telemetry Relay (TLS passthrough)
-
     # ── NETWORK ALLOW — NetworkPolicies on top of default-deny ───────────────
     allow:
       # Intra-namespace traffic
@@ -103,7 +76,7 @@ spec:
           app.kubernetes.io/name: prometheus
         selector:
           app.kubernetes.io/name: killinchu
-        port: 9093
+        port: 7860
         description: Prometheus metrics scrape
 
       # Keycloak OIDC egress
@@ -123,7 +96,7 @@ spec:
           app.kubernetes.io/name: a11oy
         selector:
           app.kubernetes.io/name: killinchu
-        port: 8081
+        port: 7860
         description: A11oy governed-run API for receipt gate
 
       # DSSE receipt service egress
@@ -157,16 +130,6 @@ spec:
           app.kubernetes.io/name: killinchu
         port: 3100
         description: Loki log push
-
-      # Edge relay ingress — raw vessel/drone telemetry on port 9443
-      - direction: Ingress
-        remoteGenerated: Anywhere
-        selector:
-          app.kubernetes.io/name: killinchu
-          app.kubernetes.io/component: relay
-        port: 9443
-        remoteProtocol: TLS
-        description: Edge vessel/drone telemetry TLS ingestion
 
       # KubeAPI access for operator self-inspection
       - direction: Egress
@@ -211,25 +174,7 @@ spec:
     - selector:
         app.kubernetes.io/name: killinchu
       portName: metrics
-      targetPort: 9093
+      targetPort: 7860
       path: /metrics
       kind: ServiceMonitor
       description: Killinchu Application Metrics
-
-    - selector:
-        app.kubernetes.io/name: killinchu
-        app.kubernetes.io/component: api
-      portName: api-metrics
-      targetPort: 9094
-      path: /metrics
-      kind: ServiceMonitor
-      description: Killinchu Fleet API Metrics
-
-    - selector:
-        app.kubernetes.io/name: killinchu
-        app.kubernetes.io/component: relay
-      portName: relay-metrics
-      targetPort: 9095
-      path: /metrics
-      kind: PodMonitor
-      description: Killinchu Edge Relay Metrics

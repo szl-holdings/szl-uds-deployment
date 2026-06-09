@@ -24,7 +24,7 @@ metadata:
     szl.io/component: uds-package
     szl.io/mesh-version: v0.4.0
   annotations:
-    szl.io/role: "policy + receipt substrate (orchestrator a11oy.szl-a11oy.svc.cluster.local:8080)"
+    szl.io/role: "policy + receipt substrate (orchestrator a11oy.szl-a11oy.svc.cluster.local:7860)"
     szl.io/blocked-by: "FA-001 — ghcr.io/szl-holdings/a11oy image not yet pushed"
 spec:
   # ── SSO — service-to-service only (machine identity), not a human login UI ──
@@ -106,7 +106,7 @@ spec:
         remoteNamespace: szl-rosie
         remoteSelector:
           app: rosie
-        port: 8080
+        port: 7860
         description: "rosie commands a11oy"
       # amaru -> a11oy : ALLOW (memory responses)
       - direction: Ingress
@@ -115,7 +115,7 @@ spec:
         remoteNamespace: szl-amaru
         remoteSelector:
           app: amaru
-        port: 8080
+        port: 7860
         description: "amaru responds to a11oy memory queries"
       # sentra -> a11oy : ALLOW (immune verdicts + inspection)
       - direction: Ingress
@@ -124,7 +124,7 @@ spec:
         remoteNamespace: szl-sentra
         remoteSelector:
           app: sentra
-        port: 8080
+        port: 7860
         description: "sentra returns verdicts / inspects a11oy"
       # vessels -> a11oy : ALLOW (deployment status up)
       - direction: Ingress
@@ -133,14 +133,14 @@ spec:
         remoteNamespace: szl-vessels
         remoteSelector:
           app: vessels
-        port: 8080
+        port: 7860
         description: "vessels reports deployment status up to a11oy"
 
   monitor:
     - portName: metrics
       selector:
         app: a11oy
-      targetPort: 8080
+      targetPort: 7860
       path: /metrics
       kind: ServiceMonitor
       description: "a11oy orchestrator metrics scrape"
