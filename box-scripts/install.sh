@@ -16,6 +16,10 @@
 #        operator helper, see docs/SCRATCH_NAMESPACE_CONVENTION.md), plus
 #        szl-ns-scratch-watch — periodic guard that alerts when an untracked
 #        (unlabeled + unmanaged) scratch namespace appears on uds-szl-demo
+#   5. vault-auto-unseal — hands-off re-unseal of the persistent szl-receipts
+#        Vault after a restart/reboot, with a key/PVC-mismatch alarm that
+#        pages a11oy-uptime-notify when auto-unseal cannot recover signing
+#        (see box-scripts/vault-auto-unseal.README.md)
 #   5. szl-receipts-orphan-watch — periodic guard that flags an ORPHANED
 #        (untracked: no Helm/zarf/UDS-Package/VirtualService owner) duplicate
 #        receipts-server namespace on uds-szl-demo (never deletes, only alerts)
@@ -36,6 +40,7 @@ install -m 0755 "$here/sbin/istiod-fit-strategy"       /usr/local/sbin/istiod-fi
 install -m 0755 "$here/sbin/receipt-chain-watch"       /usr/local/sbin/receipt-chain-watch
 install -m 0755 "$here/sbin/szl-ns-scratch"            /usr/local/sbin/szl-ns-scratch
 install -m 0755 "$here/sbin/szl-ns-scratch-watch"      /usr/local/sbin/szl-ns-scratch-watch
+install -m 0755 "$here/sbin/vault-auto-unseal"          /usr/local/sbin/vault-auto-unseal
 install -m 0755 "$here/sbin/szl-receipts-orphan-watch"    /usr/local/sbin/szl-receipts-orphan-watch
 install -m 0755 "$here/sbin/a11oy-uptime-check"        /usr/local/sbin/a11oy-uptime-check
 install -m 0755 "$here/sbin/a11oy-uptime-notify"       /usr/local/sbin/a11oy-uptime-notify
@@ -55,6 +60,8 @@ install -m 0644 "$here/systemd/receipt-chain-watch.service" /etc/systemd/system/
 install -m 0644 "$here/systemd/receipt-chain-watch.timer"   /etc/systemd/system/receipt-chain-watch.timer
 install -m 0644 "$here/systemd/szl-ns-scratch-watch.service" /etc/systemd/system/szl-ns-scratch-watch.service
 install -m 0644 "$here/systemd/szl-ns-scratch-watch.timer"   /etc/systemd/system/szl-ns-scratch-watch.timer
+install -m 0644 "$here/systemd/vault-auto-unseal.service"    /etc/systemd/system/vault-auto-unseal.service
+install -m 0644 "$here/systemd/vault-auto-unseal.timer"      /etc/systemd/system/vault-auto-unseal.timer
 install -m 0644 "$here/systemd/szl-receipts-orphan-watch.service" /etc/systemd/system/szl-receipts-orphan-watch.service
 install -m 0644 "$here/systemd/szl-receipts-orphan-watch.timer"   /etc/systemd/system/szl-receipts-orphan-watch.timer
 install -m 0644 "$here/systemd/a11oy-uptime-check.service"  /etc/systemd/system/a11oy-uptime-check.service
@@ -156,6 +163,7 @@ systemctl enable --now szl-core-rightsize.timer
 systemctl enable --now istiod-fit-strategy.timer
 systemctl enable --now receipt-chain-watch.timer
 systemctl enable --now szl-ns-scratch-watch.timer
+systemctl enable --now vault-auto-unseal.timer
 systemctl enable --now szl-receipts-orphan-watch.timer
 systemctl enable --now a11oy-uptime-check.timer
 systemctl enable --now dns-drift-check.timer
@@ -168,6 +176,7 @@ systemctl enable --now szl-alert-relay.service
 [ -x /usr/local/sbin/istiod-fit-strategy ] && /usr/local/sbin/istiod-fit-strategy || true
 [ -x /usr/local/sbin/receipt-chain-watch ]  && /usr/local/sbin/receipt-chain-watch   || true
 [ -x /usr/local/sbin/szl-ns-scratch-watch ] && /usr/local/sbin/szl-ns-scratch-watch  || true
+[ -x /usr/local/sbin/vault-auto-unseal ]   && /usr/local/sbin/vault-auto-unseal    || true
 [ -x /usr/local/sbin/szl-receipts-orphan-watch ] && /usr/local/sbin/szl-receipts-orphan-watch || true
 
 echo "[install] done. current status:"

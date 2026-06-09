@@ -1,0 +1,311 @@
+#!/usr/bin/env bash
+#
+# vault-auto-unseal — guarded local auto-unseal for the persistent szl-receipts
+# Vault on the single-node uds-szl-demo k3d cluster (box 167.233.50.75).
+#
+# WHY THIS EXISTS
+# Persistent Vault (k8s/vault/vault-persistent.yaml) uses file storage + a real
+# 1/1 Shamir seal. That is honest custody — the Transit signing key survives a
+# pod restart — but the tradeoff is that after ANY Vault restart / box reboot
+# the pod comes back **Sealed**, and until a human runs `vault operator unseal`
+# szl-receipts signing fails closed (backend=vault). On an unattended box that
+# means signing silently breaks until someone notices and unseals by hand.
+#
+# Real Vault auto-unseal normally delegates the seal to an external KMS / a
+# Transit auto-unseal Vault. This box is a 2-vCPU air-gapped single node with no
+# second Vault and no cloud KMS, so the pragmatic option is a GUARDED LOCAL
+# HELPER: read the unseal key share(s) from the off-git, root-only canonical
+# init file (chmod 600 — the same crown-jewel file the runbook mandates) and
+# replay `vault operator unseal` whenever Vault is sealed.
+#
+# CANONICAL UNSEAL-KEY LOCATION (read this — a stale copy once cost real time)
+#   The ONE canonical file this helper reads is:
+#       /root/vault-init/init.json
+#   It MUST hold the unseal key share(s) that match the LIVE `vault-data` PVC.
+#   A legacy duplicate /root/vault-init.json exists on this box and is kept in
+#   sync by convention, but the helper deliberately reads ONLY the path above so
+#   there is a single source of truth. If the PVC is ever re-created / re-init'd,
+#   BOTH copies must be refreshed from the new `vault operator init` output, or
+#   the helper will replay a STALE key against a Vault it cannot unseal.
+#
+#   This exact failure happened once: init.json held a key from a PREVIOUS PVC,
+#   so every unseal silently failed and receipt signing stopped with no human
+#   notified. To stop that recurring, this helper now VERIFIES the key actually
+#   unseals the live Vault and PAGES (ntfy a11oy-uptime-notify) on a key/PVC
+#   mismatch instead of quietly logging and retrying forever (see KEY/PVC
+#   MISMATCH below).
+#
+# SECURITY POSTURE (read before assuming this is production-grade)
+#   * The unseal key lives on the same host as Vault. This collapses the Shamir
+#     "key held off the box" boundary on THIS node — it is a demo/single-node
+#     convenience, NOT a production pattern. Production must use KMS/Transit
+#     auto-unseal so the key never sits next to the sealed data (see the runbook
+#     §6). This helper only reads init.json; it never copies it into the cluster,
+#     never logs the key, and never writes it anywhere. The mismatch page logs a
+#     short SHA-256 *fingerprint* of the key (a one-way hash), never the key.
+#   * init.json must stay root-only (chmod 600). The helper refuses to run if it
+#     is missing or world/group-readable, so a custody regression fails loud.
+#
+# KEY/PVC MISMATCH DETECTION
+#   When Vault is sealed, the helper replays the threshold share(s) and then
+#   re-reads the seal status to VERIFY the key worked. A correct key unseals the
+#   Vault; a stale/wrong key leaves it sealed. To avoid false alarms from a pod
+#   that is merely mid-restart, the helper only declares a mismatch when Vault is
+#   still REACHABLE and reporting sealed=true after replaying the full threshold
+#   TWICE (an unreadable status = transient, retried next tick). On a confirmed
+#   mismatch it pages once per outage edge (state in /var/lib/vault-auto-unseal),
+#   and sends a RECOVERED page once the key unseals the Vault again.
+#
+# BEHAVIOUR
+#   * Idempotent + a TRUE no-op when Vault is already unsealed (no API writes,
+#     no log spam) — safe to run on a tight timer.
+#   * Resolves the k3d kubeconfig; if the cluster is absent (e.g. stopped after a
+#     reboot — k3d nodes are `--restart no`) it exits 0 and does nothing.
+#   * Only acts when the vault Deployment exists AND reports Sealed=true.
+#
+# Installed at /usr/local/sbin/vault-auto-unseal, driven by
+# vault-auto-unseal.timer (every 1 min + OnBootSec) so szl-receipts resumes
+# signing within ~1 min of any Vault restart. Mirrors the szl-core-rightsize /
+# istiod-fit-strategy self-healing pattern on this box.
+set -uo pipefail
+
+CLUSTER="uds-szl-demo"
+NS="vault"
+DEPLOY="vault"
+# THE single canonical unseal-key file (see CANONICAL UNSEAL-KEY LOCATION above).
+INIT_JSON="${INIT_JSON:-/root/vault-init/init.json}"
+
+# --- Paging / dedup state ----------------------------------------------------
+# Edge-triggered alerting: one page per sustained key/PVC-mismatch outage, then
+# one RECOVERED when the key unseals Vault again. Reuses the shared box notifier
+# (ntfy via /etc/a11oy-uptime.env). Overridable for safe testing.
+STATE_DIR="${STATE_DIR:-/var/lib/vault-auto-unseal}"
+MISMATCH_SIG="${MISMATCH_SIG:-$STATE_DIR/mismatch.sig}"
+NOTIFY_CMD="${NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
+ALERT_PREFIX="${ALERT_PREFIX:-}"
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+
+# szl-receipts observation target. The receipts server (server.py) now LAZILY
+# re-establishes its Vault Transit signer: a background watchdog re-runs the
+# Vault handshake on a fixed cadence (SZL_SIGNER_RECHECK_INTERVAL, default 30s)
+# whenever the signer is unavailable, and the sign / GET /pubkey paths retry it
+# too. So an already-running pod that booted while Vault was sealed/unreachable
+# resumes signing ON ITS OWN once Vault unseals — NO pod delete / restart needed.
+# This helper therefore only OBSERVES and reports; it never restarts receipts.
+RX_NS="szl-receipts"
+RX_SELECTOR="app=szl-receipts-server"
+
+log() { echo "[vault-auto-unseal] $*"; }
+
+# Send a push notification (fail-soft). Edge-dedup is handled by the caller.
+page() {
+  if [ -z "$NOTIFY_CMD" ]; then
+    log "NOTIFY_CMD empty — would page: $1"
+    return 0
+  fi
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >/dev/null 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed"
+}
+
+# One-way SHA-256 fingerprint (first 12 hex) of the unseal key — safe to log /
+# page so an operator can tell WHICH key was replayed without exposing it.
+key_fingerprint() {
+  python3 - "$INIT_JSON" <<'PY' 2>/dev/null || echo unknown
+import json,sys,hashlib
+try:
+    k=json.load(open(sys.argv[1]))["unseal_keys_b64"][0]
+    print(hashlib.sha256(k.encode()).hexdigest()[:12])
+except Exception:
+    print("unknown")
+PY
+}
+
+# Read the live seal status: prints "True"/"False", or "" if Vault is unreachable
+# (pod starting/restarting) — an empty result means "transient, retry next tick".
+read_sealed() {
+  kubectl --request-timeout=30s -n "$NS" exec "deploy/$DEPLOY" -- \
+    sh -c 'VAULT_ADDR=http://127.0.0.1:8200 vault status -format=json' 2>/dev/null \
+    | python3 -c 'import sys,json;print(json.load(sys.stdin).get("sealed"))' 2>/dev/null
+}
+
+# Replay the full threshold of unseal shares, capturing Vault's response into the
+# global UNSEAL_OUT (never contains the key — `vault operator unseal` echoes only
+# seal status / errors). Returns 2 if a share is missing from init.json.
+UNSEAL_OUT=""
+replay_unseal() {
+  UNSEAL_OUT=""
+  local i=0 KEY out
+  while [ "$i" -lt "$THRESHOLD" ]; do
+    KEY="$(python3 -c 'import json,sys;k=json.load(open("'"$INIT_JSON"'"))["unseal_keys_b64"];sys.stdout.write(k['"$i"'])' 2>/dev/null)"
+    if [ -z "$KEY" ]; then
+      log "ERROR: unseal_keys_b64[$i] missing in $INIT_JSON — cannot reach threshold $THRESHOLD"
+      return 2
+    fi
+    # Pipe the key over stdin and have the in-pod shell read it into a variable,
+    # so the key appears in NO command line — not in the box's `ps` and only
+    # fleetingly inside the pod. `vault operator unseal -` (stdin) returns HTTP
+    # 400 here, so read+pass-as-arg is used. Capture stdout+stderr for diagnosis.
+    out="$(printf '%s\n' "$KEY" | kubectl --request-timeout=30s -n "$NS" exec -i "deploy/$DEPLOY" -- \
+      sh -c 'read K; VAULT_ADDR=http://127.0.0.1:8200 vault operator unseal "$K" 2>&1' 2>&1)"
+    UNSEAL_OUT="$UNSEAL_OUT$out
+"
+    i=$((i+1))
+  done
+  return 0
+}
+
+# Called whenever Vault is confirmed UNSEALED. If we had previously paged a
+# key/PVC mismatch, the key now works again -> send RECOVERED + clear the sig.
+clear_mismatch_on_recovery() {
+  if [ -f "$MISMATCH_SIG" ]; then
+    page "✅ RECOVERED: vault-auto-unseal on box 167.233.50.75 (uds-szl-demo) — the unseal key in $INIT_JSON now unseals the live Vault again. szl-receipts signing recovering."
+    rm -f "$MISMATCH_SIG" 2>/dev/null || true
+    log "key/PVC mismatch cleared — sent RECOVERED"
+  fi
+}
+
+# Called when the key has been PROVEN not to unseal the live Vault (replayed the
+# full threshold twice, Vault still reachable + sealed). Edge-deduped page.
+page_mismatch() {
+  local extra="${1:-}" fp decrypt=""
+  fp="$(key_fingerprint)"
+  printf '%s' "$UNSEAL_OUT" | grep -qiE 'message authentication failed|failed to decrypt|unable to decrypt|stored keys' \
+    && decrypt=" Vault reported a decrypt failure (wrong key)."
+  if [ -f "$MISMATCH_SIG" ]; then
+    log "key/PVC mismatch persisting (sig present) — not re-paging. key fp $fp"
+    return 0
+  fi
+  page "🚨 KEY/PVC MISMATCH: vault-auto-unseal on box 167.233.50.75 (uds-szl-demo) replayed the unseal key from $INIT_JSON (fp $fp) but Vault stays SEALED — the key does NOT match the live vault-data PVC.${decrypt} szl-receipts signing is DOWN and auto-unseal CANNOT recover it. Likely a STALE init.json from a previous PVC. Canonical key = $INIT_JSON; check stale copies (/root/vault-init.json, *.stale-*.bak) and re-run \`vault operator init\` only if the PVC is genuinely new. See docs/operations/VAULT_PERSISTENT_RUNBOOK.md §5b.${extra:+ ($extra)}"
+  printf 'fp=%s when=%s\n' "$fp" "$(date -u +%FT%TZ)" > "$MISMATCH_SIG" 2>/dev/null || true
+  log "PAGED key/PVC mismatch (key fp $fp) — wrote $MISMATCH_SIG"
+}
+
+# Best-effort, READ-ONLY confirmation that receipts self-heals after an unseal.
+# Historically this deleted the receipts pod to force a Vault re-init, but on a
+# 2-vCPU node a rolling surge can't schedule a 2nd pod (Pending "Insufficient
+# cpu") and even a plain delete is a needless availability blip. The server now
+# recovers autonomously, so we just poll /pubkey for up to ~one recheck interval
+# and log the outcome — we DO NOT delete or restart the pod.
+nudge_receipts() {
+  kubectl --request-timeout=20s -n "$RX_NS" get pods -l "$RX_SELECTOR" >/dev/null 2>&1 || {
+    log "receipts pods absent in ns/$RX_NS — nothing to observe"; return 0; }
+  local rpod signed i
+  rpod="$(kubectl --request-timeout=20s -n "$RX_NS" get pods -l "$RX_SELECTOR" \
+    --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
+  if [ -z "$rpod" ]; then
+    log "no Running receipts pod yet — its watchdog will sign once it is up + Vault is unsealed"
+    return 0
+  fi
+  # Poll a few times; the server's watchdog re-establishes the signer on its own.
+  for i in 1 2 3 4 5 6 7 8; do
+    signed="$(kubectl --request-timeout=20s -n "$RX_NS" exec "$rpod" -- python3 -c \
+      'import json,urllib.request;print(json.load(urllib.request.urlopen("http://127.0.0.1:8080/pubkey",timeout=8)).get("signed"))' 2>/dev/null)"
+    [ "$signed" = "True" ] && { log "receipts signing (signed=True) — server self-healed, no restart needed"; return 0; }
+    sleep 5
+  done
+  log "receipts still signed=${signed:-unreachable} after polling; the server watchdog keeps retrying every SZL_SIGNER_RECHECK_INTERVAL — NOT restarting the pod (recovery is autonomous). Investigate if this persists."
+}
+
+# --- Custody guard: the unseal-key file must exist and be root-only ---------
+if [ ! -f "$INIT_JSON" ]; then
+  log "FATAL: $INIT_JSON not found — cannot auto-unseal. (Has Vault been initialised? See VAULT_PERSISTENT_RUNBOOK §2.)"
+  exit 1
+fi
+PERMS="$(stat -c '%a' "$INIT_JSON" 2>/dev/null || echo '?')"
+OWNER="$(stat -c '%U' "$INIT_JSON" 2>/dev/null || echo '?')"
+if [ "$PERMS" != "600" ] || [ "$OWNER" != "root" ]; then
+  log "FATAL: $INIT_JSON is $OWNER:$PERMS — refusing to read an unseal key from a non-root-only file. Run: chown root $INIT_JSON && chmod 600 $INIT_JSON"
+  exit 1
+fi
+
+# --- Resolve cluster; no-op if it isn't up ----------------------------------
+KC="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" || { log "cluster $CLUSTER absent — nothing to do"; exit 0; }
+export KUBECONFIG="$KC"
+
+# Vault Deployment present? Otherwise no-op (cluster migrating / not deployed).
+if ! kubectl --request-timeout=20s -n "$NS" get deploy "$DEPLOY" >/dev/null 2>&1; then
+  log "deploy/$DEPLOY not present in ns/$NS — nothing to do"
+  exit 0
+fi
+
+# --- Read seal status (vault status exits 2 when sealed but still emits JSON) -
+STATUS_JSON="$(kubectl --request-timeout=30s -n "$NS" exec "deploy/$DEPLOY" -- \
+  sh -c 'VAULT_ADDR=http://127.0.0.1:8200 vault status -format=json' 2>/dev/null)"
+if [ -z "$STATUS_JSON" ]; then
+  log "could not read vault status (pod starting / not ready?) — will retry next tick"
+  exit 0
+fi
+
+SEALED="$(printf '%s' "$STATUS_JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("sealed"))' 2>/dev/null)"
+INITED="$(printf '%s' "$STATUS_JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("initialized"))' 2>/dev/null)"
+
+if [ "$INITED" != "True" ]; then
+  log "Vault reports initialized=$INITED — NOT auto-initialising (init is a one-time human step, see runbook §2). Nothing to do."
+  exit 0
+fi
+
+if [ "$SEALED" != "True" ]; then
+  # Already unsealed — the common case. True no-op, EXCEPT: if we had paged a
+  # mismatch and a human has since fixed the key + unsealed Vault, clear it.
+  [ -f "$MISMATCH_SIG" ] && clear_mismatch_on_recovery
+  exit 0
+fi
+
+# Threshold + the exact number of shares needed, read straight from init.json.
+THRESHOLD="$(python3 -c 'import json;print(json.load(open("'"$INIT_JSON"'")).get("unseal_threshold",1))' 2>/dev/null)"
+[ -z "$THRESHOLD" ] && THRESHOLD=1
+
+log "Vault is SEALED — verifying the init key unseals THIS Vault, replaying $THRESHOLD share(s) from $INIT_JSON (key fp $(key_fingerprint))"
+
+# --- Attempt 1 ---------------------------------------------------------------
+replay_unseal; RC=$?
+if [ "$RC" = 2 ]; then
+  # init.json is structurally short of shares — a custody/key problem, not a
+  # transient one. Page it as a mismatch so a human fixes the key file.
+  page_mismatch "init.json is missing unseal_keys_b64 shares"
+  exit 1
+fi
+
+NEW_SEALED="$(read_sealed)"
+if [ "$NEW_SEALED" = "False" ]; then
+  log "Vault UNSEALED — ensuring szl-receipts re-establishes its Vault signer."
+  clear_mismatch_on_recovery
+  nudge_receipts
+  exit 0
+fi
+
+# Still sealed. Distinguish a transient exec blip from a genuine key/PVC mismatch
+# by confirming Vault is still REACHABLE, then replaying once more.
+sleep 5
+RECHK="$(read_sealed)"
+if [ -z "$RECHK" ]; then
+  log "vault status unreadable on recheck (pod restarting?) — treating as transient, will retry next tick"
+  exit 1
+fi
+if [ "$RECHK" = "False" ]; then
+  log "Vault unsealed on recheck (slow apply) — ensuring szl-receipts re-establishes its signer."
+  clear_mismatch_on_recovery
+  nudge_receipts
+  exit 0
+fi
+
+# --- Attempt 2 (Vault confirmed reachable + still sealed) --------------------
+replay_unseal
+NEW_SEALED2="$(read_sealed)"
+if [ "$NEW_SEALED2" = "False" ]; then
+  log "Vault UNSEALED on second replay — ensuring szl-receipts re-establishes its signer."
+  clear_mismatch_on_recovery
+  nudge_receipts
+  exit 0
+fi
+if [ -z "$NEW_SEALED2" ]; then
+  log "vault status unreadable after second replay — treating as transient, will retry next tick"
+  exit 1
+fi
+
+# DEFINITIVE: Vault is reachable, initialized, and STILL sealed after replaying
+# the full threshold twice => the key in init.json does NOT unseal this Vault.
+# This is the key/PVC-mismatch incident the helper exists to make loud.
+log "ERROR: Vault still SEALED after replaying $THRESHOLD share(s) twice — the init key does NOT match the live Vault/PVC. Paging."
+page_mismatch
+exit 1

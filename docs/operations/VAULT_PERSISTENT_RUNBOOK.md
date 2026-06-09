@@ -208,6 +208,51 @@ curl -s http://<receipts>/pubkey            # same public key -> Transit key sur
 Tamper check: flip one byte of the receipt payload and the PAE verify must
 **FAIL** — the signature is over the canonical DSSEv1 PAE, not the raw body.
 
+## 5b. Hands-off auto-unseal helper + canonical unseal-key location
+
+§2 leaves a gap on the unattended single-node box: every Vault restart / reboot
+re-seals Vault and signing fails closed until a human unseals it. Until real
+auto-unseal (§6) lands, the box runs a **guarded local helper** that closes the
+gap and — critically — **alarms when it cannot**.
+
+**Source / install:** `box-scripts/sbin/vault-auto-unseal` +
+`box-scripts/systemd/vault-auto-unseal.{service,timer}`, installed by
+`box-scripts/install.sh`. The timer fires `OnBootSec=45s` then every `1min`, so a
+sealed Vault recovers within ~1 min. The helper is a true no-op when Vault is
+already unsealed.
+
+**The single canonical unseal-key file** (this is the one place to look/refresh):
+
+```
+/root/vault-init/init.json          # root:600 — unseal share(s) for the LIVE vault-data PVC
+```
+
+A legacy duplicate `/root/vault-init.json` exists and is kept in sync by
+convention, but the helper reads **only** `/root/vault-init/init.json` so there
+is a single source of truth. **If the `vault-data` PVC is ever re-created or
+re-initialised, refresh both copies from the new `vault operator init` output.**
+A stale `init.json` (carried over from a previous PVC) will not unseal the live
+Vault, and that exact mistake once stopped signing silently.
+
+**Key/PVC-mismatch alarm.** The helper does not assume its replay worked. After
+replaying the threshold share(s) it re-reads the seal status and verifies the key
+actually unsealed *this* Vault. It separates a transient blip (Vault unreadable /
+pod mid-restart → retried next tick) from a genuine mismatch (Vault still
+reachable + sealed after replaying the full threshold **twice**). On a confirmed
+mismatch it pages **ntfy `a11oy-uptime-notify`** (edge-deduped, with a RECOVERED
+page once the key works again), logging only a one-way SHA-256 *fingerprint* of
+the key — never the key. So a stale key can no longer fail closed in silence.
+
+**Recovery when you get a mismatch page:** the canonical key no longer matches
+the live PVC. Confirm the live PVC's identity, check for a stale `init.json`
+(and the `/root/vault-init.json` duplicate / any `*.stale-*.bak`), and restore
+the correct `vault operator init` output to `/root/vault-init/init.json`
+(`chown root && chmod 600`). Only run `vault operator init` again if the PVC is
+genuinely new (that destroys the old Transit key + receipt chain — see §6).
+
+This remains a demo/single-node convenience: the key sits next to the sealed
+data. Production must move to KMS / Transit auto-unseal (§6).
+
 ## 6. Production hardening (what this demo is NOT)
 
 - **Auto-unseal.** File + Shamir means a human unsedeal after every restart.
