@@ -36,6 +36,8 @@ on:
       - "zarf.yaml"
       - "packages/**/zarf.yaml"
       - "tasks.yaml"
+      - "scripts/image-pin-checks.py"
+      - "scripts/image-pin-checks.test.py"
       - ".github/workflows/image-pin-guard.yml"
   push:
     branches: [main]
@@ -43,6 +45,8 @@ on:
       - "zarf.yaml"
       - "packages/**/zarf.yaml"
       - "tasks.yaml"
+      - "scripts/image-pin-checks.py"
+      - "scripts/image-pin-checks.test.py"
       - ".github/workflows/image-pin-guard.yml"
   workflow_dispatch:
 
@@ -51,8 +55,27 @@ permissions:
   packages: read
 
 jobs:
+  # ── 0. Self-test the guard logic (negative fixtures) ────────────────────────
+  # The guard job below asserts properties via scripts/image-pin-checks.py. That
+  # assertion logic could break silently and PASS VACUOUSLY (green while guarding
+  # nothing — e.g. a multi-arch index slipping past the classifier). This job
+  # feeds the checks deliberately-broken fixtures and asserts they FAIL, so a
+  # future edit that neuters a check turns CI red here. The guard job
+  # `needs: self-test`, so a regressed checker blocks the whole workflow.
+  self-test:
+    name: Self-test image-pin checks (negative fixtures)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+      - name: Run image-pin checks self-test
+        run: python3 scripts/image-pin-checks.test.py
+
   image-pin-guard:
     name: Image pins are single-platform + bundle task wired
+    needs: self-test
     runs-on: ubuntu-24.04
     env:
       CRANE_VERSION: v0.20.2
@@ -79,37 +102,14 @@ jobs:
             | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       # ── 1. Every @sha256: pin must be a single-platform manifest ──────────────
+      # collect-pins + classify-manifest live in scripts/image-pin-checks.py so
+      # they can be unit-tested with broken fixtures by the self-test job above
+      # (a multi-arch index, a missing pin). crane stays in the workflow (network
+      # tool); its manifest body is piped to classify-manifest for the verdict.
       - name: "Collect @sha256: image pins from zarf packages"
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import sys, glob, yaml
-          files = ["zarf.yaml"] + sorted(glob.glob("packages/**/zarf.yaml", recursive=True))
-          pins = []
-          for path in files:
-              try:
-                  doc = yaml.safe_load(open(path))
-              except FileNotFoundError:
-                  print(f"::notice::skipping missing zarf package file: {path}")
-                  continue
-              for comp in (doc or {}).get("components", []) or []:
-                  for img in comp.get("images", []) or []:
-                      if isinstance(img, str) and "@sha256:" in img:
-                          pins.append((path, img))
-          if not pins:
-              sys.exit("::error::no @sha256: image pins found in zarf.yaml / "
-                       "packages/szl-receipts/zarf.yaml — the digest-pin guard "
-                       "would silently pass; refusing.")
-          seen = set()
-          with open("/tmp/pins.txt", "w") as out:
-              for path, img in pins:
-                  if img in seen:
-                      continue
-                  seen.add(img)
-                  out.write(img + "\n")
-                  print(f"{path}: {img}")
-          print(f"Collected {len(seen)} unique @sha256: pin(s).")
-          PY
+          python3 scripts/image-pin-checks.py collect-pins --root . --out /tmp/pins.txt
 
       - name: Assert each pin resolves to a single-platform manifest
         run: |
@@ -126,28 +126,16 @@ jobs:
             dref="${head}/${last}@${digest}"
 
             echo "::group::$dref"
-            if ! body="$(crane manifest "$dref" 2>/tmp/crane.err)"; then
+            if ! crane manifest "$dref" > /tmp/manifest.json 2>/tmp/crane.err; then
               echo "::error::could not fetch manifest for $dref"
               cat /tmp/crane.err
               fail=1
               echo "::endgroup::"
               continue
             fi
-            mt="$(printf '%s' "$body" | jq -r '.mediaType // ""')"
-            is_index="$(printf '%s' "$body" | jq -r 'if (.manifests != null) then "yes" else "no" end')"
-            echo "mediaType: $mt"
-            echo "has .manifests[]: $is_index"
-            case "$mt" in
-              *image.index*|*manifest.list*)
-                echo "::error file=zarf.yaml::$ref is pinned to a multi-arch INDEX digest ($mt). zarf package create cannot package an index — pin the linux/amd64 CHILD digest instead."
-                fail=1 ;;
-            esac
-            if [ "$is_index" = "yes" ]; then
-              echo "::error file=zarf.yaml::$ref resolves to a manifest list (.manifests[] present). Pin the single-platform (linux/amd64) child digest, not the index digest."
+            if ! python3 scripts/image-pin-checks.py classify-manifest /tmp/manifest.json; then
+              echo "::error file=zarf.yaml::$ref is pinned to a multi-arch INDEX digest. zarf package create cannot package an index — pin the linux/amd64 CHILD digest instead."
               fail=1
-            fi
-            if [ "$mt" != "" ] && [ "$is_index" = "no" ]; then
-              echo "OK: single-platform manifest"
             fi
             echo "::endgroup::"
           done < /tmp/pins.txt
@@ -177,28 +165,13 @@ jobs:
           fi
           echo "OK: bundle task is listed by uds run --list"
 
+      # start-routes-bundle lives in scripts/image-pin-checks.py so it can be
+      # unit-tested with broken fixtures by the self-test job above (missing
+      # bundle/start task, a start that skips bundle).
       - name: Assert the start task routes to the bundle task
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import sys, yaml
-          doc = yaml.safe_load(open("tasks.yaml"))
-          tasks = {t["name"]: t for t in (doc or {}).get("tasks", []) if "name" in t}
-          if "bundle" not in tasks:
-              sys.exit("::error file=tasks.yaml::no top-level task named 'bundle'")
-          start = tasks.get("start")
-          if not start:
-              sys.exit("::error file=tasks.yaml::no top-level task named 'start'")
-          routes = any(
-              isinstance(a, dict) and a.get("task") == "bundle"
-              for a in start.get("actions", []) or []
-          )
-          if not routes:
-              sys.exit("::error file=tasks.yaml::the 'start' task does not route to "
-                       "'bundle' (expected an action `- task: bundle`); uds run start "
-                       "and uds run bundle must share one clean-checkout build path.")
-          print("OK: start -> bundle (uds run start and uds run bundle share one build path)")
-          PY
+          python3 scripts/image-pin-checks.py start-routes-bundle --root .
 
       - name: All image-pin guards passed
         run: echo "Image pins are single-platform and the bundle build path is wired."

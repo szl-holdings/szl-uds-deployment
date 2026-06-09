@@ -43,11 +43,15 @@ on:
   pull_request:
     paths:
       - "charts/**"
+      - "scripts/chart-guard-checks.py"
+      - "scripts/chart-guard-checks.test.py"
       - ".github/workflows/chart-guard.yml"
   push:
     branches: [main]
     paths:
       - "charts/**"
+      - "scripts/chart-guard-checks.py"
+      - "scripts/chart-guard-checks.test.py"
       - ".github/workflows/chart-guard.yml"
   workflow_dispatch:
 
@@ -55,8 +59,27 @@ permissions:
   contents: read
 
 jobs:
+  # ── 0. Self-test the guard logic (negative fixtures) ────────────────────────
+  # The guard job below asserts properties via scripts/chart-guard-checks.py.
+  # That assertion logic could break silently and PASS VACUOUSLY (green while
+  # guarding nothing — e.g. an unsigned-boot mount slipping past requireKey).
+  # This job feeds the checks deliberately-broken fixtures and asserts they FAIL,
+  # so a future edit that neuters a check turns CI red here. The guard job
+  # `needs: self-test`, so a regressed checker blocks the whole workflow.
+  self-test:
+    name: Self-test chart-guard checks (negative fixtures)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+      - name: Run chart-guard checks self-test
+        run: python3 scripts/chart-guard-checks.test.py
+
   chart-guard:
     name: Render + lint receipt-deploy charts
+    needs: self-test
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -106,28 +129,14 @@ jobs:
           echo "All ${#charts[@]} charts under charts/* rendered OK"
 
       # ── 2 + 3. Extract the keygen script and check its syntax + invariants ────
+      # extract-keygen + keygen-invariants live in scripts/chart-guard-checks.py
+      # so they can be unit-tested with broken fixtures by the self-test job above
+      # (missing Job, no args, lost set -e/fail(), two-file key scheme). sh -n and
+      # shellcheck stay in the workflow (external tools).
       - name: Extract rendered keygen Job script
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import sys, yaml
-          docs = [d for d in yaml.safe_load_all(open("/tmp/key-init.yaml")) if d]
-          jobs = [d for d in docs
-                  if d.get("kind") == "Job"
-                  and d.get("metadata", {}).get("name") == "szl-key-init"]
-          if not jobs:
-              sys.exit("::error::keygen Job 'szl-key-init' not found in rendered output")
-          containers = jobs[0]["spec"]["template"]["spec"]["containers"]
-          keygen = [c for c in containers if c.get("name") == "keygen"]
-          if not keygen:
-              sys.exit("::error::keygen container not found in szl-key-init Job")
-          args = keygen[0].get("args") or []
-          if not args or not isinstance(args[0], str) or not args[0].strip():
-              sys.exit("::error::keygen container has no inline shell script in args[0]")
-          with open("/tmp/keygen.sh", "w") as f:
-              f.write(args[0])
-          print(f"Extracted keygen script ({args[0].count(chr(10))} lines)")
-          PY
+          python3 scripts/chart-guard-checks.py extract-keygen /tmp/key-init.yaml /tmp/keygen.sh
 
       - name: keygen script — POSIX sh syntax check (sh -n)
         run: |
@@ -152,52 +161,19 @@ jobs:
       - name: keygen script — fail-loud + single-key invariants
         run: |
           set -euo pipefail
-          S=/tmp/keygen.sh
-          # Must fail loud: set -e (abort on error) + a fail() helper that exits 1.
-          grep -Eq 'set -[a-z]*e' "$S" \
-            || { echo "::error::keygen script lost 'set -e' (would exit 0 with no Secret)"; exit 1; }
-          grep -Eq '^[[:space:]]*fail\(\)' "$S" \
-            || { echo "::error::keygen script lost its fail() helper"; exit 1; }
-          # Must create the Secret with a single ed25519.pem key file (the name the
-          # receipts-server Deployment mounts). Reject the old two-file scheme.
-          grep -Eq -- '--from-file=' "$S" \
-            || { echo "::error::keygen script no longer creates the Secret (no --from-file)"; exit 1; }
-          if grep -Eq -- 'key\.priv|key\.pub' "$S"; then
-            echo "::error::keygen script uses the old two-file key.priv/key.pub scheme"
-            exit 1
-          fi
-          echo "OK: keygen script is fail-loud and uses a single ed25519.pem key file"
+          python3 scripts/chart-guard-checks.py keygen-invariants /tmp/keygen.sh
 
       # ── 4. signing.requireKey controls the Secret mount's optional flag ───────
+      # requirekey-optional lives in scripts/chart-guard-checks.py so it can be
+      # unit-tested with broken fixtures by the self-test job above (an unsigned
+      # boot slipping past requireKey=true, a missing ed25519-key volume). helm
+      # template stays in the workflow (external tool).
       - name: Assert signing.requireKey toggles Secret mount optional flag
         run: |
           set -euo pipefail
           helm template r charts/szl-receipts/ --set signing.requireKey=true  > /tmp/req-true.yaml
           helm template r charts/szl-receipts/ --set signing.requireKey=false > /tmp/req-false.yaml
-          python3 - <<'PY'
-          import sys, yaml
-          def optional(path):
-              docs = [d for d in yaml.safe_load_all(open(path)) if d]
-              deps = [d for d in docs if d.get("kind") == "Deployment"]
-              if not deps:
-                  sys.exit(f"::error::no Deployment rendered in {path}")
-              vols = deps[0]["spec"]["template"]["spec"].get("volumes", [])
-              ek = [v for v in vols if v.get("name") == "ed25519-key"]
-              if not ek:
-                  sys.exit(f"::error::ed25519-key volume not found in {path}")
-              return ek[0]["secret"]["optional"]
-          t = optional("/tmp/req-true.yaml")
-          f = optional("/tmp/req-false.yaml")
-          print(f"requireKey=true  -> optional: {t}")
-          print(f"requireKey=false -> optional: {f}")
-          if t is not False:
-              sys.exit("::error::signing.requireKey=true must render optional:false "
-                       "(pod must refuse to start without the signing key)")
-          if f is not True:
-              sys.exit("::error::signing.requireKey=false must render optional:true "
-                       "(legacy unsigned demo mode)")
-          print("OK: requireKey correctly drives the Secret mount optional flag")
-          PY
+          python3 scripts/chart-guard-checks.py requirekey-optional /tmp/req-true.yaml /tmp/req-false.yaml
 
       - name: All chart guards passed
         run: echo "Receipt-deploy charts render, the keygen script is sound, and requireKey holds."

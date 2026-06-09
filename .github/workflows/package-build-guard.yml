@@ -40,6 +40,8 @@ on:
       - "charts/**"
       - "packages/szl-receipts/**"
       - "manifests/**"
+      - "scripts/package-build-checks.py"
+      - "scripts/package-build-checks.test.py"
       - ".github/workflows/package-build-guard.yml"
   push:
     branches: [main]
@@ -47,6 +49,8 @@ on:
       - "charts/**"
       - "packages/szl-receipts/**"
       - "manifests/**"
+      - "scripts/package-build-checks.py"
+      - "scripts/package-build-checks.test.py"
       - ".github/workflows/package-build-guard.yml"
   workflow_dispatch:
 
@@ -58,9 +62,27 @@ env:
   ZARF_VERSION: "v0.77.0"
 
 jobs:
+  # ── 0. Self-test the guard logic (negative fixtures) ────────────────────────
+  # Both jobs below assert properties via scripts/package-build-checks.py. That
+  # assertion logic could break silently and PASS VACUOUSLY (green while guarding
+  # nothing). This job feeds the checks deliberately-broken fixtures and asserts
+  # they FAIL, so a future edit that neuters a check turns CI red here. The guard
+  # jobs `needs: self-test`, so a regressed checker blocks the whole workflow.
+  self-test:
+    name: Self-test package-build checks (negative fixtures)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+      - name: Run package-build checks self-test
+        run: python3 scripts/package-build-checks.test.py
+
   # ── 1. Render-level Secret invariant (fast, no images, no cluster) ──────────
   render-assert:
     name: Rendered key-init Secret -> ns szl-receipts / ed25519.pem
+    needs: self-test
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -86,66 +108,18 @@ jobs:
             > /tmp/key-init-rendered.yaml
           echo "szl-key-init rendered OK"
 
+      # The assertion logic lives in scripts/package-build-checks.py (subcommand
+      # rendered-keygen) so it can be unit-tested with broken fixtures by the
+      # self-test job above — the same code path runs here on the real render.
       - name: Assert rendered keygen Job lands the Secret in ns szl-receipts/ed25519.pem
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import sys, yaml
-          docs = [d for d in yaml.safe_load_all(open("/tmp/key-init-rendered.yaml")) if d]
-          jobs = [d for d in docs
-                  if d.get("kind") == "Job"
-                  and d.get("metadata", {}).get("name") == "szl-key-init"]
-          if not jobs:
-              sys.exit("::error::keygen Job 'szl-key-init' not found in rendered output")
-          job = jobs[0]
-
-          # (a) The Job object itself must render into ns szl-receipts. A Secret is
-          #     namespace-local; if key-init runs anywhere else the server cannot
-          #     mount the key and boots UNSIGNED with no error.
-          ns = job.get("metadata", {}).get("namespace")
-          if ns != "szl-receipts":
-              sys.exit(f"::error::rendered keygen Job namespace is '{ns}', expected 'szl-receipts'")
-
-          containers = job["spec"]["template"]["spec"]["containers"]
-          keygen = [c for c in containers if c.get("name") == "keygen"]
-          if not keygen:
-              sys.exit("::error::keygen container not found in rendered Job")
-          args = keygen[0].get("args") or []
-          if not args or not isinstance(args[0], str) or not args[0].strip():
-              sys.exit("::error::keygen container has no inline shell script in args[0]")
-          script = args[0]
-
-          # (b) The rendered script must resolve to the szl-receipts namespace,
-          #     the ed25519.pem key file, and the szl-receipts-ed25519 Secret name
-          #     the receipts-server Deployment mounts. These are the rendered
-          #     VALUES (not the values.yaml source the grep guard checks) — this is
-          #     the complement: it catches a template that ignores .Values.namespace
-          #     or hardcodes a different ns/key while values.yaml still reads right.
-          required = {
-              'NAMESPACE="szl-receipts"':        "namespace did not render to szl-receipts",
-              'KEY_FILE="ed25519.pem"':          "key file did not render to ed25519.pem",
-              'SECRET_NAME="szl-receipts-ed25519"': "secret name did not render to szl-receipts-ed25519",
-          }
-          for needle, why in required.items():
-              if needle not in script:
-                  sys.exit(f"::error::rendered keygen script: {why} (missing {needle!r})")
-
-          # (c) The Secret must be created from a single ed25519.pem file in the
-          #     resolved namespace (reject a stray hardcoded ns / two-file scheme).
-          if '--from-file="${KEY_FILE}=' not in script:
-              sys.exit("::error::keygen script no longer creates the Secret from "
-                       "a single --from-file=\"${KEY_FILE}=\" entry")
-          if 'key.priv' in script or 'key.pub' in script:
-              sys.exit("::error::keygen script reintroduced the old two-file "
-                       "key.priv/key.pub scheme")
-
-          print("OK: rendered keygen Job creates Secret szl-receipts-ed25519 "
-                "(ed25519.pem) in ns szl-receipts")
-          PY
+          python3 scripts/package-build-checks.py rendered-keygen /tmp/key-init-rendered.yaml
 
   # ── 2. Whole-package build dry-run (catches what a render cannot) ───────────
   zarf-build:
     name: zarf package create (build dry-run, no publish/sign)
+    needs: self-test
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -219,6 +193,12 @@ jobs:
       # NOTE: the absolute-first component is szl-core-rightsize (small-server CPU
       # posture); the invariant that matters for signing is exemption-BEFORE-keygen,
       # which is what is asserted here.
+      # The assertion logic lives in scripts/package-build-checks.py (subcommand
+      # built-package) so it can be unit-tested with broken fixtures by the
+      # self-test job above — the same code path runs here on the real built
+      # tarball. It takes the built package's zarf.yaml plus the SOURCE package
+      # definition (so the expected receipts-server tag is read at run time and
+      # version bumps don't break the guard).
       - name: Assert built package keeps exemption-before-keygen + receipts-server pin
         run: |
           set -euo pipefail
@@ -227,43 +207,8 @@ jobs:
           tar --use-compress-program=unzstd -xf "${PKG}" -C /tmp/pkgx zarf.yaml
           test -s /tmp/pkgx/zarf.yaml \
             || { echo "::error::built package has no zarf.yaml at root"; exit 1; }
-          python3 - <<'PY'
-          import sys, yaml
-          docs = [d for d in yaml.safe_load_all(open("/tmp/pkgx/zarf.yaml")) if d]
-          pkg = next((d for d in docs if d.get("kind") == "ZarfPackageConfig"), docs[0] if docs else None)
-          if not pkg:
-              sys.exit("::error::could not parse built package definition")
-          names = [c.get("name") for c in pkg.get("components", [])]
-          if "szl-key-init-exemption" not in names:
-              sys.exit("::error::built package dropped the szl-key-init-exemption "
-                       "component (root keygen pod would be DENIED -> UNSIGNED server)")
-          if "szl-key-init" not in names:
-              sys.exit("::error::built package dropped the szl-key-init keygen component")
-          if names.index("szl-key-init-exemption") >= names.index("szl-key-init"):
-              sys.exit(f"::error::szl-key-init-exemption must come BEFORE szl-key-init; "
-                       f"component order is {names}")
-          blob = yaml.safe_dump(pkg)
-          # Expected receipts-server tag is read from the SOURCE package definition
-          # (kept in lockstep by scripts/pin-receipts-image-digest.sh), so this guard
-          # tracks version bumps instead of hard-coding a release tag.
-          import re
-          srcdocs = [d for d in yaml.safe_load_all(open("packages/szl-receipts/zarf.yaml")) if d]
-          srcpkg = next((d for d in srcdocs if d.get("kind") == "ZarfPackageConfig"), None)
-          srcimgs = [img for c in (srcpkg or {}).get("components", [])
-                     for img in (c.get("images") or [])]
-          ref = next((i for i in srcimgs if "szl-receipts-server" in i), None)
-          if not ref:
-              sys.exit("::error::source packages/szl-receipts/zarf.yaml has no "
-                       "szl-receipts-server image pin")
-          m = re.search(r"szl-receipts-server:([^@\s]+)@sha256:", ref)
-          if not m:
-              sys.exit(f"::error::source receipts-server pin is not tag@digest form: {ref}")
-          tag = m.group(1)
-          if f"ghcr.io/szl-holdings/szl-receipts-server:{tag}" not in blob:
-              sys.exit(f"::error::built package no longer pins szl-receipts-server:{tag}")
-          print(f"OK: built package keeps szl-key-init-exemption before szl-key-init "
-                f"and pins {tag}")
-          PY
+          python3 scripts/package-build-checks.py built-package \
+            /tmp/pkgx/zarf.yaml packages/szl-receipts/zarf.yaml
 
       - name: Package build guard passed
         run: echo "szl-receipts package renders and builds; clean-deploy structure intact in the built artifact."
