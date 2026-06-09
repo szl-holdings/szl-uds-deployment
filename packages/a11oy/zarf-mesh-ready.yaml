@@ -43,6 +43,39 @@ variables:
     default: "https://szl-receipts.szl-receipts.svc.cluster.local:8443"
 
 components:
+  # ── receipt-key init: auto-provision a11oy's persistent signing identity ─────
+  # Runs FIRST (before the workload + UDS Package CR) so the persistent ECDSA
+  # P-256 Secret szl-a11oy-receipts-ecdsa-p256 exists in szl-a11oy before the
+  # a11oy pod boots and its signing-key loader mounts /etc/szl/receipt-key.
+  # Flavor-agnostic (no `only:` gate) — the keygen Job uses the verified-live
+  # uds-v0.2.0 image (python3 + cryptography) regardless of the workload flavor.
+  # Idempotent BYOK: if the Secret already exists the Job is a no-op.
+  - name: a11oy-receipt-key-init
+    required: true
+    description: "Auto-provision a11oy's persistent ECDSA P-256 receipt-signing Secret (idempotent BYOK)"
+    manifests:
+      - name: szl-a11oy-namespace
+        namespace: szl-a11oy
+        files:
+          - manifests/namespace.yaml
+      - name: szl-a11oy-receipt-key-init
+        namespace: szl-a11oy
+        files:
+          - manifests/receipt-key-init.yaml
+    images:
+      - ghcr.io/szl-holdings/a11oy:uds-v0.2.0@sha256:88bc323cd81c799b486c88fec5a04f110e4cd495e4acbc373e0d8d3b31d6881a
+    actions:
+      onDeploy:
+        after:
+          - description: "Wait for the a11oy receipt-key-init Job to complete"
+            maxTotalSeconds: 180
+            wait:
+              cluster:
+                kind: Job
+                name: a11oy-receipt-key-init
+                namespace: szl-a11oy
+                condition: Complete
+
   # ── upstream flavor: VERIFIED-LIVE public GHCR image (uds-v0.2.0) ───────────
   - name: a11oy
     required: true

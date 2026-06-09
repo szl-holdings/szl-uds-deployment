@@ -51,12 +51,26 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+          env:
+            # Persistent signing-key mount dir (matches a11oy_signing_key.py default).
+            - name: A11OY_RECEIPT_KEY_DIR
+              value: /etc/szl/receipt-key
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            # Persistent ECDSA P-256 receipt-signing key. Auto-provisioned by the
+            # a11oy-receipt-key-init component (or BYOK). Mounted read-only; marked
+            # optional so the pod still boots (ephemeral fallback) if it is absent.
+            - name: receipt-key
+              mountPath: /etc/szl/receipt-key
+              readOnly: true
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: receipt-key
+          secret:
+            secretName: szl-a11oy-receipts-ecdsa-p256
+            optional: true
 ---
 apiVersion: v1
 kind: Service
