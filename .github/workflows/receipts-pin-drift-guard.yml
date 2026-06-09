@@ -1,0 +1,79 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# receipts-pin-drift-guard.yml — Catch a STALE receipts-server digest pin before
+# it sits on main.
+#
+# Why this exists
+# ---------------
+# The receipts-server image is digest-pinned in three places (zarf.yaml,
+# packages/szl-receipts/zarf.yaml, charts/szl-receipts/values.yaml). Two sibling
+# guards already protect those pins, but neither notices when the pin goes STALE:
+#   * image-pin-guard.yml          — the pin is a single-platform manifest, not
+#                                    a multi-arch index (so zarf can package it).
+#   * receipts-image-digest-guard.yml — the reference is digest-pinned at all
+#                                    (i.e. not reverted to a movable tag-only ref).
+# Neither asserts the pinned digest STILL MATCHES the digest the published tag
+# resolves to today. The auto-repin step opens a PR after a rebuild, but a stale
+# pin can still land if that PR is ignored, or be introduced by a hand-edit.
+#
+# This workflow runs `scripts/pin-receipts-image-digest.sh --check`, which
+# resolves the published szl-receipts-server tag and exits non-zero (printing the
+# one-line fix command) when the committed pins differ from what's published.
+#
+# Pure registry inspection (docker buildx imagetools + jq) — no cluster, no
+# kubectl, airgap-friendly (it only talks to the image registry, exactly like the
+# re-pin tool it wraps).
+
+name: Receipts Pin Drift Guard
+
+on:
+  pull_request:
+    paths:
+      - "zarf.yaml"
+      - "packages/szl-receipts/zarf.yaml"
+      - "charts/szl-receipts/values.yaml"
+      - "scripts/pin-receipts-image-digest.sh"
+      - ".github/workflows/receipts-pin-drift-guard.yml"
+  schedule:
+    # Daily — catches a freshly re-published tag whose new digest main hasn't
+    # picked up yet (no PR touches the pinned files in that case).
+    - cron: "23 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  pin-drift-guard:
+    name: Committed receipts pins match the published image
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Ensure jq is available
+        run: |
+          set -euo pipefail
+          command -v jq >/dev/null 2>&1 || sudo apt-get update -qq && sudo apt-get install -y -qq jq
+          jq --version
+          docker buildx version
+
+      # docker buildx imagetools needs auth to inspect the (org-private) GHCR
+      # receipts-server package. The repo-scoped GITHUB_TOKEN has packages: read
+      # on the image built in this same repo (receipts-server-image.yml).
+      - name: Authenticate to GHCR
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Assert committed pins match the published receipts-server image
+        run: |
+          set -euo pipefail
+          if ! scripts/pin-receipts-image-digest.sh --check; then
+            echo "::error file=zarf.yaml::Receipts-server digest pins are STALE vs the published image. Run the printed fix command and commit the result."
+            exit 1
+          fi
+          echo "OK: committed receipts-server pins match the published image."
