@@ -75,3 +75,54 @@ curl -sS -o /dev/null -w '%{http_code}\n' -X POST \
 ```
 Expect `200` and a clean, de-JSON'd, de-indented page (🚨, no `*`, no
 `{"text":}` wrapper) on the team's ntfy topic.
+
+## Watch the relay itself — `szl-alert-relay-watch`
+The relay is now the **single path** that turns CI receipt-failure alerts into
+clean pages. If the relay service or its nginx `/relay/` location dies, the
+workflow's POST fails and the alert is **silently undelivered** — a "nothing
+watches the watcher" gap. `szl-alert-relay-watch` (`sbin/szl-alert-relay-watch`
++ `systemd/szl-alert-relay-watch.{service,timer}`) closes it, joining the same
+alerting family as the DNS-drift / a11oy-uptime / box-scripts watchers.
+
+Every 5 minutes (and ~4 min after boot) it checks two things:
+
+1. **HTTP** — `GET https://a11oy.net/relay/health` must return `200` (proves
+   *both* nginx's `/relay/` location and the loopback relay are serving).
+2. **UNIT** — `systemctl is-active szl-alert-relay.service` must be `active`
+   (catches a crash-looped/stopped service). If `systemctl` is unavailable the
+   unit check is skipped fail-soft (the HTTP probe still covers a dead relay).
+
+A failure of **either** is a problem worth paging. It is **edge-triggered**:
+it alerts once on the healthy→down EDGE (md5-signature de-dup, so a persisting
+outage does not spam), logs/pushes **RECOVERED** when both checks pass again,
+and is **fail-soft** (a missing notifier never hides the edge — it is always in
+the log + status file). The push goes through the SAME notifier the other
+watchers use (`/usr/local/sbin/a11oy-uptime-notify` → the shared ntfy topic in
+`/etc/a11oy-uptime.env`), wired via `NOTIFY_CMD` in the unit. Outputs:
+
+```
+log    -> /var/log/szl-alert-relay-watch/szl-alert-relay-watch.log
+status -> /var/lib/szl-alert-relay-watch/status.json   # fresh "checked_at" every run
+```
+
+Because the status file carries a fresh `checked_at`, this watcher is itself
+coverable by the `monitor-liveness` meta-monitor — add
+`szl-alert-relay-watch|/var/lib/szl-alert-relay-watch/status.json|900` to its
+`WATCHERS` to watch the watcher of the watcher.
+
+`box-scripts/install.sh` installs the script + units and `enable --now`s the
+timer, so it survives a box rebuild like every other guard here.
+
+### Test the down/recovered path locally (no real outage, no real alert)
+Point the probes at stubs and a throwaway state dir, prefix `[TEST-ignore]`:
+```
+# simulate DOWN: health returns 503 + unit "inactive"
+printf '#!/bin/sh\necho 503\n' > /tmp/fake-curl && chmod +x /tmp/fake-curl
+printf '#!/bin/sh\n[ "$1" = is-active ] && echo inactive\n' > /tmp/fake-systemctl && chmod +x /tmp/fake-systemctl
+sudo CURL_BIN=/tmp/fake-curl SYSTEMCTL_BIN=/tmp/fake-systemctl \
+  STATE_DIR=/tmp/relaywatch LOG=/tmp/relaywatch/log STATUS=/tmp/relaywatch/status.json \
+  ALERT_PREFIX='[TEST-ignore] ' NOTIFY_CMD=/usr/local/sbin/a11oy-uptime-notify \
+  /usr/local/sbin/szl-alert-relay-watch
+# -> ALERT once; cat /tmp/relaywatch/status.json shows overall DOWN
+# now simulate RECOVERED: health 200 + unit active -> pushes RECOVERED once
+```

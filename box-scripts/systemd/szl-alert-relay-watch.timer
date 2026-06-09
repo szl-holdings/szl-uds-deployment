@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodically check that the szl-alert-relay (CI alert relay) is up and serving
+
+[Timer]
+# First check shortly after boot (after the relay service + nginx settle), then
+# every 5 minutes thereafter — same cadence as the a11oy-uptime probe.
+OnBootSec=4min
+OnUnitActiveSec=5min
+AccuracySec=20s
+Unit=szl-alert-relay-watch.service
+
+[Install]
+WantedBy=timers.target

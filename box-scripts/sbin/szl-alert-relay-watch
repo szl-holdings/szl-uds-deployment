@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+#
+# szl-alert-relay-watch — page someone if the alert RELAY itself goes down on
+# Stephen's box (167.233.50.75).
+#
+# WHY
+#   szl-alert-relay is now the single path that turns CI receipt-failure alerts
+#   (the szl-holdings/a11oy SLACK_WEBHOOK_URL -> https://a11oy.net/relay/ntfy/...
+#   webhook) into clean ntfy pages. If the relay service or its nginx /relay/
+#   location dies, the workflow's POST fails and the alert is silently
+#   undelivered — a "nothing watches the watcher" gap. The DNS-drift and
+#   a11oy-uptime monitors already cover the public site; this closes the same
+#   gap for the alert relay so an outage of the relay itself still pages.
+#
+# WHAT IT CHECKS
+#   1. HTTP: GET https://a11oy.net/relay/health must return 200 (proves both
+#      nginx's /relay/ location AND the loopback relay service are serving).
+#   2. UNIT: the szl-alert-relay.service systemd unit must be `active` (catches
+#      a crash-looped / stopped service even if nginx would still 502 cleanly).
+#   A failure of EITHER is a problem worth paging — the relay can't deliver.
+#
+# ALERTING
+#   Alerts ONLY on the healthy->down EDGE (transition de-dup via an md5
+#   signature of the current problem set), so a persisting outage does not spam.
+#   A return to health logs + pushes RECOVERED and clears the signature so a
+#   fresh stall re-alerts. Mirrors the dns-drift / a11oy-uptime / box-scripts
+#   monitors exactly.
+#
+#   The wired path is always a clearly-named LOG + a machine-readable STATUS
+#   FILE. On top of that it sends a REAL push on every edge / RECOVERED via the
+#   SAME notifier the other watchers use (/usr/local/sbin/a11oy-uptime-notify ->
+#   ntfy / Telegram / Slack-Discord webhook), wired through NOTIFY_CMD in the
+#   service unit. Fail-soft: with no channel configured the alert is still
+#   logged. SMS/email is intentionally NOT used (no Gmail/nodemailer transport
+#   on this box; outbound TCP 465 is firewalled — see sms-alerts-on-hetzner).
+#   Because it fires only on the EDGE and on RECOVERED it respects the standing
+#   "recurring alerts = the owner only" policy by construction.
+#
+#   The status file carries a fresh "checked_at" timestamp every run, so this
+#   watcher is itself coverable by the monitor-liveness meta-monitor (add
+#   "szl-alert-relay-watch|/var/lib/szl-alert-relay-watch/status.json|<budget>"
+#   to its WATCHERS) — watching the watcher of the watcher.
+#
+# Idempotent and safe to run on a short timer.
+set -uo pipefail
+
+# ---- config (overridable via env for testing) -------------------------------
+HEALTH_URL="${HEALTH_URL:-https://a11oy.net/relay/health}"
+RELAY_UNIT="${RELAY_UNIT:-szl-alert-relay.service}"
+CURL_BIN="${CURL_BIN:-curl}"
+SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
+CURL_TIMEOUT="${CURL_TIMEOUT:-15}"
+
+STATE_DIR="${STATE_DIR:-/var/lib/szl-alert-relay-watch}"
+LOG_DIR="${LOG_DIR:-/var/log/szl-alert-relay-watch}"
+LOG="${LOG:-$LOG_DIR/szl-alert-relay-watch.log}"
+STATUS="${STATUS:-$STATE_DIR/status.json}"
+SIG_FILE="${SIG_FILE:-$STATE_DIR/problem.sig}"
+NOTIFY_CMD="${NOTIFY_CMD:-}"          # optional external notifier (stdin = message)
+ALERT_PREFIX="${ALERT_PREFIX:-}"      # e.g. "[TEST-ignore] " to test without alarming
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
+
+now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+log() { printf '%s %s\n' "$now_iso" "$*" >>"$LOG"; }
+
+# push(): fire the external notifier (stdin = message). Fail-soft — a missing or
+# broken notifier never hides the edge, which is always recorded in the log too.
+push() {
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed"
+}
+
+# ---- 1. probe the /relay/health endpoint ------------------------------------
+http_code=$("$CURL_BIN" -sS -o /dev/null -w '%{http_code}' --max-time "$CURL_TIMEOUT" "$HEALTH_URL" 2>/dev/null)
+[ -z "$http_code" ] && http_code="000"
+health_ok=0
+if [ "$http_code" = "200" ]; then
+  health_ok=1
+fi
+
+# ---- 2. probe the systemd unit ----------------------------------------------
+# "active" => up. If systemctl itself is unavailable we cannot judge the unit,
+# so we mark it "unknown" and do NOT treat that as a problem (fail-soft — the
+# HTTP probe still covers an actually-dead relay).
+unit_state="unknown"
+unit_ok=1
+if command -v "$SYSTEMCTL_BIN" >/dev/null 2>&1; then
+  unit_state=$("$SYSTEMCTL_BIN" is-active "$RELAY_UNIT" 2>/dev/null)
+  [ -z "$unit_state" ] && unit_state="unknown"
+  if [ "$unit_state" = "active" ]; then
+    unit_ok=1
+  else
+    unit_ok=0
+  fi
+fi
+
+# ---- 3. build the problem set ----------------------------------------------
+problems=()
+[ "$health_ok" -eq 0 ] && problems+=("relay /relay/health not 200 (http=${http_code}) — receipt-failure pages would not be delivered")
+[ "$unit_ok" -eq 0 ]   && problems+=("${RELAY_UNIT} not active (state=${unit_state})")
+
+overall="OK"
+[ "${#problems[@]}" -gt 0 ] && [ -n "${problems[0]:-}" ] && overall="DOWN"
+
+# ---- write the status file (always) ----------------------------------------
+{
+  printf '{\n'
+  printf '  "checked_at": "%s",\n' "$now_iso"
+  printf '  "overall": "%s",\n' "$overall"
+  printf '  "health": { "url": "%s", "http": "%s", "status": "%s" },\n' \
+    "$HEALTH_URL" "$http_code" "$( [ "$health_ok" -eq 1 ] && echo OK || echo DOWN )"
+  printf '  "unit": { "name": "%s", "state": "%s", "status": "%s" },\n' \
+    "$RELAY_UNIT" "$unit_state" "$( [ "$unit_ok" -eq 1 ] && echo OK || echo DOWN )"
+  printf '  "alerting": %s\n' "$( [ "${#problems[@]}" -gt 0 ] && [ -n "${problems[0]:-}" ] && echo true || echo false )"
+  printf '}\n'
+} >"$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
+
+# ---- 4. transition de-dup + alert ------------------------------------------
+prev_sig=""; [ -r "$SIG_FILE" ] && prev_sig=$(cat "$SIG_FILE" 2>/dev/null)
+
+emit_alert() {
+  local body="$1"
+  log "ALERT $body"
+  push "$body"
+}
+
+if [ "${#problems[@]}" -eq 0 ] || [ -z "${problems[0]:-}" ]; then
+  if [ -n "$prev_sig" ]; then
+    rec="szl-alert-relay healthy again (/relay/health=200, ${RELAY_UNIT} active) — receipt-failure pages can be delivered"
+    log "RECOVERED $rec"
+    push "a11oy.net alert-relay RECOVERED: $rec"
+    rm -f "$SIG_FILE"
+  fi
+else
+  problem_text=$(printf '%s; ' "${problems[@]}"); problem_text="${problem_text%; }"
+  cur_sig=$(printf '%s\n' "${problems[@]}" | sort | md5sum | awk '{print $1}')
+  if [ "$cur_sig" = "$prev_sig" ]; then
+    log "(persisting) $problem_text"
+  else
+    emit_alert "a11oy.net ALERT-RELAY DOWN: ${problem_text}. CI receipt-failure pages are NOT being delivered — check: systemctl status ${RELAY_UNIT}; nginx -t; curl -sS -o /dev/null -w '%{http_code}' ${HEALTH_URL}."
+    printf '%s' "$cur_sig" >"$SIG_FILE"
+  fi
+fi
+
+# heartbeat: prove this watcher is itself alive + carry an OK/DOWN history.
+log "STATE overall=$overall health=${http_code} unit=${unit_state}"
+exit 0

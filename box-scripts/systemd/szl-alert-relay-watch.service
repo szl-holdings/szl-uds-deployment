@@ -1,0 +1,20 @@
+[Unit]
+Description=szl-alert-relay liveness watcher (pages if the CI alert relay itself goes down, box 167.233.50.75)
+Documentation=https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/szl-alert-relay.README.md
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Real push notifications reuse the SAME notifier + credentials file as the
+# dns-drift and a11oy-uptime monitors (ntfy / Telegram / Slack-Discord webhook).
+# The leading "-" makes the env file optional, so this still runs (logging only)
+# before any channel is configured. SMS/email is intentionally NOT used here:
+# this box has no Gmail/nodemailer transport and outbound TCP 465 is firewalled.
+EnvironmentFile=-/etc/a11oy-uptime.env
+# Distinct ntfy title so "the alert relay went down" pages read differently.
+Environment=NOTIFY_TITLE=a11oy.net alert-relay watch
+# Always invoke the shared notifier on every edge / RECOVERED. It is fail-soft:
+# with no channel configured it just exits and the alert is still logged.
+Environment=NOTIFY_CMD=/usr/local/sbin/a11oy-uptime-notify
+ExecStart=/usr/local/sbin/szl-alert-relay-watch
