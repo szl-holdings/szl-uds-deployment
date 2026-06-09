@@ -18,7 +18,7 @@ server:
     # Immutable content digest for uds-v0.4.1. Pinning here makes a clean
     # install bit-for-bit reproducible: even if the uds-v0.4.1 tag is later
     # re-pushed with different contents, this digest is what gets deployed.
-    digest: "sha256:9dba38ba82b82904be357125181beac2a48d79b33aadcdb98ad5a2a451910a83"
+    digest: "sha256:758052db66fd6257e4ac6b9834918df25dc819097beb387062b9e54e6cd8f0f4"
     pullPolicy: IfNotPresent
 
   replicas: 1
