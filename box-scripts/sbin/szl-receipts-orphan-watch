@@ -30,9 +30,12 @@
 # healthy->problem edge (a new orphan appears) and once on RECOVERED (all orphans
 # gone), never every cycle (honours "recurring alerts = one ping").
 #
-# Cluster intentionally stopped (k3d down) or unreachable = a true no-op (exit 0,
-# no alert). Mirrors the receipt-chain-watch / szl-ns-scratch-watch guard pattern
-# (kubeconfig resolve + cluster-absent no-op + a11oy-uptime-notify push channel).
+# FAIL-SAFE: this guard biases hard against false alarms. The cluster being
+# intentionally stopped (k3d down), unreachable, OR any ownership probe erroring
+# transiently (API hiccup, RBAC, CRD/`helm list` failure) = a true no-op: status
+# UNKNOWN, last_status left UNTOUCHED, exit 0, NO alert. A namespace is only ever
+# flagged once its non-ownership is positively confirmed. Mirrors the
+# receipt-chain-watch / szl-ns-scratch-watch guard pattern.
 #
 # Driven by szl-receipts-orphan-watch.timer (every 10 min).
 set -uo pipefail
@@ -49,6 +52,7 @@ LOG_DIR="${LOG_DIR:-/var/log/szl-receipts-orphan-watch}"
 LAST_FILE="${LAST_FILE:-$STATE_DIR/last_status}"
 STATUS="${STATUS:-$STATE_DIR/status.json}"
 LOG="${LOG:-$LOG_DIR/szl-receipts-orphan-watch.log}"
+LOCK="${LOCK:-$STATE_DIR/lock}"
 
 # Notifier: stdin = message. Default to the box's working push channel.
 NOTIFY_CMD="${NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
@@ -58,17 +62,30 @@ mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
 
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$1" >>"$LOG" 2>/dev/null; }
 
+# Single-flight: never let two overlapping runs read/notify/write state at once.
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$LOCK" 2>/dev/null || true
+  flock -n 9 2>/dev/null || { log "INFO another run holds the lock — skip"; exit 0; }
+fi
+
 notify() {
   [ -z "$NOTIFY_CMD" ] && return 0
   printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
     || log "WARN notifier '$NOTIFY_CMD' failed (alert was logged only)"
 }
 
+# Atomic writers (tmp + rename) so an interrupted run never leaves partial state.
 write_status() {
   # $1 = overall (OK|ALERT|UNKNOWN)  $2 = reason
+  local tmp="$STATUS.tmp.$$"
   printf '{"overall":"%s","reason":"%s","checked_at":"%s","cluster":"%s"}\n' \
     "$1" "$(printf '%s' "$2" | sed 's/"/\\"/g')" "$(date -u +%FT%TZ)" "$CLUSTER" \
-    >"$STATUS" 2>/dev/null
+    >"$tmp" 2>/dev/null && mv -f "$tmp" "$STATUS" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+}
+set_last() {
+  # $1 = OK|ALERT
+  local tmp="$LAST_FILE.tmp.$$"
+  printf '%s\n' "$1" >"$tmp" 2>/dev/null && mv -f "$tmp" "$LAST_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
 }
 
 # ---- Resolve cluster; no-op if it is down (intentionally stopped) -----------
@@ -79,17 +96,35 @@ kubectl --request-timeout=20s get --raw='/readyz' >/dev/null 2>&1 \
 
 # ---- Enumerate every Deployment: ns, name, images, helm-ownership signals ----
 # Tab-separated: ns \t name \t images(space-joined) \t managed-by \t helm-release
-rows="$(kubectl get deploy -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{range .spec.template.spec.containers[*]}{.image}{" "}{end}{"\t"}{.metadata.labels.app\.kubernetes\.io/managed-by}{"\t"}{.metadata.annotations.meta\.helm\.sh/release-name}{"\n"}{end}' 2>/dev/null)" \
+rows="$(kubectl --request-timeout=20s get deploy -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{range .spec.template.spec.containers[*]}{.image}{" "}{end}{"\t"}{.metadata.labels.app\.kubernetes\.io/managed-by}{"\t"}{.metadata.annotations.meta\.helm\.sh/release-name}{"\n"}{end}' 2>/dev/null)" \
   || { log "WARN kubectl get deploy failed — skip"; write_status UNKNOWN "kubectl error"; exit 0; }
 
 # Namespaces that have ANY Helm release (covers zarf- and UDS-deployed releases).
-helm_ns="$(helm list -A 2>/dev/null | awk 'NR>1{print $2}' | sort -u)"
+# This is a SECONDARY signal; the per-deploy managed-by label / release-name
+# annotation in $rows is the primary, error-proof helm signal. If `helm list`
+# itself errors we mark the run degraded so a candidate is never flagged solely
+# because this lookup was unavailable.
+helm_ns=""; helm_ok=1
+helm_ns="$(helm list -A 2>/dev/null | awk 'NR>1{print $2}' | sort -u)" || helm_ok=0
+# `helm list` can exit 0 yet still have failed to reach the API; treat an empty
+# result as authoritative only when the command clearly succeeded.
 
-is_helm_ns()  { printf '%s\n' "$helm_ns" | grep -qx "$1"; }
-has_uds_pkg() { kubectl get packages.uds.dev -n "$1" --no-headers 2>/dev/null | grep -q .; }
-has_vs()      { kubectl get virtualservices.networking.istio.io -n "$1" --no-headers 2>/dev/null | grep -q .; }
+is_helm_ns()  { [ "$helm_ok" = 1 ] && printf '%s\n' "$helm_ns" | grep -qx "$1"; }
+
+# Tri-state existence probe: echoes yes|no|err. "err" (any kubectl failure OR a
+# missing CRD) means we could NOT determine ownership -> caller must NOT flag.
+resource_in_ns() {
+  # $1 = resource  $2 = namespace
+  local out rc
+  out="$(kubectl --request-timeout=20s get "$1" -n "$2" --no-headers 2>/dev/null)"; rc=$?
+  if [ "$rc" -ne 0 ]; then echo err; return 0; fi
+  if printf '%s' "$out" | grep -q .; then echo yes; else echo no; fi
+}
 
 orphans=""
+degraded=0   # set when ownership for >=1 candidate could not be determined
+indeterminate=""
+
 # De-dupe candidate namespaces first (a ns may have >1 matching deploy).
 cand_ns="$(printf '%s\n' "$rows" | while IFS=$'\t' read -r ns name images managedby relname; do
   [ -z "$ns" ] && continue
@@ -101,18 +136,46 @@ done | sort -u)"
 
 for ns in $cand_ns; do
   [ -z "$ns" ] && continue
-  # Pull this ns's strongest helm signal straight off its matching deploy(s).
+
+  # 1) Primary helm signal straight off this ns's matching deploy(s) — reliable,
+  #    independent of `helm list` (catches the canonical szl-receipts too).
   deploy_helm="$(printf '%s\n' "$rows" | awk -F'\t' -v n="$ns" '$1==n && ($4=="Helm" || $5!=""){print "yes"; exit}')"
-  if [ "$deploy_helm" = "yes" ] || is_helm_ns "$ns" || has_uds_pkg "$ns" || has_vs "$ns"; then
-    log "TRACKED ns=$ns (helm/uds/vs owned) — not an orphan"
+  if [ "$deploy_helm" = "yes" ] || is_helm_ns "$ns"; then
+    log "TRACKED ns=$ns (helm owned) — not an orphan"
     continue
   fi
+
+  # 2) UDS Package ownership.
+  up="$(resource_in_ns packages.uds.dev "$ns")"
+  if [ "$up" = "yes" ]; then log "TRACKED ns=$ns (uds package) — not an orphan"; continue; fi
+  if [ "$up" = "err" ]; then
+    degraded=1; indeterminate="${indeterminate:+$indeterminate }$ns"
+    log "INDETERMINATE ns=$ns — UDS-package probe errored, NOT flagging"; continue
+  fi
+
+  # 3) Istio VirtualService ownership.
+  vp="$(resource_in_ns virtualservices.networking.istio.io "$ns")"
+  if [ "$vp" = "yes" ]; then log "TRACKED ns=$ns (virtualservice) — not an orphan"; continue; fi
+  if [ "$vp" = "err" ]; then
+    degraded=1; indeterminate="${indeterminate:+$indeterminate }$ns"
+    log "INDETERMINATE ns=$ns — VirtualService probe errored, NOT flagging"; continue
+  fi
+
+  # 4) If `helm list` was unavailable we could not fully rule out helm ownership
+  #    for a ns whose deploy carries no managed-by label — fail safe, don't flag.
+  if [ "$helm_ok" != 1 ]; then
+    degraded=1; indeterminate="${indeterminate:+$indeterminate }$ns"
+    log "INDETERMINATE ns=$ns — 'helm list' unavailable, NOT flagging"; continue
+  fi
+
+  # Confirmed: owned by NOTHING.
   orphans="${orphans:+$orphans }$ns"
 done
 
 count=0
 [ -n "$orphans" ] && count="$(printf '%s\n' $orphans | grep -c .)"
 list_csv="$(printf '%s' "$orphans" | tr ' ' '\n' | paste -sd ', ' - 2>/dev/null)"
+ind_csv="$(printf '%s' "$indeterminate" | tr ' ' '\n' | paste -sd ', ' - 2>/dev/null)"
 
 # ---- Decide + edge-trigger --------------------------------------------------
 prev="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
@@ -126,7 +189,12 @@ if [ "$count" -gt 0 ] 2>/dev/null; then
   else
     log "DEDUP still ALERT — no re-notify"
   fi
-  echo ALERT >"$LAST_FILE" 2>/dev/null
+  set_last ALERT
+elif [ "$degraded" = 1 ]; then
+  # Could not positively confirm ownership for >=1 candidate -> never alarm,
+  # never reset an existing ALERT. Leave last_status as-is, just record UNKNOWN.
+  write_status UNKNOWN "ownership undetermined for: ${ind_csv} (probe error) — skipped"
+  log "STATE UNKNOWN degraded indeterminate=$ind_csv (last_status left as '$prev')"
 else
   write_status OK "no orphaned receipts-server namespaces"
   log "STATE OK count=0"
@@ -134,7 +202,7 @@ else
     notify "RECOVERED: no orphaned receipts-server namespaces remain on $CLUSTER (all stray duplicates removed or now tracked)."
     log "EDGE ALERT->OK recovered, notified"
   fi
-  echo OK >"$LAST_FILE" 2>/dev/null
+  set_last OK
 fi
 
 exit 0
