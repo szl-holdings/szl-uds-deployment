@@ -27,9 +27,12 @@
 #
 # Umbrella charts (e.g. szl-full-stack) declare subcharts that are STAGED — their
 # OCI charts are not published yet — and Helm refuses to render a chart while any
-# declared dependency is missing. .github/scripts/stub_missing_deps.py drops a
-# template-less placeholder for each unvendored dependency so the umbrella's OWN
-# templates still get render-tested. It is a no-op for the leaf charts.
+# declared dependency is missing. .github/scripts/stub_missing_deps.py resolves
+# each unvendored dependency before render: it COPIES IN the real local chart when
+# one exists in the same charts/ tree (so szl-full-stack renders against the real
+# charts/szl-receipts and its `szl-receipts:` overrides are validated against the
+# real schema), and drops a template-less placeholder only for genuinely staged
+# subcharts. It is a no-op for the leaf charts.
 #
 # This complements test.yaml (which lints szl-receipts only); it adds whole-fleet
 # render coverage, the keygen-script syntax check, and the requireKey contract.
@@ -73,10 +76,12 @@ jobs:
 
       # ── 1. Lint + render EVERY chart (fails on any render error) ──────────────
       # Iterate charts/* so a render bug in ANY chart — not just the two receipt
-      # charts — fails the build. Umbrella charts get template-less placeholders
-      # for their unvendored (staged) dependencies first, so their own templates
-      # are still render-tested. szl-key-init / szl-receipts are also rendered to
-      # the fixed paths the later receipt-specific steps consume.
+      # charts — fails the build. Umbrella charts first get their unvendored
+      # dependencies resolved: real local subcharts (e.g. charts/szl-receipts)
+      # are copied in so their value overrides are validated, and genuinely
+      # staged subcharts get template-less placeholders. szl-key-init /
+      # szl-receipts are also rendered to the fixed paths the later
+      # receipt-specific steps consume.
       - name: helm lint --strict + helm template — every chart
         run: |
           set -euo pipefail
