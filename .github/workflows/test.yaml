@@ -331,6 +331,28 @@ jobs:
         run: |
           [ -n "${SERVER_PID:-}" ] && kill "${SERVER_PID}" 2>/dev/null || true
 
+  # ── Bounded-memory boot guard (real server, large synthetic store — no cluster) ─
+  receipts-memory-guard:
+    name: Receipts Memory Guard (bounded boot/append)
+    runs-on: ubuntu-24.04
+    # Locks in the OOM fix (commit 8c399d7): the server once held the ENTIRE
+    # receipt chain in RAM and got OOM-killed (exit 137) into a crashloop once the
+    # chain reached hundreds of thousands of receipts. This seeds a large
+    # synthetic on-disk store (20k receipts) and proves, on BOTH boot paths
+    # (legacy streaming scan + O(1) head-pointer resume) AND the append path, that
+    # the in-memory window stays <= MAX_IN_MEMORY, the chain index/length stay
+    # correct, and peak RSS stays well under the 512Mi chart limit. A refactor
+    # that reintroduces a whole-chain load makes len(_receipts) == 20000 >>
+    # MAX_IN_MEMORY and fails here.
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install cryptography (server signer — used by the append path)
+        run: pip install cryptography
+
+      - name: Run the receipts memory guard (20k-receipt store)
+        run: python3 scripts/receipts_memory_guard.py
+
   # ── Full install test (requires cluster — manual dispatch or scheduled) ────
   test-install:
     name: Test Install
