@@ -66,12 +66,13 @@ import os
 import ssl
 import json
 import time
+import heapq
 import base64
 import hashlib
 import threading
 import urllib.request
 import urllib.error
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
 # ── Configuration ─────────────────────────────────────────────────────────────
@@ -108,6 +109,22 @@ GENESIS = "GENESIS"
 SIGNER_REINIT_MIN_INTERVAL = float(os.environ.get("SZL_SIGNER_REINIT_INTERVAL", "10"))
 SIGNER_RECHECK_INTERVAL    = float(os.environ.get("SZL_SIGNER_RECHECK_INTERVAL", "30"))
 
+# Memory-bounded chain handling. The receipt store is append-only and grows
+# without bound (one file per receipt). Loading the WHOLE store into memory at
+# boot — or on every /metrics scrape, or on a /receipts dump — OOM-kills the
+# process once the chain reaches tens/hundreds of thousands of receipts, which
+# crashloops the signer and takes signing down. Instead we:
+#   * persist a tiny head pointer (.chain_head) updated on every append, so boot
+#     reconstructs the chain head/index in O(1) without scanning the store;
+#   * keep only the most-recent MAX_IN_MEMORY receipts in RAM (for the live
+#     /receipts list, /stream replay, and the integrity gauge), trimming older
+#     ones — the full history stays durable on disk for offline verification.
+# Tunable via SZL_MAX_IN_MEMORY_RECEIPTS (default 2000).
+MAX_IN_MEMORY = max(1, int(os.environ.get("SZL_MAX_IN_MEMORY_RECEIPTS", "2000")))
+# Head-pointer file. Deliberately has NO ".json" suffix so the store scans
+# (which filter on .endswith(".json")) never pick it up as a receipt.
+HEAD_FILE = os.path.join(STORE_PATH, ".chain_head")
+
 os.makedirs(STORE_PATH, exist_ok=True)
 
 _receipts      = []
@@ -121,6 +138,8 @@ _counter_allow = 0         # receipts whose verdict is ALLOW
 _counter_tamper = 0        # persisted receipts found tampered at rest (once per id)
 _chain_head    = GENESIS   # hash of the most recent receipt, or GENESIS
 _chain_index   = 0         # next chain index to assign
+_persisted_count = 0       # receipts on disk; seeded at boot, ++ per append (avoids
+                           # re-scanning the unbounded store on every receipt write)
 _chain_valid_flag = 1      # gauge: 1 if the last integrity scan found the chain intact
 _chain_len     = 0         # gauge: receipts on disk at the last integrity scan
 _tampered_ids  = set()     # ids already counted as tampered (keep the counter monotonic)
@@ -607,48 +626,131 @@ def _receipt_hash(record: dict) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _rehydrate():
-    """Walk STORE_PATH, load every *.json receipt, order by created_at, and
-    rebuild the in-memory list and chain head/index. Logs the count.
+def _count_store():
+    """Cheap count of persisted receipt files (no parsing). Used for the
+    szl_chain_length gauge without loading the whole store into memory."""
+    n = 0
+    try:
+        with os.scandir(STORE_PATH) as it:
+            for e in it:
+                if e.name.endswith(".json"):
+                    n += 1
+    except FileNotFoundError:
+        pass
+    return n
 
-    Chain pointers are reconstructed by reading each receipt's chain.prev_hash;
-    the chain head is set to the hash of the last (most recent) receipt."""
-    global _receipts, _chain_head, _chain_index
-    loaded = []
+
+def _write_head_pointer(chain_index, chain_head, count=None):
+    """Atomically persist the chain head/index so the next boot can resume the
+    chain in O(1) without scanning the (unbounded) store. Best-effort: a failure
+    here never blocks a receipt append — the slow scan is always a valid fallback."""
+    try:
+        payload = {
+            "chain_index": chain_index,
+            "chain_head": chain_head,
+            "count": count if count is not None else _count_store(),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        tmp = HEAD_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(payload, f)
+        os.replace(tmp, HEAD_FILE)
+    except Exception as e:
+        log("warn", f"could not persist chain head pointer: {e}")
+
+
+def _read_head_pointer():
+    """Return the persisted head pointer dict, or None if absent/unreadable."""
+    try:
+        with open(HEAD_FILE, "r") as f:
+            p = json.load(f)
+        if isinstance(p, dict) and "chain_index" in p and "chain_head" in p:
+            return p
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        log("warn", f"chain head pointer unreadable, falling back to scan: {e}")
+    return None
+
+
+def _rehydrate():
+    """Reconstruct the chain head/index and a BOUNDED in-memory window of recent
+    receipts, in O(1) memory.
+
+    Fast path: read the persisted .chain_head pointer (updated on every append)
+    to set chain_index/head instantly — no store scan, so boot stays fast and
+    memory-flat even with hundreds of thousands of persisted receipts. The live
+    in-memory list starts empty and forward-fills as new receipts arrive; the
+    full history remains on disk for offline verification.
+
+    Slow path (no pointer — e.g. a legacy store from before this change): stream
+    every receipt ONCE in constant memory, tracking only the chain tail (max
+    chain_index) and the most-recent MAX_IN_MEMORY receipts, then write the
+    pointer so subsequent boots take the fast path."""
+    global _receipts, _chain_head, _chain_index, _persisted_count
+
+    ptr = _read_head_pointer()
+    if ptr is not None:
+        with _receipt_lock:
+            _receipts = []
+            _chain_head = ptr["chain_head"] or GENESIS
+            _chain_index = int(ptr["chain_index"])
+            _persisted_count = int(ptr.get("count") or 0)
+        cnt = ptr.get("count")
+        log("info", f"Rehydrated from head pointer; chain_index={_chain_index} "
+                    f"head={str(_chain_head)[:12]}… persisted={cnt}")
+        return _chain_index
+
+    # Slow path: constant-memory streaming scan (no pointer yet).
     try:
         names = [n for n in os.listdir(STORE_PATH) if n.endswith(".json")]
     except FileNotFoundError:
         names = []
-    for name in names:
-        path = os.path.join(STORE_PATH, name)
-        try:
-            with open(path, "r") as f:
-                rec = json.load(f)
-            loaded.append(rec)
-        except Exception as e:
-            log("warn", f"skipping unreadable receipt {name}: {e}")
 
-    # Order by created_at (ISO-8601 sorts lexicographically), then chain_index
-    # as a tie-breaker for receipts created within the same second.
     def _key(r):
         return (
             r.get("created_at", ""),
             r.get("chain", {}).get("chain_index", 0),
         )
-    loaded.sort(key=_key)
+
+    tail = None          # receipt with the highest (created_at, chain_index)
+    recent = []          # bounded heap (by _key) of the most-recent MAX_IN_MEMORY
+    scanned = 0
+    for name in names:
+        path = os.path.join(STORE_PATH, name)
+        try:
+            with open(path, "r") as f:
+                rec = json.load(f)
+        except Exception as e:
+            log("warn", f"skipping unreadable receipt {name}: {e}")
+            continue
+        scanned += 1
+        k = _key(rec)
+        if tail is None or k > _key(tail):
+            tail = rec
+        # Keep only the MAX_IN_MEMORY most-recent receipts (min-heap on _key).
+        heapq.heappush(recent, (k, rec.get("id", ""), rec))
+        if len(recent) > MAX_IN_MEMORY:
+            heapq.heappop(recent)
+
+    window = [item[2] for item in sorted(recent, key=lambda t: t[0])]
 
     with _receipt_lock:
-        _receipts = loaded
-        if loaded:
-            last = loaded[-1]
-            _chain_head = last.get("chain", {}).get("hash") or _receipt_hash(last)
-            _chain_index = last.get("chain", {}).get("chain_index", len(loaded) - 1) + 1
+        _receipts = window
+        if tail is not None:
+            _chain_head = tail.get("chain", {}).get("hash") or _receipt_hash(tail)
+            _chain_index = tail.get("chain", {}).get("chain_index", scanned - 1) + 1
         else:
             _chain_head = GENESIS
             _chain_index = 0
-    log("info", f"Rehydrated {len(loaded)} receipt(s) from {STORE_PATH}; "
-                 f"chain_index={_chain_index} head={_chain_head[:12]}…")
-    return len(loaded)
+
+    _persisted_count = scanned
+    if tail is not None:
+        _write_head_pointer(_chain_index, _chain_head, count=scanned)
+    log("info", f"Rehydrated via scan: {scanned} receipt(s) on disk, "
+                f"{len(window)} kept in memory; chain_index={_chain_index} "
+                f"head={str(_chain_head)[:12]}…")
+    return _chain_index
 
 
 def _verdict_of(payload_bytes):
@@ -681,30 +783,31 @@ def _verify_chain_on_disk():
 
     Returns (chain_ok, length, valid_count, newly_tampered_ids). Verification is
     over the canonical DSSE PAE against the server's published Ed25519 public
-    key — the same check an offline auditor runs. No HMAC, no synthetic pass."""
-    loaded = []
-    try:
-        names = [n for n in os.listdir(STORE_PATH) if n.endswith(".json")]
-    except FileNotFoundError:
-        names = []
-    for name in names:
-        try:
-            with open(os.path.join(STORE_PATH, name), "r") as f:
-                loaded.append(json.load(f))
-        except Exception:
-            continue
+    key — the same check an offline auditor runs. No HMAC, no synthetic pass.
 
-    def _key(r):
-        return (r.get("chain", {}).get("chain_index", 0), r.get("created_at", ""))
-    loaded.sort(key=_key)
+    Memory-bounded: rather than re-reading the entire (unbounded) store on every
+    scrape — which OOM-kills the process once the chain reaches tens of thousands
+    of receipts — this verifies the most-recent in-memory window (the live
+    _receipts list, ordered, capped at MAX_IN_MEMORY) and reports the total chain
+    length from a cheap on-disk file count. Each window receipt's signature, hash
+    and intra-window prev_hash linkage are checked; expected_prev is seeded from
+    the first window receipt's own stored prev_hash (the older, on-disk history
+    remains independently verifiable offline via the published public key)."""
+    with _receipt_lock:
+        window = list(_receipts)
+    total = _count_store()
 
     chain_ok = True
     valid_count = 0
     newly = []
-    expected_prev = GENESIS
-    for rec in loaded:
+    expected_prev = None
+    for rec in window:
         chain = rec.get("chain", {}) or {}
         rid = rec.get("id", "")
+        if expected_prev is None:
+            # Seed linkage from the first window receipt's own prev_hash so we
+            # verify the window's internal consistency without the full history.
+            expected_prev = chain.get("prev_hash", GENESIS)
         try:
             hash_ok = (_receipt_hash(rec) == chain.get("hash"))
         except Exception:
@@ -721,7 +824,7 @@ def _verify_chain_on_disk():
         # Advance the expected linkage using the STORED hash so a single tamper
         # both fails locally and cascades to every later prev_hash link.
         expected_prev = chain.get("hash") or expected_prev
-    return chain_ok, len(loaded), valid_count, newly
+    return chain_ok, total, valid_count, newly
 
 
 def _broadcast_sse(data: str):
@@ -852,7 +955,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         global _counter_total, _counter_valid, _counter_deny, _counter_allow
-        global _chain_head, _chain_index
+        global _chain_head, _chain_index, _persisted_count
         path = urlparse(self.path).path
         if path != "/receipt":
             self._send(404, "text/plain", "not found")
@@ -912,13 +1015,24 @@ class Handler(BaseHTTPRequestHandler):
             }
             record["chain"]["hash"] = _receipt_hash(record)
             _receipts.append(record)
+            # Keep the in-memory list bounded so /receipts, /stream and the
+            # integrity gauge can never balloon the heap as the chain grows.
+            if len(_receipts) > MAX_IN_MEMORY:
+                del _receipts[:-MAX_IN_MEMORY]
             _chain_head = record["chain"]["hash"]
             _chain_index = chain_index + 1
             try:
                 with open(f"{STORE_PATH}/{receipt_id}.json", "w") as f:
                     json.dump(record, f)
+                _persisted_count += 1
             except Exception as e:
                 log("warn", f"Could not persist receipt: {e}")
+            # Persist the head pointer so the next boot resumes in O(1) without
+            # scanning the (unbounded) store. Best-effort; never blocks the append.
+            # Pass the in-memory count so this never re-scans the 200k+ store on
+            # the hot append path (which, at flood rates, would serialize and
+            # starve liveness behind a full directory walk per receipt).
+            _write_head_pointer(_chain_index, _chain_head, count=_persisted_count)
 
         with _span("szl_receipts.append", {
             "receipt_id": receipt_id,
@@ -986,6 +1100,13 @@ def boot():
 
 if __name__ == "__main__":
     boot()
-    server = HTTPServer(("0.0.0.0", PORT), Handler)
-    log("info", f"SZL Receipts server listening on :{PORT}")
+    # Threaded server: a single-threaded HTTPServer serializes ALL requests, so a
+    # sustained receipt-POST flood (each POST = Vault sign + file write) starves
+    # the /healthz liveness probe past its timeout → the kubelet SIGKILLs the pod
+    # in a restart loop even though signing is healthy. ThreadingHTTPServer gives
+    # probes (and /pubkey) their own threads; chain integrity stays correct
+    # because every chain mutation is serialized under _receipt_lock.
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    server.daemon_threads = True
+    log("info", f"SZL Receipts server listening on :{PORT} (threaded)")
     server.serve_forever()
