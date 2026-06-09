@@ -21,7 +21,7 @@ variables:
     default: uds.dev
 
   - name: VERSION
-    default: "0.3.1"
+    default: "0.4.0"
 
   # ── Build-flavor selection (Gap 3 fix) ────────────────────────────────────
   # Zarf flavor grammar X.Y.Z-upstream|registry1|unicorn (per uds-core
@@ -38,7 +38,7 @@ variables:
   - name: RECEIPTS_IMAGE
     default: "ghcr.io/szl-holdings/szl-receipts-server"
   - name: RECEIPTS_IMAGE_TAG
-    default: "uds-v0.3.1"
+    default: "uds-v0.4.0"
 
   # When true (default), the start task builds the receipts-server image locally
   # and imports it into the k3d cluster so deploy never stalls on a GHCR pull —
@@ -154,9 +154,18 @@ tasks:
       # both build from a CLEAN CHECKOUT with no manual zarf invocations.
       - task: bundle
 
-      - description: "Deploy the SZL Warhacker bundle (uds deploy core is layer 2 of the bundle)"
+      - description: "Deploy the SZL receipts bundle (uds deploy core is layer 2 of the bundle)"
         cmd: |
-          uds deploy uds-bundle-szl-warhacker-demo-*.tar.zst \
+          # `uds create .` builds uds-bundle-szl-receipts-bundle-<arch>-<ver>.tar.zst
+          # (metadata name `szl-receipts-bundle`). Detect the newest tarball rather
+          # than hard-coding the name/arch so the documented base path never drifts
+          # from the bundle metadata again (matches the recreate-full deploy step).
+          BUNDLE=$(ls -t uds-bundle-*.tar.zst 2>/dev/null | head -1)
+          if [ -z "${BUNDLE}" ]; then
+            echo "ERROR: no uds-bundle-*.tar.zst found after build." >&2; exit 1
+          fi
+          echo "Deploying bundle: ${BUNDLE}"
+          uds deploy "${BUNDLE}" \
             --set DOMAIN=${DOMAIN} \
             --set INSECURE_ADMIN_PASSWORD_GENERATION=true \
             --confirm \
@@ -334,7 +343,7 @@ tasks:
       - description: "Create and deploy szl-receipts Zarf package"
         cmd: |
           zarf package create . --confirm && \
-          zarf package deploy zarf-package-szl-receipts-amd64-0.3.1.tar.zst --confirm
+          zarf package deploy zarf-package-szl-receipts-amd64-${VERSION}.tar.zst --confirm
       - description: "Run Playwright journey tests"
         task: test:all
 
@@ -354,7 +363,7 @@ tasks:
       - description: "Build and deploy current branch package"
         cmd: |
           zarf package create . --confirm && \
-          zarf package deploy zarf-package-szl-receipts-amd64-0.3.1.tar.zst --confirm
+          zarf package deploy zarf-package-szl-receipts-amd64-${VERSION}.tar.zst --confirm
       - description: "Run Playwright journey tests post-upgrade"
         task: test:all
 
