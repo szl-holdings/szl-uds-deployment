@@ -26,9 +26,16 @@ content already removed on `main`, or drop content already added there.
 5. `docker build -t a11oy:local .`
 6. Recreates the `a11oy` container:
    `docker run -d --name a11oy --restart unless-stopped -p 127.0.0.1:7861:7860 a11oy:local`
-7. **Verifies** the front-door files baked into the image match `origin/main`
-   byte-for-byte (md5): `pages/console.html` → `/app/pages/console.html`,
-   `console/index.html` → `/app/static/index.html`.
+7. **Verifies** the baked files match `origin/main` byte-for-byte (md5), in two
+   distinguishable categories — every file logs `VERIFY OK/FAIL [CATEGORY]` and a
+   closing `VERIFY SUMMARY: front-door=… liveness=…` makes it clear which feature
+   regressed:
+   - **FRONT-DOOR** — `pages/console.html` → `/app/pages/console.html`,
+     `console/index.html` → `/app/static/index.html`.
+   - **LIVENESS** — `szl_evidence_research.py` → `/app/szl_evidence_research.py`,
+     the module that powers the Evidence & Research `/sources/live` reachability
+     badges. Guarding it means a rebuild that drops or regresses that feature now
+     **fails verify** instead of passing silently on a front-door-only check.
 
 ## Why two published sources
 GitHub `main` holds the authoritative **code + front-door** (`pages/`, `console/`).
@@ -61,6 +68,15 @@ nohup a11oy-rebuild > /root/a11oy-build-backups/rebuild-$(date +%Y%m%d-%H%M%S).l
 - The console SPA assets (`console/assets/**`) are real committed content, **not**
   Git-LFS, so `git reset --hard` materializes them correctly with no LFS smudge.
 
+## killinchu twin
+`killinchu-rebuild` is the killinchu.a11oy.net equivalent (same clean-checkout +
+overlay + verify pattern, container `killinchu` on `127.0.0.1:7862:7860`). It
+md5-guards a broader **GUARD_FILES** set — including the same
+`szl_evidence_research.py` liveness module — against `origin/main` and probes the
+live `/healthz` + `/api/killinchu/v1/evidence/research` endpoints. Both scripts now
+guard the liveness module so neither rebuild can silently drop the feature.
+
 ## Durable home
-This script + README are versioned in `szl-holdings/szl-uds-deployment` under
-`box-scripts/` and installed on the box at `/usr/local/sbin/a11oy-rebuild`.
+This script + README (and `killinchu-rebuild`) are versioned in
+`szl-holdings/szl-uds-deployment` under `box-scripts/` and installed on the box at
+`/usr/local/sbin/a11oy-rebuild` (and `/usr/local/sbin/killinchu-rebuild`).

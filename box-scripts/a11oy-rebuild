@@ -35,20 +35,33 @@ TS="$(date +%Y%m%d-%H%M%S)"
 log(){ echo "[a11oy-rebuild $(date +%H:%M:%S)] $*"; }
 fail(){ echo "[a11oy-rebuild] FATAL: $*" >&2; exit "${2:-1}"; }
 
-# Compare the front-door files baked into $IMAGE against origin/$BRANCH byte-for-byte.
-# Dockerfile maps: pages/  -> /app/pages/ ,  console/ -> /app/static/
+# Compare the files baked into $IMAGE against origin/$BRANCH byte-for-byte (md5),
+# grouped into two categories so FRONT-DOOR drift and LIVENESS drift are reported
+# and DISTINGUISHABLE per file:
+#   FRONT-DOOR  pages/console.html, console/index.html (the cathedral UI front door)
+#   LIVENESS    szl_evidence_research.py — powers the Evidence & Research
+#               "/sources/live" reachability badges; a rebuild that drops or
+#               regresses it used to pass verify silently. Guarding it here closes
+#               that gap (the Dockerfile COPYs it to /app/szl_evidence_research.py).
+# Dockerfile maps: pages/ -> /app/pages/ , console/ -> /app/static/ , root -> /app/ .
+# Returns non-zero if ANY guarded file drifts; always prints a per-category summary.
 verify(){
-  local rc=0 rp ip want got
-  for pair in "pages/console.html:/app/pages/console.html" "console/index.html:/app/static/index.html"; do
-    rp="${pair%%:*}"; ip="${pair##*:}"
+  local rc=0 fd_fail=0 lv_fail=0 cat rest rp ip want got
+  for spec in \
+    "FRONT-DOOR|pages/console.html|/app/pages/console.html" \
+    "FRONT-DOOR|console/index.html|/app/static/index.html" \
+    "LIVENESS|szl_evidence_research.py|/app/szl_evidence_research.py"; do
+    cat="${spec%%|*}"; rest="${spec#*|}"; rp="${rest%%|*}"; ip="${rest##*|}"
     want="$(git show "origin/$BRANCH:$rp" 2>/dev/null | md5sum | awk '{print $1}')"
     got="$(docker run --rm --entrypoint cat "$IMAGE" "$ip" 2>/dev/null | md5sum | awk '{print $1}')"
     if [ -n "$want" ] && [ "$want" = "$got" ]; then
-      log "VERIFY OK   $rp == image:$ip  ($want)"
+      log "VERIFY OK   [$cat] $rp == image:$ip  ($want)"
     else
-      log "VERIFY FAIL $rp ($want) != image:$ip ($got)"; rc=1
+      log "VERIFY FAIL [$cat] $rp ($want) != image:$ip ($got)"; rc=1
+      if [ "$cat" = "FRONT-DOOR" ]; then fd_fail=1; else lv_fail=1; fi
     fi
   done
+  log "VERIFY SUMMARY: front-door=$([ "$fd_fail" -eq 0 ] && echo PASS || echo FAIL)  liveness=$([ "$lv_fail" -eq 0 ] && echo PASS || echo FAIL)"
   return $rc
 }
 
@@ -138,9 +151,9 @@ docker run -d --name "$CONTAINER" --restart unless-stopped -p "$PORT_BIND" "$IMA
 sleep 3
 log "Container state: $(docker inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null)"
 
-log "Verifying baked front-door files match published origin/$BRANCH ..."
+log "Verifying baked files (front-door + liveness module) match published origin/$BRANCH ..."
 if verify; then
-  log "DONE — $CONTAINER running from published $BRANCH@$HEAD_SHA, front door matches source."
+  log "DONE — $CONTAINER running from published $BRANCH@$HEAD_SHA, front door + liveness module match source."
 else
-  fail "rebuild completed but front-door verification FAILED" 8
+  fail "rebuild completed but image verification FAILED (see per-category VERIFY SUMMARY above)" 8
 fi
