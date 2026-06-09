@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodically bring the box szl-uds-deployment tree in line with origin/main
+
+[Timer]
+# Detection cadence only; the pull command decides what is safe to do. A short
+# boot delay then every 15 minutes keeps the box from drifting far behind.
+OnBootSec=6min
+OnUnitActiveSec=15min
+AccuracySec=30s
+Persistent=true
+Unit=szl-box-sync-pull.service
+
+[Install]
+WantedBy=timers.target

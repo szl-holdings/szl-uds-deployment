@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+#
+# pre-commit — stale-tip guard for szl-holdings/szl-uds-deployment on the box.
+#
+# Refuses a local commit when the box base is STALE relative to origin/main so
+# the shared box tree can never fork from origin/main (the recurring new-SHA
+# duplicate divergence — see root BOX-SYNC.md). A read-only fetch needs no token
+# (the repo is public). Installed by `szl-box-sync install-hook` into
+# .git/hooks/pre-commit.
+#
+# Bypass once (e.g. offline emergency):  SZL_BOX_SYNC_SKIP=1 git commit ...
+set -uo pipefail
+
+[ "${SZL_BOX_SYNC_SKIP:-0}" = "1" ] && { echo "pre-commit: SZL_BOX_SYNC_SKIP=1 — stale-tip guard bypassed" >&2; exit 0; }
+
+BRANCH="${SZL_BOX_SYNC_BRANCH:-main}"
+REPO=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+g() { git -c safe.directory="$REPO" -C "$REPO" "$@"; }
+
+# Read-only fetch of origin/<branch>; never blocks a commit on a network glitch.
+if ! timeout 30 git -c safe.directory="$REPO" -C "$REPO" fetch -q origin "$BRANCH" 2>/dev/null; then
+  echo "pre-commit: WARN could not fetch origin/$BRANCH (offline?) — allowing commit" >&2
+  exit 0
+fi
+
+HEAD=$(g rev-parse HEAD); RT=$(g rev-parse "origin/$BRANCH" 2>/dev/null) || exit 0
+[ "$HEAD" = "$RT" ] && exit 0                                   # EQUAL: on the fresh tip
+g merge-base --is-ancestor "$RT" "$HEAD" && exit 0             # AHEAD: building on current base (unpushed local commits) — fine
+
+if g merge-base --is-ancestor "$HEAD" "$RT"; then
+  cat >&2 <<EOF
+pre-commit: REFUSED — the box is BEHIND origin/$BRANCH.
+  Committing now would fork the repo into two parallel histories.
+  Run:   szl-box-sync pull        (fast-forwards the box onto origin/$BRANCH)
+  then retry your commit. Emergency bypass: SZL_BOX_SYNC_SKIP=1 git commit ...
+EOF
+  exit 1
+fi
+
+cat >&2 <<EOF
+pre-commit: REFUSED — the box has DIVERGED from origin/$BRANCH.
+  Reconcile first so there is one lineage:
+    szl-box-sync pull            (if the box holds no unique committed work)
+    szl-box-sync push -m MSG     (to land a real delta on origin/$BRANCH)
+  Emergency bypass: SZL_BOX_SYNC_SKIP=1 git commit ...
+EOF
+exit 1

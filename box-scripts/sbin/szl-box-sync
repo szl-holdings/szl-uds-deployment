@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+#
+# szl-box-sync — keep the shared box copy of szl-holdings/szl-uds-deployment on
+# ONE lineage with origin/main so the two copies can never re-fork.
+#
+# The box working tree (167.233.50.75:/opt/szl/szl-uds-deployment) is shared by
+# several unattended helpers and agents. The repo has forked before: the SAME
+# change gets committed locally on the box AND separately pushed to main as a new
+# SHA, producing two parallel histories of identical work (see root BOX-SYNC.md
+# and memory szl-uds-deployment-push.md). This wraps the documented
+# fetch -> fast-forward / worktree-cherry-pick-push -> reset-in-line dance into a
+# single command so nobody has to remember the recipe.
+#
+# Commands
+#   status               Show box HEAD vs origin/main and tree cleanliness.
+#   pull [--force]       Bring the box back in line with origin/main.
+#   push -m MSG [PATH..] Land a delta on origin/main exactly once, then reset in line.
+#   verify               Assert box HEAD == ls-remote origin main (exit 0/1).
+#   install-hook         Install the pre-commit stale-tip guard.
+#
+# Read-only fetch needs NO token (the repo is public). Only `push` needs the
+# org-owner token; it is read from $SZL_GITHUB_TOKEN, $SZL_GITHUB_TOKEN_FILE, or
+# the first readable of /root/.szl-github-token /etc/szl-github-token
+# /opt/szl/.szl-github-token. The token is NEVER printed or written to disk by
+# this script, and is scrubbed from any git output.
+set -uo pipefail
+
+REPO="${SZL_BOX_SYNC_REPO:-/opt/szl/szl-uds-deployment}"
+BRANCH="${SZL_BOX_SYNC_BRANCH:-main}"
+REMOTE_SLUG="szl-holdings/szl-uds-deployment"
+GIT_USER_EMAIL="${SZL_BOX_SYNC_EMAIL:-forge@szlholdings.ai}"
+GIT_USER_NAME="${SZL_BOX_SYNC_NAME:-szl-box-sync}"
+
+die()  { echo "szl-box-sync: ERROR $*" >&2; exit 1; }
+note() { echo "szl-box-sync: $*" >&2; }
+scrub() { sed -E "s#x-access-token:[^@]*@#***@#g"; }
+
+[ -d "$REPO/.git" ] || die "repo not found at $REPO (set SZL_BOX_SYNC_REPO)"
+g() { git -c safe.directory="$REPO" -C "$REPO" "$@"; }
+
+# read-only fetch of origin/<branch> — public repo, no creds.
+fetch_ro() {
+  timeout 40 git -c safe.directory="$REPO" -C "$REPO" fetch -q origin "$BRANCH" 2>&1 | scrub
+  return "${PIPESTATUS[0]}"
+}
+
+remote_tip() { g rev-parse "origin/$BRANCH"; }
+head_sha()   { g rev-parse HEAD; }
+
+# relation of HEAD to origin/<branch>: EQUAL | BEHIND | AHEAD | DIVERGED
+relation() {
+  local h r; h=$(head_sha); r=$(remote_tip)
+  if [ "$h" = "$r" ]; then echo EQUAL
+  elif g merge-base --is-ancestor "$h" "$r"; then echo BEHIND
+  elif g merge-base --is-ancestor "$r" "$h"; then echo AHEAD
+  else echo DIVERGED; fi
+}
+
+tree_dirty() { [ -n "$(g status --porcelain 2>/dev/null)" ]; }
+
+# true when the box holds NO unique committed work vs origin (every box-only
+# commit is content-equivalent to one already on origin: `git cherry` all '-').
+no_unique_work() {
+  local out; out=$(g cherry "origin/$BRANCH" HEAD 2>/dev/null) || return 1
+  [ -z "$out" ] && return 0
+  ! printf '%s\n' "$out" | grep -q '^+'
+}
+
+# reset_in_line: move the box onto origin/<branch> while preserving uncommitted
+# TRACKED edits (stash/pop) and untracked files (they survive reset --hard).
+reset_in_line() {
+  local stashed=0
+  if [ -n "$(g status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+    note "stashing uncommitted tracked edits before reset"
+    g -c user.email="$GIT_USER_EMAIL" -c user.name="$GIT_USER_NAME" \
+      stash push -m "szl-box-sync autostash $(date -u +%FT%TZ)" >/dev/null \
+      && stashed=1 || die "could not stash local edits; aborting"
+  fi
+  g reset --hard "origin/$BRANCH" >/dev/null || die "reset to origin/$BRANCH failed"
+  if [ "$stashed" -eq 1 ]; then
+    if g stash pop >/dev/null 2>&1; then
+      note "re-applied stashed edits on top of origin/$BRANCH"
+    else
+      note "WARN stashed edits conflict with the new tip — kept in 'git stash list' (resolve manually)"
+    fi
+  fi
+}
+
+resolve_token() {
+  local f
+  [ -n "${SZL_GITHUB_TOKEN:-}" ] && { printf '%s' "$SZL_GITHUB_TOKEN"; return 0; }
+  for f in "${SZL_GITHUB_TOKEN_FILE:-}" /root/.szl-github-token /etc/szl-github-token /opt/szl/.szl-github-token; do
+    [ -n "$f" ] && [ -r "$f" ] && { tr -d ' \n\r' < "$f"; return 0; }
+  done
+  return 1
+}
+
+cmd_status() {
+  fetch_ro || note "WARN fetch failed (offline?) — comparing against last-known origin/$BRANCH"
+  local rel; rel=$(relation)
+  echo "repo:        $REPO"
+  echo "branch:      $BRANCH"
+  echo "box HEAD:    $(head_sha)"
+  echo "origin/$BRANCH: $(remote_tip)"
+  echo "relation:    $rel"
+  echo "tree:        $(tree_dirty && echo DIRTY || echo clean)"
+  if [ "$rel" = DIVERGED ] || [ "$rel" = AHEAD ]; then
+    echo "box-unique commits (git cherry; '-'=dup already on origin, '+'=real):"
+    g cherry "origin/$BRANCH" HEAD 2>/dev/null | sed 's/^/  /'
+  fi
+}
+
+# pull: fast-forward / reconcile the box onto origin/<branch>.
+cmd_pull() {
+  local force=0; [ "${1:-}" = "--force" ] && force=1
+  fetch_ro || die "could not fetch origin/$BRANCH"
+  local rel; rel=$(relation)
+  case "$rel" in
+    EQUAL) note "already in line with origin/$BRANCH ($(remote_tip))"; return 0 ;;
+    AHEAD)
+      note "box is AHEAD of origin/$BRANCH (unpushed local commit[s]):"
+      g cherry "origin/$BRANCH" HEAD | sed 's/^/  /' >&2
+      die "land them with 'szl-box-sync push' first (refusing to discard with pull)" ;;
+    DIVERGED)
+      if no_unique_work; then
+        note "box DIVERGED but holds no unique committed work (all box commits already on origin) — safe to reset"
+      elif [ "$force" -eq 1 ]; then
+        note "box DIVERGED with UNIQUE committed work — discarding it because --force was given"
+      else
+        note "box DIVERGED and holds UNIQUE committed work:"
+        g cherry "origin/$BRANCH" HEAD | grep '^+' | sed 's/^/  /' >&2
+        die "push your delta first, or re-run 'szl-box-sync pull --force' to discard it"
+      fi ;;
+    BEHIND) note "box is BEHIND origin/$BRANCH — fast-forwarding" ;;
+  esac
+
+  reset_in_line
+  note "box now at origin/$BRANCH ($(head_sha))"
+}
+
+# push: commit a delta and land it on origin/<branch> exactly once, then reset
+# the box back in line. Isolates the delta via a throwaway worktree built on the
+# FRESH remote tip, so a sibling commit sitting on top of the box tip is never
+# carried along.
+cmd_push() {
+  local msg="" paths=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -m|--message) msg="${2:-}"; shift 2 ;;
+      *) paths+=("$1"); shift ;;
+    esac
+  done
+  [ -n "$msg" ] || die "push needs a commit message: szl-box-sync push -m MSG [PATH..]"
+
+  local tok; tok=$(resolve_token) || die "no push token (set SZL_GITHUB_TOKEN or a token file)"
+  local url="https://x-access-token:${tok}@github.com/${REMOTE_SLUG}.git"
+
+  fetch_ro || die "could not fetch origin/$BRANCH"
+
+  # Stage the delta on the box and commit it locally.
+  if [ "${#paths[@]}" -gt 0 ]; then
+    g add -f -- "${paths[@]}" || die "git add failed"
+  else
+    g add -A || die "git add -A failed"
+  fi
+  g diff --cached --quiet && die "nothing staged to commit"
+  # --no-verify: push manages lineage itself (worktree-isolate onto fresh origin
+  # + reset-in-line below), so the stale-tip pre-commit guard must not block it.
+  g -c user.email="$GIT_USER_EMAIL" -c user.name="$GIT_USER_NAME" commit -q --no-verify -m "$msg" \
+    || die "commit failed"
+  local sha; sha=$(head_sha)
+  note "committed $sha locally"
+
+  # Isolate that single commit onto fresh origin/<branch> in a throwaway worktree
+  # and push it. Cherry-pick lands clean because the delta is self-contained.
+  local wt; wt=$(mktemp -d /tmp/szl-box-sync.XXXXXX)
+  g worktree add -q -d "$wt" FETCH_HEAD || { rm -rf "$wt"; die "worktree add failed"; }
+  if ! git -C "$wt" -c user.email="$GIT_USER_EMAIL" -c user.name="$GIT_USER_NAME" \
+        cherry-pick "$sha" >/dev/null 2>&1; then
+    git -C "$wt" cherry-pick --abort >/dev/null 2>&1
+    g worktree remove --force "$wt" >/dev/null 2>&1; rm -rf "$wt"
+    die "cherry-pick onto fresh origin/$BRANCH conflicted — delta is not self-contained; reconcile by hand"
+  fi
+  if ! git -C "$wt" push "$url" "HEAD:$BRANCH" 2>&1 | scrub; then
+    g worktree remove --force "$wt" >/dev/null 2>&1; rm -rf "$wt"
+    die "push to origin/$BRANCH failed"
+  fi
+  g worktree remove --force "$wt" >/dev/null 2>&1; rm -rf "$wt"
+
+  # Bring the box back in line with the freshly-pushed tip (no parallel local SHA).
+  # reset_in_line preserves any OTHER uncommitted tracked edits + untracked files.
+  fetch_ro || die "could not re-fetch after push"
+  reset_in_line
+  note "landed on origin/$BRANCH and reset box in line ($(head_sha))"
+}
+
+# verify: box HEAD must equal the real remote tip (ls-remote, not a cached ref).
+cmd_verify() {
+  local remote head
+  remote=$(g ls-remote origin "$BRANCH" 2>/dev/null | awk 'NR==1{print $1}')
+  head=$(head_sha)
+  echo "box HEAD:        $head"
+  echo "ls-remote $BRANCH: ${remote:-<unreachable>}"
+  if [ -n "$remote" ] && [ "$remote" = "$head" ]; then
+    echo "VERIFY: OK — box is on one lineage with origin/$BRANCH"; return 0
+  fi
+  echo "VERIFY: MISMATCH — box is NOT in line with origin/$BRANCH" >&2; return 1
+}
+
+cmd_install_hook() {
+  local hook="$REPO/.git/hooks/pre-commit" src=""
+  local c
+  for c in \
+    "$(dirname "$(readlink -f "$0")")/hooks/pre-commit" \
+    "$REPO/box-scripts/hooks/pre-commit"; do
+    [ -r "$c" ] && { src="$c"; break; }
+  done
+  [ -n "$src" ] || die "hook source not found (looked next to the command and in $REPO/box-scripts/hooks/)"
+  install -m 0755 "$src" "$hook" || die "could not install $hook"
+  note "installed pre-commit stale-tip guard at $hook (from $src)"
+}
+
+case "${1:-}" in
+  status)        shift; cmd_status "$@" ;;
+  pull|sync)     shift; cmd_pull "$@" ;;
+  push)          shift; cmd_push "$@" ;;
+  verify)        shift; cmd_verify "$@" ;;
+  install-hook)  shift; cmd_install_hook "$@" ;;
+  ""|-h|--help)
+    sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command '${1}' (try: status pull push verify install-hook)" ;;
+esac
