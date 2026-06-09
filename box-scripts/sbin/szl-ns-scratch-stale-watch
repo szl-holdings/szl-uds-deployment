@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+#
+# szl-ns-scratch-stale-watch — alert the team when a LABELED scratch namespace on
+# the k3d uds-szl-demo cluster (box 167.233.50.75) has outlived its declared
+# expiry (its szl.io/ttl-days window, or the default age threshold for ephemeral
+# namespaces with no TTL), so the owner who promised to clean it up actually does.
+#
+# WHY: szl-ns-scratch-watch (its companion) only catches UNTRACKED scratch
+# namespaces — ones missing the szl.io/ephemeral label entirely (the
+# `list-unlabeled` audit). It says nothing about namespaces that ARE labeled per
+# the convention but whose TTL has since passed: "someone labeled it, promised to
+# clean it up, and never did." Those quietly accumulate on the demo box and eat
+# the 2-vCPU headroom. This guard closes that gap by turning the on-demand
+# `szl-ns-scratch list-stale` audit into a periodic, edge-triggered alert.
+#
+# WHAT IT DETECTS: any namespace reported by `szl-ns-scratch list-stale` — an
+# szl.io/ephemeral=true namespace whose age (from szl.io/created) is >= its
+# szl.io/ttl-days (or, when no TTL label is set, >= the default threshold), plus
+# any ephemeral namespace whose created label is missing/unparseable (flagged for
+# review). Zero such namespaces = OK.
+#
+# It is EDGE-triggered and de-duped via its OWN state file: it pushes the notifier
+# only on the healthy->problem edge (a labeled scratch ns first goes past its TTL)
+# and once on RECOVERED (every expired scratch has been deleted or relabeled),
+# never every cycle (honours the "recurring alerts = one ping" policy). Every run
+# still appends to the log + writes a status file, so a broken notifier can never
+# hide a drift.
+#
+# It NEVER deletes anything — per the scratch convention a cleanup must confirm
+# with the owner first; this guard only surfaces the expired set so the owner can
+# act. Cluster intentionally stopped (k3d down) or unreachable = a true no-op
+# (exit 0, no alert). Mirrors szl-ns-scratch-watch / receipt-chain-watch /
+# szl-core-rightsize (kubeconfig resolve + cluster-absent no-op + a11oy-uptime-
+# notify push channel).
+#
+# Driven by szl-ns-scratch-stale-watch.timer (every 30 min).
+set -uo pipefail
+
+CLUSTER="${SZL_NS_CLUSTER:-uds-szl-demo}"
+# The audit/list tool this guard wraps (installed alongside it).
+SCRATCH_BIN="${SCRATCH_BIN:-/usr/local/sbin/szl-ns-scratch}"
+
+STATE_DIR="${STATE_DIR:-/var/lib/szl-ns-scratch-stale-watch}"
+LOG_DIR="${LOG_DIR:-/var/log/szl-ns-scratch-stale-watch}"
+LAST_FILE="${LAST_FILE:-$STATE_DIR/last_status}"
+STATUS="${STATUS:-$STATE_DIR/status.json}"
+LOG="${LOG:-$LOG_DIR/szl-ns-scratch-stale-watch.log}"
+
+# Notifier: stdin = message. Default to the box's working push channel.
+NOTIFY_CMD="${NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
+ALERT_PREFIX="${ALERT_PREFIX:-}"
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
+
+log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$1" >>"$LOG" 2>/dev/null; }
+
+notify() {
+  # $1 = message. Fail-soft: log a warning if the notifier is missing/fails.
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed (alert was logged only)"
+}
+
+write_status() {
+  # $1 = overall (OK|ALERT|UNKNOWN)  $2 = reason
+  printf '{"overall":"%s","reason":"%s","checked_at":"%s","cluster":"%s"}\n' \
+    "$1" "$(printf '%s' "$2" | sed 's/"/\\"/g')" "$(date -u +%FT%TZ)" "$CLUSTER" \
+    >"$STATUS" 2>/dev/null
+}
+
+# ---- Resolve cluster; no-op if it is down (intentionally stopped) -----------
+KC="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" || { log "INFO cluster '$CLUSTER' absent — skip"; write_status UNKNOWN "cluster absent"; exit 0; }
+export KUBECONFIG="$KC"
+kubectl --request-timeout=20s get --raw='/readyz' >/dev/null 2>&1 \
+  || { log "INFO cluster '$CLUSTER' not reachable — skip"; write_status UNKNOWN "cluster unreachable"; exit 0; }
+
+# Tool present?
+[ -x "$SCRATCH_BIN" ] || { log "WARN scratch tool '$SCRATCH_BIN' missing/not executable — skip"; write_status UNKNOWN "scratch tool missing"; exit 0; }
+
+# ---- Ask the audit tool for the EXPIRED (past-TTL) ephemeral set ------------
+# list-stale prints one line per expired namespace on stdout, beginning with the
+# namespace name (e.g. "szl-foo  age=20d threshold=14d owner=rosa"), and itself
+# no-ops (empty stdout + a "nothing to do" stderr) if the cluster is absent/
+# unreachable. We already cluster-checked above; still treat that sentinel as a
+# no-op in case the cluster vanished between checks, so we never emit a false
+# RECOVERED.
+err_tmp="$(mktemp 2>/dev/null || echo /tmp/szl-ns-scratch-stale-watch.err.$$)"
+out="$(SZL_NS_CLUSTER="$CLUSTER" "$SCRATCH_BIN" list-stale 2>"$err_tmp")"
+rc=$?
+err="$(cat "$err_tmp" 2>/dev/null)"; rm -f "$err_tmp" 2>/dev/null
+if [ "$rc" -ne 0 ] || printf '%s' "$err" | grep -q 'nothing to do'; then
+  log "INFO scratch tool reported no-op (rc=$rc): ${err:-no stderr} — skip"
+  write_status UNKNOWN "scratch tool no-op"
+  exit 0
+fi
+
+# Keep the full detail lines (age/threshold/owner) for the alert body; derive a
+# clean, sorted, de-duplicated list of namespace NAMES for counting + the CSV.
+detail="$(printf '%s\n' "$out" | sed 's/[[:space:]]*$//' | grep -v '^$')"
+expired="$(printf '%s\n' "$detail" | sed 's/[[:space:]].*$//' | grep -v '^$' | sort -u)"
+count=0
+[ -n "$expired" ] && count="$(printf '%s\n' "$expired" | grep -c .)"
+
+# ---- Decide + edge-trigger --------------------------------------------------
+prev="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
+list_csv="$(printf '%s' "$expired" | paste -sd ', ' - 2>/dev/null)"
+detail_csv="$(printf '%s' "$detail" | paste -sd '; ' - 2>/dev/null)"
+
+if [ "$count" -gt 0 ] 2>/dev/null; then
+  write_status ALERT "$count expired scratch namespace(s): ${list_csv}"
+  log "STATE ALERT count=$count :: $detail_csv"
+  if [ "$prev" != "ALERT" ]; then
+    notify "ALERT: $count scratch namespace(s) on $CLUSTER are PAST their declared expiry (szl.io/ttl-days window elapsed): ${detail_csv}. Per the convention, confirm with the owner then delete ('kubectl delete ns <ns>') or extend the TTL ('szl-ns-scratch label <ns> --ttl-days N'). This guard never auto-deletes. Full audit: 'szl-ns-scratch audit'."
+    log "EDGE OK->ALERT notified"
+  else
+    log "DEDUP still ALERT — no re-notify"
+  fi
+  echo ALERT >"$LAST_FILE" 2>/dev/null
+else
+  write_status OK "no expired scratch namespaces"
+  log "STATE OK count=0"
+  if [ "$prev" = "ALERT" ]; then
+    notify "RECOVERED: no scratch namespaces on $CLUSTER are past their declared expiry (all expired scratch have been removed or had their TTL extended)."
+    log "EDGE ALERT->OK recovered, notified"
+  fi
+  echo OK >"$LAST_FILE" 2>/dev/null
+fi
+
+exit 0

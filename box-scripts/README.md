@@ -446,9 +446,11 @@ sbin/
 ```
 
 `szl-ns-scratch` itself has no systemd unit — it is an on-demand operator tool,
-run at cleanup time. Its companion **`szl-ns-scratch-watch`** (part 6 below) is
-the periodic guard that wraps `szl-ns-scratch list-unlabeled` and pushes an alert
-the moment an untracked scratch namespace appears.
+run at cleanup time. It has two periodic companion guards that wrap its audits:
+**`szl-ns-scratch-watch`** (part 6 below) wraps `szl-ns-scratch list-unlabeled`
+and alerts the moment an *untracked* scratch namespace appears, while
+**`szl-ns-scratch-stale-watch`** (part 8 below) wraps `szl-ns-scratch list-stale`
+and alerts when a *labeled* scratch namespace outlives its declared expiry.
 
 ## Usage
 
@@ -608,4 +610,74 @@ RUN                                              # -> DEDUP, no push
 kubectl delete ns szl-receipts-selftest
 RUN                                              # -> RECOVERED, one [TEST] push
 rm -rf /tmp/rospan
+```
+---
+
+# box-scripts (part 8) — expired scratch-namespace alarm (uds-szl-demo)
+
+`szl-ns-scratch-watch` (part 6) catches scratch namespaces that were never
+labeled at all. **`szl-ns-scratch-stale-watch`** catches the opposite, quieter
+failure: a namespace that *was* labeled per the convention but whose declared
+expiry has since passed — "someone labeled it, promised to clean it up, and never
+did." It turns the on-demand `szl-ns-scratch list-stale` audit into a **periodic
+guard**: it pushes an alert when a labeled scratch namespace on the
+`uds-szl-demo` cluster is past its `szl.io/ttl-days` window (or, for an ephemeral
+namespace with no TTL, past the default age threshold), so the owner actually
+tears it down or extends the TTL before these slowly eat the 2-vCPU headroom.
+Like the scripts above it lives ONLY at `/usr/local/sbin` + `/etc/systemd/system`
+on the box and is **not** otherwise under version control, so restore it from
+here after a rebuild.
+
+## Files
+
+```
+sbin/
+  szl-ns-scratch-stale-watch          # alert on the edge when a scratch ns goes past its TTL
+systemd/
+  szl-ns-scratch-stale-watch.service  # oneshot: runs szl-ns-scratch-stale-watch
+  szl-ns-scratch-stale-watch.timer    # ~6 min after boot, then every 30 min
+```
+
+It is **edge-triggered**: it fires the notifier only on the healthy→problem edge
+(a labeled scratch ns first goes past its expiry) and once on RECOVERED (every
+expired scratch has been removed or had its TTL extended), never every cycle
+(de-duped via its OWN `/var/lib/szl-ns-scratch-stale-watch/last_status`). Every
+run still appends to
+`/var/log/szl-ns-scratch-stale-watch/szl-ns-scratch-stale-watch.log` and writes
+`/var/lib/szl-ns-scratch-stale-watch/status.json`, so a broken notifier can never
+hide a drift. It **never auto-deletes** — per the convention a cleanup must
+confirm with the owner first; this guard only surfaces the expired set (with each
+namespace's age/threshold/owner) so the owner can act. A stopped/unreachable
+cluster (k3d nodes are `--restart no`) is a true no-op (no alarm). It reuses the
+same shared push channel as the other guards
+(`/usr/local/sbin/a11oy-uptime-notify` → ntfy/Telegram/webhook in
+`/etc/a11oy-uptime.env`).
+
+## Reinstall
+
+The top-level `./install.sh` installs and enables this guard along with the
+others. To (re)install just this guard manually:
+
+```bash
+sudo install -m 0755 sbin/szl-ns-scratch-stale-watch /usr/local/sbin/szl-ns-scratch-stale-watch
+sudo install -m 0644 systemd/szl-ns-scratch-stale-watch.service /etc/systemd/system/
+sudo install -m 0644 systemd/szl-ns-scratch-stale-watch.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now szl-ns-scratch-stale-watch.timer
+```
+
+## Verify (safe, reversible — isolated state + captured notifier)
+
+```bash
+systemctl is-enabled szl-ns-scratch-stale-watch.timer
+/usr/local/sbin/szl-ns-scratch-stale-watch && cat /var/lib/szl-ns-scratch-stale-watch/status.json
+# Force an alert: label a scratch ns as already-expired (created long ago, ttl 1d):
+kubectl create ns szl-scratch-selftest
+szl-ns-scratch label szl-scratch-selftest --owner selftest --created 2000-01-01 --ttl-days 1
+STATE_DIR=/tmp/nssw/state LOG_DIR=/tmp/nssw/log NOTIFY_CMD=/bin/cat \
+  ALERT_PREFIX="[TEST-ignore] " /usr/local/sbin/szl-ns-scratch-stale-watch   # -> ALERT
+kubectl delete ns szl-scratch-selftest
+STATE_DIR=/tmp/nssw/state LOG_DIR=/tmp/nssw/log NOTIFY_CMD=/bin/cat \
+  /usr/local/sbin/szl-ns-scratch-stale-watch                                 # -> RECOVERED
+rm -rf /tmp/nssw
 ```

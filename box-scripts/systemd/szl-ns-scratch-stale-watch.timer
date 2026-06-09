@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically check for expired (past-TTL) scratch namespaces on uds-szl-demo and alert on the edge
+
+[Timer]
+OnBootSec=6min
+OnUnitActiveSec=30min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

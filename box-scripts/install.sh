@@ -18,6 +18,8 @@
 #        operator helper, see docs/SCRATCH_NAMESPACE_CONVENTION.md), plus
 #        szl-ns-scratch-watch — periodic guard that alerts when an untracked
 #        (unlabeled + unmanaged) scratch namespace appears on uds-szl-demo
+#        szl-ns-scratch-stale-watch — periodic guard that alerts when a LABELED
+#        scratch namespace outlives its declared expiry (szl.io/ttl-days)
 #
 # Run as root from this directory:  sudo ./install.sh
 set -euo pipefail
@@ -35,6 +37,7 @@ install -m 0755 "$here/sbin/istiod-fit-strategy"       /usr/local/sbin/istiod-fi
 install -m 0755 "$here/sbin/receipt-chain-watch"       /usr/local/sbin/receipt-chain-watch
 install -m 0755 "$here/sbin/szl-ns-scratch"            /usr/local/sbin/szl-ns-scratch
 install -m 0755 "$here/sbin/szl-ns-scratch-watch"      /usr/local/sbin/szl-ns-scratch-watch
+install -m 0755 "$here/sbin/szl-ns-scratch-stale-watch" /usr/local/sbin/szl-ns-scratch-stale-watch
 install -m 0755 "$here/sbin/a11oy-uptime-check"        /usr/local/sbin/a11oy-uptime-check
 install -m 0755 "$here/sbin/a11oy-uptime-notify"       /usr/local/sbin/a11oy-uptime-notify
 install -m 0755 "$here/sbin/dns-drift-check"           /usr/local/sbin/dns-drift-check
@@ -55,6 +58,8 @@ install -m 0644 "$here/systemd/receipt-chain-watch@.service" /etc/systemd/system
 install -m 0644 "$here/systemd/receipt-chain-watch@.timer"   /etc/systemd/system/receipt-chain-watch@.timer
 install -m 0644 "$here/systemd/szl-ns-scratch-watch.service" /etc/systemd/system/szl-ns-scratch-watch.service
 install -m 0644 "$here/systemd/szl-ns-scratch-watch.timer"   /etc/systemd/system/szl-ns-scratch-watch.timer
+install -m 0644 "$here/systemd/szl-ns-scratch-stale-watch.service" /etc/systemd/system/szl-ns-scratch-stale-watch.service
+install -m 0644 "$here/systemd/szl-ns-scratch-stale-watch.timer"   /etc/systemd/system/szl-ns-scratch-stale-watch.timer
 install -m 0644 "$here/systemd/a11oy-uptime-check.service"  /etc/systemd/system/a11oy-uptime-check.service
 install -m 0644 "$here/systemd/a11oy-uptime-check.timer"    /etc/systemd/system/a11oy-uptime-check.timer
 install -m 0644 "$here/systemd/dns-drift-check.service"     /etc/systemd/system/dns-drift-check.service
@@ -181,6 +186,7 @@ for c in "${receipt_extra_clusters[@]}"; do
   systemctl enable --now "receipt-chain-watch@${c}.timer"
 done
 systemctl enable --now szl-ns-scratch-watch.timer
+systemctl enable --now szl-ns-scratch-stale-watch.timer
 systemctl enable --now a11oy-uptime-check.timer
 systemctl enable --now dns-drift-check.timer
 systemctl enable --now box-scripts-drift-check.timer
@@ -196,6 +202,7 @@ for c in "${receipt_extra_clusters[@]}"; do
   systemctl start "receipt-chain-watch@${c}.service" || true
 done
 [ -x /usr/local/sbin/szl-ns-scratch-watch ] && /usr/local/sbin/szl-ns-scratch-watch  || true
+[ -x /usr/local/sbin/szl-ns-scratch-stale-watch ] && /usr/local/sbin/szl-ns-scratch-stale-watch || true
 
 echo "[install] done. current status:"
 a11oy-mode status || true
