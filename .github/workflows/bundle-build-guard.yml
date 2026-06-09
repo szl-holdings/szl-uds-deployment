@@ -1,0 +1,124 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# bundle-build-guard.yml — Catch broken `uds run bundle` builds before they ship.
+#
+# The one-command bundle build (`uds run bundle` in tasks.yaml) broke three
+# separate ways while it was being made to work, and each only surfaced at build
+# time — minutes into a `uds create`, never in review:
+#   1. a new local-path package was added to uds-bundle.yaml (szl-a11oy) without a
+#      matching `zarf package create` pre-build step (uds-cli does not build local
+#      `path:` packages for you → "no such file");
+#   2. a11oy was built with `--flavor upstream` though it has no flavor-gated
+#      component, silently dropping its only component; and
+#   3. intermediate files overflowed a small /tmp (handled by BUILD_TMPDIR — out
+#      of scope for a text guard).
+#
+# This workflow guards regression classes (1) and (2) with a pure file scan on
+# every PR/push that touches the bundle definition or its packages — no cluster,
+# no zarf, no network. The check logic lives in scripts/bundle-build-guard.py so
+# it can be UNIT TESTED: scripts/bundle-build-guard.test.py feeds it deliberately
+# broken fixtures and asserts each one FAILS, so a future edit that neuters a
+# check (green while guarding nothing) is caught by the self-test job below.
+#
+# A heavier, opt-in `workflow_dispatch` job runs `uds run bundle` end-to-end on a
+# runner with real disk and asserts the bundle tarball is produced — the only
+# thing that catches a break a text scan cannot (class 3 and beyond).
+#
+# Complements (does not duplicate): package-build-guard.yml (szl-receipts zarf
+# build dry-run), chart-guard.yml (helm lint/template), image-pin-guard.yml.
+
+name: Bundle Build Guard
+
+on:
+  pull_request:
+    paths:
+      - "uds-bundle.yaml"
+      - "tasks.yaml"
+      - "packages/**"
+      - "scripts/bundle-build-guard.py"
+      - "scripts/bundle-build-guard.test.py"
+      - ".github/workflows/bundle-build-guard.yml"
+  push:
+    branches: [main]
+    paths:
+      - "uds-bundle.yaml"
+      - "tasks.yaml"
+      - "packages/**"
+      - "scripts/bundle-build-guard.py"
+      - "scripts/bundle-build-guard.test.py"
+      - ".github/workflows/bundle-build-guard.yml"
+  workflow_dispatch:
+    inputs:
+      run_e2e:
+        description: "Also run the heavy end-to-end `uds run bundle` build"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Lightweight static guard (every PR/push) ────────────────────────────────
+  guard:
+    name: bundle members <-> pre-build steps + flavor gating
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install PyYAML
+        run: python -m pip install --quiet pyyaml
+      - name: Run bundle build guard
+        run: python scripts/bundle-build-guard.py --root .
+
+  # ── Self-test: prove the guard actually fails on broken fixtures ─────────────
+  self-test:
+    name: guard self-test (broken fixtures must fail)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install PyYAML
+        run: python -m pip install --quiet pyyaml
+      - name: Run guard self-test
+        run: python scripts/bundle-build-guard.test.py
+
+  # ── Heavy, opt-in end-to-end build (workflow_dispatch only) ─────────────────
+  # Proves the FULL `uds run bundle` actually produces the bundle tarball on a
+  # runner with real disk — catches breakage a text scan cannot (e.g. /tmp
+  # overflow, an unpullable image, a zarf schema error). Off by default on PRs
+  # because it pulls the init/core OCI packages and builds every local package.
+  e2e-bundle:
+    name: end-to-end `uds run bundle`
+    if: github.event_name == 'workflow_dispatch' && inputs.run_e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android || true
+          df -h /
+      - name: Install uds + zarf CLIs
+        run: |
+          curl -sL https://github.com/zarf-dev/zarf/releases/latest/download/zarf_linux_amd64 \
+            -o /usr/local/bin/zarf && sudo chmod +x /usr/local/bin/zarf
+          curl -sL https://github.com/defenseunicorns/uds-cli/releases/latest/download/uds-cli_linux_amd64 \
+            -o /usr/local/bin/uds && sudo chmod +x /usr/local/bin/uds
+          zarf version
+          uds version
+      - name: Build the bundle end-to-end (uds run bundle)
+        run: uds run bundle --no-progress
+      - name: Assert the bundle tarball was produced
+        run: |
+          BUNDLE=$(ls -t uds-bundle-szl-receipts-bundle-amd64-*.tar.zst 2>/dev/null | head -1)
+          if [ -z "${BUNDLE}" ]; then
+            echo "FAIL: no uds-bundle-szl-receipts-bundle-amd64-*.tar.zst was produced by 'uds run bundle'." >&2
+            ls -la uds-bundle-*.tar.zst 2>/dev/null || echo "  (no bundle tarballs at all)"
+            exit 1
+          fi
+          echo "OK: produced ${BUNDLE}"
+          ls -lh "${BUNDLE}"
