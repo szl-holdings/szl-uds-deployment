@@ -99,5 +99,10 @@
   "devDependencies": {
     "@types/node": "^25.9.2",
     "typescript": "^6.0.3"
+  },
+  "overrides": {
+    "@felipecrs/decompress-tarxz": "5.0.6",
+    "@xhmikosr/decompress-unzip": "8.2.0",
+    "@xhmikosr/decompress-tar": "9.0.1"
   }
 }
