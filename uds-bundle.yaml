@@ -70,12 +70,16 @@ packages:
   # ── Layer 2: UDS Core — Istio + Pepr (UDS Operator) + Keycloak + Prometheus ─
   # For the local k3d demo, the documented path is the slim-dev BUNDLE:
   #   oci://ghcr.io/defenseunicorns/bundles/k3d-core-slim-dev:1.5.0
-  # For production, reference the published core PACKAGE and pick a flavor:
-  #   registry.defenseunicorns.com/public/core ref 1.5.0-upstream|1.5.0-registry1|1.5.0-unicorn
-  # We use the published upstream core package here (public images, no DoD registry
-  # access required for the hackathon demo).
+  # The published core PACKAGE is mirrored in two registries with identical content:
+  #   registry.defenseunicorns.com/public/core  (Defense Unicorns registry — needs DU creds)
+  #   ghcr.io/defenseunicorns/packages/uds/core (public GHCR mirror — anonymous pull)
+  # ref flavor: 1.5.0-upstream|1.5.0-registry1|1.5.0-unicorn
+  # We pull from the GHCR mirror so a fresh `uds create`/`uds deploy` succeeds with NO
+  # Defense Unicorns registry credentials (the DU registry returns "basic credential
+  # not found" on this box, which has only a ghcr/github auth). Same image set, no DoD
+  # registry access required for the hackathon demo.
   - name: core
-    repository: registry.defenseunicorns.com/public/core
+    repository: ghcr.io/defenseunicorns/packages/uds/core
     ref: 1.5.0-upstream
     overrides:
       # ── istiod HPA: single-replica for the ~2-vCPU uds-szl-demo node ──────────
@@ -108,7 +112,7 @@ packages:
     path: ./packages/szl-receipts
     ref: 0.4.0
     overrides:
-      szl-receipts:
+      szl-receipts-server:
         szl-receipts:
           variables:
             - name: DOMAIN
