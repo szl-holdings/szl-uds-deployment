@@ -31,7 +31,7 @@ metadata:
   url: "https://szlholdings.com"
   authors: "SZL Holdings <eng@szlholdings.com>"
   documentation: "https://github.com/szl-holdings/szl-uds-deployment"
-  image: "ghcr.io/szl-holdings/sentra:###ZARF_PKG_TMPL_VERSION###"
+  image: "ghcr.io/szl-holdings/sentra:uds-v0.2.0@sha256:60a0efc14366ba392bfe3f3cd4196863fe148bb87a17428be6a57f0a05ac3639"
   uncompressed: false
 
 variables:
@@ -70,7 +70,7 @@ components:
       Deploy the sentra workload from the live signed image
       ghcr.io/szl-holdings/sentra:###ZARF_PKG_TMPL_VERSION###.
     images:
-      - ghcr.io/szl-holdings/sentra:###ZARF_PKG_TMPL_VERSION###
+      - ghcr.io/szl-holdings/sentra:uds-v0.2.0@sha256:60a0efc14366ba392bfe3f3cd4196863fe148bb87a17428be6a57f0a05ac3639
     manifests:
       - name: szl-sentra-workload
         namespace: szl-sentra

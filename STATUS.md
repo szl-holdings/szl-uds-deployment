@@ -8,12 +8,16 @@
 ## What's Live
 
 - Repository active and maintained under Apache-2.0 license
-- **`a11oy` + `killinchu` module images published & signed** — both are in
-  org GHCR (`ghcr.io/szl-holdings/{a11oy,killinchu}:uds-v0.2.0`), keyless
-  cosign-signed (Fulcio/Rekor) with an SLSA provenance attestation. Both
-  `cosign verify` and `cosign verify-attestation` pass on a clean-env pull.
-  The Zarf packages (`packages/{a11oy,killinchu}/`) pin these signed digests
-  (single-arch `manifest.v2`, `image-pin-guard`-safe).
+- **All five organ module images published & signed** — `a11oy`,
+  `killinchu`, `amaru`, `sentra` and `rosie` are in org GHCR
+  (`ghcr.io/szl-holdings/{a11oy,killinchu,amaru,sentra,rosie}:uds-v0.2.0`),
+  each built single-arch (`provenance: false`, plain `manifest.v2` — no OCI
+  index) and keyless cosign-signed (Fulcio/Rekor) with an SLSA provenance
+  attestation. For every organ, `cosign verify` and
+  `cosign verify-attestation --type slsaprovenance` pass on a clean-env pull
+  (legacy `.sig`/`.att` tag scheme that the box's cosign v2.4.1 reads). The
+  Zarf packages (`packages/{a11oy,killinchu,amaru,sentra,rosie}/`) pin these
+  signed digests (single-arch, `image-pin-guard`-safe).
   **Honest scope:** this proves each module image is published, signed, and
   individually deployable — it does **not** claim "all five modules boot
   together." The organs still deploy as **separate workloads**; cross-organ

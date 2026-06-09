@@ -31,7 +31,7 @@ metadata:
   url: "https://szlholdings.com"
   authors: "SZL Holdings <eng@szlholdings.com>"
   documentation: "https://github.com/szl-holdings/szl-uds-deployment"
-  image: "ghcr.io/szl-holdings/amaru:###ZARF_PKG_TMPL_VERSION###"
+  image: "ghcr.io/szl-holdings/amaru:uds-v0.2.0@sha256:53301e26adcde49e73df28d8c3b790f2496da9d495307fe8587ffa7452b289ff"
   uncompressed: false
 
 variables:
@@ -70,7 +70,7 @@ components:
       Deploy the amaru workload from the live signed image
       ghcr.io/szl-holdings/amaru:###ZARF_PKG_TMPL_VERSION###.
     images:
-      - ghcr.io/szl-holdings/amaru:###ZARF_PKG_TMPL_VERSION###
+      - ghcr.io/szl-holdings/amaru:uds-v0.2.0@sha256:53301e26adcde49e73df28d8c3b790f2496da9d495307fe8587ffa7452b289ff
     manifests:
       - name: szl-amaru-workload
         namespace: szl-amaru

@@ -33,7 +33,7 @@ spec:
         - name: amaru
           # Live, cosign-signed image. Zarf rewrites this to the in-cluster
           # registry reference at deploy time.
-          image: ghcr.io/szl-holdings/amaru:###ZARF_PKG_TMPL_VERSION###
+          image: ghcr.io/szl-holdings/amaru:uds-v0.2.0@sha256:53301e26adcde49e73df28d8c3b790f2496da9d495307fe8587ffa7452b289ff
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
