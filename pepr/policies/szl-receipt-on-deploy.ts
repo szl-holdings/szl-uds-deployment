@@ -184,6 +184,58 @@ async function postReceipt(envelope: object): Promise<string | null> {
   }
 }
 
+// ── Receipt flood guard: spec-change dedup + per-subject rate limit ────────────
+// The admission webhook below fires on every Deployment/Job CREATE *and* UPDATE.
+// Two failure modes flood the signer and balloon the chain:
+//   1) Status heartbeats / controller server-side-apply churn re-fire UPDATE
+//      events whose `.spec` is unchanged.
+//   2) A reconcile or delete/recreate hot-loop re-fires with a *changing* spec
+//      for the same subject many times per second.
+// We defend against both: skip when the spec is unchanged (dedup), and cap each
+// subject to at most one receipt per SZL_MIN_RECEIPT_INTERVAL_MS (rate limit).
+const MAX_DEDUP_ENTRIES = Number(process.env.SZL_DEDUP_MAX_ENTRIES ?? "10000");
+const MIN_RECEIPT_INTERVAL_MS = Number(process.env.SZL_MIN_RECEIPT_INTERVAL_MS ?? "2000");
+const _lastSpecHash = new Map<string, string>();
+const _lastMintAt = new Map<string, number>();
+
+function _evictOldest(): void {
+  if (_lastSpecHash.size > MAX_DEDUP_ENTRIES) {
+    const oldest = _lastSpecHash.keys().next().value;
+    if (oldest !== undefined) {
+      _lastSpecHash.delete(oldest);
+      _lastMintAt.delete(oldest);
+    }
+  }
+}
+
+/**
+ * True only when this (subject, specHash) should mint a receipt. Skips unchanged
+ * specs (dedup) and throttles bursts per subject (rate limit). Records the new
+ * spec hash + timestamp only on a real mint.
+ */
+function shouldEmitReceipt(subject: string, specHash: string): boolean {
+  // 1) spec-change dedup — an unchanged spec is update noise, never a receipt.
+  if (_lastSpecHash.get(subject) === specHash) {
+    Log.info(`[szl] Skipping ${subject} — spec unchanged (no receipt)`);
+    return false;
+  }
+  // 2) per-subject rate limit — cap reconcile/recreate storms. Do NOT record the
+  //    new spec hash while throttled, so the next event after the window still
+  //    sees a genuine change and mints.
+  if (MIN_RECEIPT_INTERVAL_MS > 0) {
+    const now = Date.now();
+    const last = _lastMintAt.get(subject) ?? 0;
+    if (now - last < MIN_RECEIPT_INTERVAL_MS) {
+      Log.info(`[szl] Throttling ${subject} — <${MIN_RECEIPT_INTERVAL_MS}ms since last receipt (no receipt)`);
+      return false;
+    }
+    _lastMintAt.set(subject, now);
+  }
+  _lastSpecHash.set(subject, specHash);
+  _evictOldest();
+  return true;
+}
+
 // ── Capability ────────────────────────────────────────────────────────────────
 
 export const szlReceiptPolicy = new Capability({
@@ -211,9 +263,16 @@ When(a.Deployment)
 
     const specHash = sha256(deploy.Raw.spec ?? {});
 
+    // Flood guard: the webhook fires on every CREATE *and* UPDATE; status
+    // heartbeats / controller SSA churn re-fire with an unchanged .spec. Mint a
+    // receipt only when the spec actually changes, so the chain tracks real
+    // deploys instead of update noise that overloads the signer.
+    const subject = `${namespace}/Deployment/${name}`;
+    if (!shouldEmitReceipt(subject, specHash)) return;
+
     const payload = {
       _type:       "https://szlholdings.com/receipt/v1",
-      subject:     `${namespace}/Deployment/${name}`,
+      subject,
       specHash,
       timestamp:   new Date().toISOString(),
       admissionOp: op,
@@ -252,9 +311,13 @@ When(a.Job)
 
     const specHash = sha256(job.Raw.spec ?? {});
 
+    // Flood guard: only mint on a genuine spec change (see Deployment handler).
+    const subject = `${namespace}/Job/${name}`;
+    if (!shouldEmitReceipt(subject, specHash)) return;
+
     const payload = {
       _type:       "https://szlholdings.com/receipt/v1",
-      subject:     `${namespace}/Job/${name}`,
+      subject,
       specHash,
       timestamp:   new Date().toISOString(),
       admissionOp: "CREATE",
