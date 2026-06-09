@@ -29,6 +29,13 @@ server:
   # The OCI image defaults to 8080; the chart sets it explicitly.
   port: 8080
 
+  # Number of most-recent receipts the server keeps in RAM (the live /receipts
+  # window). The full chain always stays on disk; this only bounds the in-memory
+  # working set so memory stays flat as the chain grows. Maps to
+  # SZL_MAX_IN_MEMORY_RECEIPTS (server.py default 2000). Lower it on tiny nodes,
+  # raise it for richer /receipts responses — no image rebuild required.
+  maxInMemoryReceipts: 2000
+
   resources:
     requests:
       cpu: "50m"

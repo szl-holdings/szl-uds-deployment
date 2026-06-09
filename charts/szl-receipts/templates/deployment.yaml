@@ -66,6 +66,10 @@ spec:
               value: "{{ .Values.server.logLevel }}"
             - name: SZL_RECEIPT_STORE
               value: "{{ .Values.server.persistence.mountPath }}"
+            # In-memory /receipts window (full chain stays on disk). Tunable
+            # per-deploy so the memory ceiling never requires an image rebuild.
+            - name: SZL_MAX_IN_MEMORY_RECEIPTS
+              value: "{{ .Values.server.maxInMemoryReceipts }}"
             # ── Ed25519 signing (PhD Crypto Finding A2) ──────────────────────
             - name: SZL_ED25519_KEY_PATH
               value: "{{ .Values.signing.keypair.mountPath }}/{{ .Values.signing.keypair.keyFile }}"
