@@ -1,0 +1,123 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# PrometheusRule — in-cluster deploy-receipt stall alarm.
+#
+# WHY THIS EXISTS
+# ---------------
+# The receipt-recording alarm previously lived ONLY as a host-level systemd
+# timer (`receipt-chain-watch`) on the box. That guard cannot catch its own
+# host going dark: if the box (or its systemd timer) dies, the alarm dies
+# silently with it. This PrometheusRule moves the same detection into the
+# cluster's own monitoring stack (kube-prometheus-stack / UDS Core Prometheus),
+# so the alarm is independent of any single host process. If the box is down,
+# Prometheus + Alertmanager still fire from inside the cluster.
+#
+# It reuses the existing, server-driven `/metrics` endpoint (Ed25519 at-rest
+# chain integrity scan — see services/szl-receipts-server/server.py marker
+# `SZL-METRICS-129`), scraped via the UDS Package `spec.monitor` ServiceMonitor.
+#
+# DETECTION (each rule maps to a fail-open failure mode)
+# ------------------------------------------------------
+#   SZLReceiptsSinkDown    — the receipts /metrics target is being scraped but
+#                            failing (up == 0): sink unhealthy / crash-looping.
+#                            Prometheus-native analog of the box guard's
+#                            "(c) sink unhealthy" signal.
+#   SZLReceiptsSinkAbsent  — the receipts metrics series are entirely gone
+#                            (target deleted / never came up). Covers the
+#                            teardown case where `up` has no series at all, so
+#                            SinkDown can't match. Together SinkDown+SinkAbsent
+#                            fully cover "the sink is down".
+#   SZLReceiptChainTampered— the at-rest integrity scan flipped szl_chain_valid
+#                            to 0 (a stored receipt was altered / a hash-link
+#                            broke). This is an IMPROVEMENT over the box guard,
+#                            which only watched recording, not at-rest integrity.
+#
+# HONEST SCOPE NOTE
+# -----------------
+# The box guard also watched pepr-side signals ("(a) dropped POSTs" from pepr
+# logs, "(b) pepr signed >=1 but server accepted 0"). pepr does not export those
+# to Prometheus here, and "chain not advancing" with no deploys happening is the
+# normal steady state — alerting on it would false-positive. So the in-cluster
+# rule covers the DOMINANT fail-open cause (sink down/unreachable) plus at-rest
+# tamper. The host-level guard remains complementary for the pepr-log signals.
+{{- if .Values.prometheusRule.enabled }}
+{{- $ns := .Release.Namespace }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Release.Name }}-receipt-chain
+  namespace: {{ .Values.prometheusRule.namespace | default .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: szl-receipts-server
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    szl.io/component: prometheus-rule
+    # kube-prometheus-stack's Prometheus discovers PrometheusRule objects via its
+    # `ruleSelector`. The proven box stack runs ruleSelector={} (selects all);
+    # stacks that pin a `release:` label can add it via prometheusRule.additionalLabels.
+    {{- with .Values.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: szl-receipts.chain
+      rules:
+        - alert: SZLReceiptsSinkDown
+          # The receipts /metrics target is registered but the scrape is failing.
+          # Scoped to the receipts namespace; the only ServiceMonitor target in
+          # this namespace is the receipts-server :8080/metrics endpoint.
+          expr: max by (namespace) (up{namespace="{{ $ns }}", job=~"szl-receipts.*"}) == 0
+          for: {{ .Values.prometheusRule.sinkDownFor | default "5m" }}
+          labels:
+            severity: critical
+            component: szl-receipts
+            szl_alarm: deploy-receipt-stall
+          annotations:
+            summary: "SZL deploy-receipt sink is DOWN (scrape failing)"
+            description: >-
+              The szl-receipts metrics endpoint in namespace {{ $ns }} has been
+              unreachable (up == 0) for {{ .Values.prometheusRule.sinkDownFor | default "5m" }}.
+              Signed DSSE deploy receipts POSTed by pepr-szl are fail-open, so
+              they are being SILENTLY DROPPED and the receipt chain has stopped
+              advancing. This alert is independent of the box's systemd timer.
+            runbook_url: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/README.md#receipt-chain-watch"
+
+        - alert: SZLReceiptsSinkAbsent
+          # No receipts chain series at all: the metrics target is gone entirely
+          # (pod/Service/ServiceMonitor deleted), so `up` has no series to be 0.
+          expr: absent(szl_chain_length{namespace="{{ $ns }}"})
+          for: {{ .Values.prometheusRule.sinkAbsentFor | default "10m" }}
+          labels:
+            severity: critical
+            component: szl-receipts
+            szl_alarm: deploy-receipt-stall
+          annotations:
+            summary: "SZL deploy-receipt sink is ABSENT (no metrics target)"
+            description: >-
+              No szl_chain_length series has been seen from namespace {{ $ns }}
+              for {{ .Values.prometheusRule.sinkAbsentFor | default "10m" }}. The
+              receipts metrics target has disappeared (workload torn down or never
+              started). The signed-receipt chain cannot be recorded. This alert is
+              independent of the box's systemd timer.
+            runbook_url: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/README.md#receipt-chain-watch"
+
+        - alert: SZLReceiptChainTampered
+          # The server's at-rest Ed25519 chain integrity scan (run on every
+          # /metrics scrape) found a broken receipt or hash-link.
+          expr: max by (namespace) (szl_chain_valid{namespace="{{ $ns }}"}) == 0
+          for: {{ .Values.prometheusRule.chainTamperFor | default "2m" }}
+          labels:
+            severity: critical
+            component: szl-receipts
+            szl_alarm: receipt-chain-tamper
+          annotations:
+            summary: "SZL receipt chain integrity BROKEN (tamper detected)"
+            description: >-
+              The szl-receipts at-rest integrity scan reports szl_chain_valid == 0
+              in namespace {{ $ns }} for {{ .Values.prometheusRule.chainTamperFor | default "2m" }}.
+              A stored receipt was altered or a hash-link in the chain broke. The
+              audit trail can no longer be trusted end-to-end — investigate
+              immediately.
+            runbook_url: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/README.md#receipt-chain-watch"
+{{- end }}

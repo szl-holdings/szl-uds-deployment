@@ -217,6 +217,22 @@ and writes `/var/lib/receipt-chain-watch/status.json`, so a broken notifier can
 never hide a stall. A stopped cluster or a cluster without the receipts module is
 a true no-op (no alarm).
 
+## Companion: in-cluster Prometheus rule (survives this box going dark)
+
+This host guard cannot catch its own host dying — if the box (or this systemd
+timer) goes dark, the alarm dies silently with it. A companion **PrometheusRule**
+ships in the chart at `charts/szl-receipts/templates/prometheusrule.yaml` (gated
+`prometheusRule.enabled`, default on) so the cluster's own Prometheus +
+Alertmanager fire the same deploy-receipt-stall alarm independently of this box.
+It reuses the server-driven `/metrics` (Ed25519 at-rest scan) scraped via the UDS
+Package `spec.monitor` ServiceMonitor, with three alerts:
+`SZLReceiptsSinkDown` (up==0 5m), `SZLReceiptsSinkAbsent`
+(absent(szl_chain_length) 10m), `SZLReceiptChainTampered` (szl_chain_valid==0 2m).
+Unit-tested with promtool + a render drift guard under
+`charts/szl-receipts/tests/alerts/` (`run-alert-tests.sh`). The two layers are
+complementary: this box guard additionally watches pepr-log signals (dropped
+POSTs / signed-but-not-accepted) that pepr does not export to Prometheus.
+
 ## Notification channel
 
 It pipes the alert text on STDIN to `NOTIFY_CMD` (default the box's working push

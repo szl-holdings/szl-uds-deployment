@@ -1,0 +1,60 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# Plain Prometheus rule file used ONLY by the promtool unit test
+# (tests/alerts/alerts_test.yaml). This is the helm-rendered equivalent of
+# charts/szl-receipts/templates/prometheusrule.yaml `.spec.groups`, rendered
+# with the default namespace `szl-receipts`. The runner script
+# (tests/alerts/run-alert-tests.sh) re-renders the chart and diffs the live
+# `.spec.groups` against this file so the two cannot silently drift.
+groups:
+  - name: szl-receipts.chain
+    rules:
+      - alert: SZLReceiptsSinkDown
+        expr: max by (namespace) (up{namespace="szl-receipts", job=~"szl-receipts.*"}) == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: szl-receipts
+          szl_alarm: deploy-receipt-stall
+        annotations:
+          summary: "SZL deploy-receipt sink is DOWN (scrape failing)"
+          description: >-
+            The szl-receipts metrics endpoint in namespace szl-receipts has been
+            unreachable (up == 0) for 5m. Signed DSSE deploy receipts POSTed by
+            pepr-szl are fail-open, so they are being SILENTLY DROPPED and the
+            receipt chain has stopped advancing. This alert is independent of the
+            box's systemd timer.
+          runbook_url: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/README.md#receipt-chain-watch"
+
+      - alert: SZLReceiptsSinkAbsent
+        expr: absent(szl_chain_length{namespace="szl-receipts"})
+        for: 10m
+        labels:
+          severity: critical
+          component: szl-receipts
+          szl_alarm: deploy-receipt-stall
+        annotations:
+          summary: "SZL deploy-receipt sink is ABSENT (no metrics target)"
+          description: >-
+            No szl_chain_length series has been seen from namespace szl-receipts
+            for 10m. The receipts metrics target has disappeared (workload torn
+            down or never started). The signed-receipt chain cannot be recorded.
+            This alert is independent of the box's systemd timer.
+          runbook_url: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/README.md#receipt-chain-watch"
+
+      - alert: SZLReceiptChainTampered
+        expr: max by (namespace) (szl_chain_valid{namespace="szl-receipts"}) == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: szl-receipts
+          szl_alarm: receipt-chain-tamper
+        annotations:
+          summary: "SZL receipt chain integrity BROKEN (tamper detected)"
+          description: >-
+            The szl-receipts at-rest integrity scan reports szl_chain_valid == 0
+            in namespace szl-receipts for 2m. A stored receipt was altered or a
+            hash-link in the chain broke. The audit trail can no longer be trusted
+            end-to-end — investigate immediately.
+          runbook_url: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/README.md#receipt-chain-watch"

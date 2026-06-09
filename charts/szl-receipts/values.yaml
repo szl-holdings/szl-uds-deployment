@@ -264,3 +264,23 @@ udsPackage:
         app.kubernetes.io/name: szl-receipts-server
       targetPort: 8080
       description: "SZL Receipts server metrics endpoint"
+
+# ── Prometheus alerting (in-cluster deploy-receipt stall alarm) ───────────────
+# Ships a PrometheusRule (templates/prometheusrule.yaml) consumed by the cluster
+# Prometheus (kube-prometheus-stack / UDS Core). This makes the receipt-stall
+# alarm independent of the box's host-level systemd timer (receipt-chain-watch):
+# if the box goes dark, Prometheus + Alertmanager still fire from in-cluster.
+# Reuses the server-driven /metrics endpoint scraped via udsPackage.monitor.
+prometheusRule:
+  enabled: true
+  # Extra labels merged onto the PrometheusRule. kube-prometheus-stack's
+  # Prometheus selects rules via its `ruleSelector`. The proven box stack runs
+  # ruleSelector={} (selects all); add e.g. `release: kube-prometheus-stack`
+  # here if your Prometheus pins a non-empty ruleSelector.
+  additionalLabels: {}
+  # Namespace for the PrometheusRule (defaults to the release namespace).
+  # namespace: monitoring
+  # Alert `for:` durations (how long the condition must hold before firing).
+  sinkDownFor: "5m"
+  sinkAbsentFor: "10m"
+  chainTamperFor: "2m"

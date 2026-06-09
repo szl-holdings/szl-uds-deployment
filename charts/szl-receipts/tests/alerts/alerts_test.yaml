@@ -1,0 +1,128 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# promtool unit tests for the in-cluster deploy-receipt stall alarm.
+# Run with:  promtool test rules tests/alerts/alerts_test.yaml
+# (or via tests/alerts/run-alert-tests.sh, which also diffs the rendered chart).
+#
+# Proves each alert fires under its failure condition AND that NO alert fires
+# while the receipts sink is healthy.
+rule_files:
+  - rules.rendered.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # ── 1. Sink DOWN: up == 0 -> SZLReceiptsSinkDown fires after 5m ───────────
+  - interval: 1m
+    input_series:
+      - series: 'up{namespace="szl-receipts", job="szl-receipts-server", pod="szl-receipts-server-abc"}'
+        values: '0+0x10'
+      # chain series still present (stale last value) so SinkAbsent must NOT fire
+      - series: 'szl_chain_length{namespace="szl-receipts", job="szl-receipts-server"}'
+        values: '42+0x10'
+      - series: 'szl_chain_valid{namespace="szl-receipts", job="szl-receipts-server"}'
+        values: '1+0x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: SZLReceiptsSinkDown
+        exp_alerts: []           # still within `for: 5m`, not yet firing
+      - eval_time: 6m
+        alertname: SZLReceiptsSinkDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: szl-receipts
+              szl_alarm: deploy-receipt-stall
+              namespace: szl-receipts
+            exp_annotations:
+              summary: "SZL deploy-receipt sink is DOWN (scrape failing)"
+              description: >-
+                The szl-receipts metrics endpoint in namespace szl-receipts has been
+                unreachable (up == 0) for 5m. Signed DSSE deploy receipts POSTed by
+                pepr-szl are fail-open, so they are being SILENTLY DROPPED and the
+                receipt chain has stopped advancing. This alert is independent of the
+                box's systemd timer.
+              runbook_url: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/README.md#receipt-chain-watch"
+      - eval_time: 6m
+        alertname: SZLReceiptsSinkAbsent
+        exp_alerts: []           # chain series present -> absent() must not fire
+
+  # ── 2. Sink ABSENT: no chain series at all -> SZLReceiptsSinkAbsent fires ──
+  - interval: 1m
+    input_series:
+      # Only an unrelated series exists; szl_chain_length never appears.
+      - series: 'up{namespace="kube-system", job="kubelet"}'
+        values: '1+0x15'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: SZLReceiptsSinkAbsent
+        exp_alerts: []           # within `for: 10m`
+      - eval_time: 11m
+        alertname: SZLReceiptsSinkAbsent
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: szl-receipts
+              szl_alarm: deploy-receipt-stall
+              # absent(szl_chain_length{namespace="szl-receipts"}) carries the
+              # equality-matched namespace label through into the alert.
+              namespace: szl-receipts
+            exp_annotations:
+              summary: "SZL deploy-receipt sink is ABSENT (no metrics target)"
+              description: >-
+                No szl_chain_length series has been seen from namespace szl-receipts
+                for 10m. The receipts metrics target has disappeared (workload torn
+                down or never started). The signed-receipt chain cannot be recorded.
+                This alert is independent of the box's systemd timer.
+              runbook_url: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/README.md#receipt-chain-watch"
+
+  # ── 3. Tamper: szl_chain_valid == 0 -> SZLReceiptChainTampered fires ──────
+  - interval: 1m
+    input_series:
+      - series: 'up{namespace="szl-receipts", job="szl-receipts-server"}'
+        values: '1+0x10'
+      - series: 'szl_chain_length{namespace="szl-receipts", job="szl-receipts-server"}'
+        values: '42+0x10'
+      - series: 'szl_chain_valid{namespace="szl-receipts", job="szl-receipts-server"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: SZLReceiptChainTampered
+        exp_alerts: []           # within `for: 2m`
+      - eval_time: 3m
+        alertname: SZLReceiptChainTampered
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: szl-receipts
+              szl_alarm: receipt-chain-tamper
+              namespace: szl-receipts
+            exp_annotations:
+              summary: "SZL receipt chain integrity BROKEN (tamper detected)"
+              description: >-
+                The szl-receipts at-rest integrity scan reports szl_chain_valid == 0
+                in namespace szl-receipts for 2m. A stored receipt was altered or a
+                hash-link in the chain broke. The audit trail can no longer be trusted
+                end-to-end — investigate immediately.
+              runbook_url: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/README.md#receipt-chain-watch"
+
+  # ── 4. HEALTHY: sink up, chain advancing, valid=1 -> NO alerts fire ───────
+  - interval: 1m
+    input_series:
+      - series: 'up{namespace="szl-receipts", job="szl-receipts-server"}'
+        values: '1+0x15'
+      - series: 'szl_chain_length{namespace="szl-receipts", job="szl-receipts-server"}'
+        values: '40+1x15'        # chain advancing
+      - series: 'szl_chain_valid{namespace="szl-receipts", job="szl-receipts-server"}'
+        values: '1+0x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SZLReceiptsSinkDown
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: SZLReceiptsSinkAbsent
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: SZLReceiptChainTampered
+        exp_alerts: []
