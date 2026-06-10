@@ -1,0 +1,84 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# receipt-ingest-guard.yml — Guard the szl-receipts SERVER-SIDE ingest rate limit.
+#
+# This is the SECOND, independent layer of the receipt-flood defense. The first
+# layer is the pepr webhook gate (pepr/policies/szl-receipt-on-deploy.ts, guarded
+# by receipt-flood-guard.yml). Because the pepr POST path is fail-OPEN, if that
+# layer is ever bypassed/disabled — or any non-pepr emitter starts looping — the
+# only thing between a runaway loop and an OOM/CPU-starved 2-vCPU box (chain
+# observed past 267k, repeated OOMKills) is the chain authority's OWN token-bucket
+# cap on POST /receipt in services/szl-receipts-server/server.py:
+#   - _ingest_allowed() refills SZL_INGEST_RATE_LIMIT tokens/sec up to
+#     SZL_INGEST_BURST and consumes one per accepted receipt;
+#   - POST /receipt sheds with HTTP 429 BEFORE signing/appending when empty;
+#   - shed requests bump szl_receipts_throttled_total so shedding is observable.
+#
+# Nothing else stops a future edit (or a sibling on the shared box working tree)
+# from silently deleting that cap and reopening the flood.
+#
+# The actual check logic lives in scripts/receipt-ingest-checks.sh (pure grep/awk,
+# no cluster needed). It was extracted so it can be UNIT TESTED:
+# scripts/receipt-ingest-checks.test.sh feeds each check a deliberately BROKEN copy
+# of the guarded files and asserts the check FAILS, plus asserts the pristine copy
+# PASSES. That self-test runs as the `self-test` job below, so a future edit that
+# neuters a check (making it pass vacuously — green while guarding nothing) is
+# caught here, not in production.
+#
+# The invariants:
+#   1. _ingest_allowed() is an env-driven token bucket (SZL_INGEST_RATE_LIMIT /
+#      SZL_INGEST_BURST) with a shed path.
+#   2. POST /receipt sheds floods with HTTP 429 + return BEFORE signing.
+#   3. The shed path increments _counter_throttled and exports
+#      szl_receipts_throttled_total in /metrics.
+#   4. The Helm chart exposes server.ingest.{rateLimit,burst} and the Deployment
+#      wires both into the pod env.
+
+name: Receipt Ingest Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves each check
+  # still fails on bad input (i.e. is not silently passing). The guard job depends
+  # on it so a broken check blocks the build before it can wave a regression
+  # through.
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/receipt-ingest-checks.test.sh
+
+  guard:
+    name: Assert server-side ingest-rate-limit invariants
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Invariant 1 — env-driven token-bucket limiter
+        run: bash scripts/receipt-ingest-checks.sh inv1 .
+
+      - name: Invariant 2 — POST /receipt sheds with 429 before signing
+        run: bash scripts/receipt-ingest-checks.sh inv2 .
+
+      - name: Invariant 3 — shed path is observable (throttled counter + metric)
+        run: bash scripts/receipt-ingest-checks.sh inv3 .
+
+      - name: Invariant 4 — Helm wiring of the ingest cap is intact
+        run: bash scripts/receipt-ingest-checks.sh inv4 .
+
+      - name: All ingest-rate-limit invariants hold
+        run: echo "All four szl-receipts server-side ingest-rate-limit invariants are intact."
