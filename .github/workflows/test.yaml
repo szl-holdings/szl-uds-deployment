@@ -406,8 +406,113 @@ jobs:
       - name: Install k3d
         run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
 
-      - name: Run test-install
-        run: uds run test-install
+      - name: Install kubectl
+        run: |
+          curl -sLO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+          kubectl version --client
+
+      - name: Install cryptography (Ed25519 / DSSE chain verify)
+        # scripts/verify_receipts.sh verifies every receipt's Ed25519 signature
+        # over the canonical DSSE PAE using python3 'cryptography' (public-key only).
+        run: pip install cryptography
+
+      # ── Real-cluster deploy: UDS Core + the canonical szl-receipts package ───────
+      # We deploy the published k3d-core-slim-dev bundle (creates the k3d cluster and
+      # installs UDS Core: Istio + the Pepr UDS Operator + Keycloak + Prometheus).
+      # UDS Core is required because the canonical receipts package applies a UDS
+      # Package CR and a UDS Exemption CR (uds.dev/v1alpha1) — without the operator
+      # CRDs the deploy cannot render — and because the keygen hook runs as root and
+      # is only admitted via the RequireNonRootUser Exemption the operator enforces.
+      - name: Deploy UDS Core (k3d-core-slim-dev)
+        run: |
+          uds deploy oci://ghcr.io/defenseunicorns/bundles/k3d-core-slim-dev:1.5.0 \
+            --confirm --no-progress
+
+      - name: Build szl-receipts-server image into local Docker
+        # Build the image locally so `zarf package create` bakes it without depending
+        # on the published GHCR tag being reachable from the runner.
+        run: |
+          docker build -t ghcr.io/szl-holdings/szl-receipts-server:uds-v0.4.0 \
+            services/szl-receipts-server
+
+      - name: Build + deploy the szl-receipts Zarf package
+        # The canonical package (packages/szl-receipts) provisions the Ed25519 signing
+        # key via the real szl-key-init keygen Helm hook (its own RBAC + the
+        # RequireNonRootUser Exemption), creates the szl-receipts namespace, and mounts
+        # the key Secret into szl-receipts-server at SZL_ED25519_KEY_PATH. The package's
+        # onDeploy step already waits for the Deployment to be Available.
+        run: |
+          zarf package create packages/szl-receipts \
+            --flavor upstream \
+            --set DOMAIN=uds.dev \
+            --confirm --no-progress
+          zarf package deploy zarf-package-szl-receipts-*.tar.zst \
+            --confirm --no-progress
+
+      # ── Release gate: prove the DEPLOYED server actually signs on a real cluster ──
+      # This is the check the lint job (bare-process scheme test) cannot make: it runs
+      # against the in-cluster Helm/Zarf deployment, so it catches real-wiring breaks
+      # (key Secret not mounted, wrong mount path / key file name, keygen RBAC denied).
+      - name: Verify in-cluster receipt signing (Ed25519 / DSSE on the deployed package)
+        run: |
+          set -euo pipefail
+          NS=szl-receipts
+          SVC=szl-receipts-server
+
+          echo "── Waiting for ${SVC} to be Available ─────────────────────────────"
+          kubectl -n "$NS" rollout status deployment/"$SVC" --timeout=180s
+          kubectl -n "$NS" get pods -o wide
+
+          echo "── Port-forward for /pubkey + POST /receipt ───────────────────────"
+          kubectl -n "$NS" port-forward "svc/$SVC" 18080:8080 >/tmp/pf.log 2>&1 &
+          PF=$!
+          trap 'kill $PF 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            curl -sf http://localhost:18080/pubkey >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+          # (1) FAIL LOUD if the in-cluster server is UNSIGNED (key Secret not mounted).
+          PUB="$(curl -sf http://localhost:18080/pubkey)"
+          echo "pubkey: $PUB"
+          PUB="$PUB" python3 - <<'PY'
+          import json, os, sys
+          d = json.loads(os.environ["PUB"])
+          if not d.get("signed") or not d.get("public_key_b64u"):
+              sys.stderr.write(
+                  "FATAL: in-cluster szl-receipts-server is UNSIGNED — the Ed25519 key "
+                  "Secret was not mounted. Check the szl-key-init keygen RBAC, the chart "
+                  "secretName/keyFile, and the SZL_ED25519_KEY_PATH mount.\n")
+              sys.exit(1)
+          print("OK: server reports signed=true with a published Ed25519 public key.")
+          PY
+
+          # (2) POST a receipt; assert the server signed + self-verified it (valid:true).
+          RESP="$(curl -sf -X POST http://localhost:18080/receipt \
+            -H 'Content-Type: application/json' \
+            -d '{"kind":"ci-e2e","actor":"test-install","detail":"release-gate signing check"}')"
+          echo "receipt: $RESP"
+          RESP="$RESP" python3 - <<'PY'
+          import json, os, sys
+          d = json.loads(os.environ["RESP"])
+          if d.get("valid") is not True:
+              sys.stderr.write("FATAL: POST /receipt did not return valid:true: %r\n" % (d,))
+              sys.exit(1)
+          ci = (d.get("chain") or {}).get("chain_index")
+          print("OK: server signed a fresh receipt and self-verified valid=true (chain_index=%s)." % ci)
+          PY
+
+          kill $PF 2>/dev/null || true
+          trap - EXIT
+          sleep 1
+
+          # (3) Independent offline chain verification (cluster mode): verify_receipts.sh
+          #     does its own port-forward to :9999, pulls /pubkey + /receipts, and
+          #     verifies every receipt's Ed25519 signature over the DSSE PAE plus the
+          #     SHA-256 hash-chain link. Exits non-zero if any receipt fails.
+          echo "── scripts/verify_receipts.sh (cluster mode) ──────────────────────"
+          bash scripts/verify_receipts.sh
 
   # ── Upgrade test (requires cluster — manual dispatch only) ────────────────
   test-upgrade:
