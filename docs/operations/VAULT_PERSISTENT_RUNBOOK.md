@@ -251,14 +251,16 @@ the correct `vault operator init` output to `/root/vault-init/init.json`
 genuinely new (that destroys the old Transit key + receipt chain — see §6).
 
 This remains a demo/single-node convenience: the key sits next to the sealed
-data. Production must move to KMS / Transit auto-unseal (§6).
+data. Once the box is migrated to OCI KMS auto-unseal (§6a) this helper detects
+seal type != shamir and **self-retires** (true no-op), and its timer + the
+on-box init.json can be removed.
 
 ## 6. Production hardening (what this demo is NOT)
 
-- **Auto-unseal.** File + Shamir means a human unsedeal after every restart.
-  For production use **Integrated Storage (raft)** across ≥3 replicas with
-  **auto-unseal** (cloud KMS or a Transit auto-unseal Vault) so restarts are
-  hands-off. Then §2's manual unseal disappears.
+- **Auto-unseal.** File + Shamir means a human unseal after every restart.
+  This box now has a FREE real auto-unseal path -- **OCI KMS** (see §6a) --
+  which removes the on-box unseal key entirely. For HA also use **Integrated
+  Storage (raft)** across ≥3 replicas. Then §2's manual unseal disappears.
 - **Unseal-key custody.** Split shares (e.g. 5/3) across operators/KMS; never
   store all shares together; rotate the root token (`vault token revoke`) after
   setup and operate with scoped tokens.
@@ -266,3 +268,61 @@ data. Production must move to KMS / Transit auto-unseal (§6).
   listener or rely on the service mesh's mTLS; for an external Vault, enable the
   listener cert and set `signing.vault.caCertSecret`.
 - **Audit.** Enable a Vault audit device (`vault audit enable file`).
+
+
+## 6a. Free real auto-unseal via OCI KMS (Task #625)
+
+The single-node box originally kept the Shamir unseal key on-box in
+`/root/vault-init/init.json`, next to the sealed data -- so a stolen disk/backup
+carried both halves. This section moves the box to **real auto-unseal** using
+**Oracle Cloud (OCI) KMS**, the one genuinely-free cloud KMS:
+
+  * OCI "Always Free" includes the Vault/KMS service (default Virtual Vault,
+    20 key versions, **$0/key, $0 API calls, no time limit**).
+  * Vault **community** edition supports `seal "ocikms"` auto-unseal on all
+    versions (verified on this box's Vault 1.18.5). Only seal-*wrapping* of
+    individual secrets needs Enterprise -- we do not use that.
+  * The unseal master key is wrapped by an OCI-held key the box never stores, so
+    `init.json` can be deleted from the box.
+
+**One-time OCI setup (free account):**
+  1. Create a free OCI account (Always Free; signup needs a card but Always-Free
+     resources are never charged).
+  2. Identity & Security -> Vault -> create a Vault -> create a Master Encryption
+     Key (AES, 256-bit). Copy the **key OCID** and the vault's **crypto** and
+     **management** endpoints.
+  3. Identity -> your User -> API Keys -> Add API Key (let OCI generate the
+     keypair). Download the **private key (.pem)**; note the **fingerprint**,
+     **user OCID**, **tenancy OCID**, and **region**.
+  4. Build an OCI SDK config file with tenancy/user/fingerprint/region and
+     `key_file=/home/vault/.oci/oci_api_key.pem`.
+
+**Migrate (no signing-key loss):**
+```
+export OCI_KEY_ID=ocid1.key.oc1...
+export OCI_CRYPTO_ENDPOINT=https://<prefix>-crypto.kms.<region>.oraclecloud.com
+export OCI_MGMT_ENDPOINT=https://<prefix>-management.kms.<region>.oraclecloud.com
+export OCI_CONFIG_FILE=/root/oci/config
+export OCI_API_KEY_PEM=/root/oci/oci_api_key.pem
+scripts/vault-seal-migrate-ocikms.sh
+```
+The script backs up the full Vault keystore first, mounts the OCI API key as the
+`vault-ocikms` Secret, adds the `seal "ocikms"` stanza, runs
+`vault operator unseal -migrate` (shamir -> ocikms), then **proves** Vault
+auto-unseals across a restart AND that the szl-receipts public key is unchanged
+(the Transit signing key lives inside the barrier and is not re-keyed by a seal
+change). Seal stanza template: `k8s/vault/vault-seal-ocikms.example.hcl`.
+
+**After migration:**
+  * Keep ONE copy of the old Shamir key OFF the box (break-glass recovery key);
+    `shred -u` the on-box `/root/vault-init*` copies.
+  * `box-scripts/sbin/vault-auto-unseal` detects seal type `!= shamir` and
+    self-retires (true no-op); `systemctl disable --now vault-auto-unseal.timer`.
+  * Persist the seal stanza in `k8s/vault/vault-persistent.yaml` (keep the OCI
+    API key only in the Secret, never in git).
+
+**Sovereign alternative (also free):** run a small Vault on an OCI **Always Free
+Ampere A1** VM with the Transit secrets engine and point this box's seal at it
+(`seal "transit"`). That keeps the wrapping key under SZL control instead of
+Oracle's, at the cost of maintaining a second Vault. Migration mechanics are
+identical (`-migrate`); only the seal stanza differs.

@@ -206,6 +206,25 @@ nudge_receipts() {
   log "receipts still signed=${signed:-unreachable} after polling; the server watchdog keeps retrying every SZL_SIGNER_RECHECK_INTERVAL — NOT restarting the pod (recovery is autonomous). Investigate if this persists."
 }
 
+# --- Self-retirement: real auto-unseal makes this Shamir helper obsolete -----
+# Task #625: once the Vault is migrated to OCI KMS / Transit auto-unseal, its
+# seal type is no longer "shamir". This helper must NOT replay Shamir shares
+# against an auto-seal Vault (and the on-box init.json is removed after the
+# migration). Probe the live seal type early; if it is a real auto-unseal type,
+# log once and exit 0 (true no-op) so the timer can stay installed harmlessly
+# until it is removed (see VAULT_PERSISTENT_RUNBOOK Section 6a).
+_RET_KC="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" && {
+  if KUBECONFIG="$_RET_KC" kubectl --request-timeout=20s -n "$NS" get deploy "$DEPLOY" >/dev/null 2>&1; then
+    _RET_TYPE="$(KUBECONFIG="$_RET_KC" kubectl --request-timeout=30s -n "$NS" exec "deploy/$DEPLOY" -- \
+      sh -c 'VAULT_ADDR=http://127.0.0.1:8200 vault status -format=json' 2>/dev/null \
+      | python3 -c 'import sys,json;print(json.load(sys.stdin).get("type",""))' 2>/dev/null)"
+    if [ -n "$_RET_TYPE" ] && [ "$_RET_TYPE" != "shamir" ]; then
+      log "Vault seal type is '$_RET_TYPE' (real auto-unseal active) -- this Shamir helper is RETIRED; no-op. Safe to remove vault-auto-unseal.timer + on-box init.json (runbook 6a)."
+      exit 0
+    fi
+  fi
+}
+
 # --- Custody guard: the unseal-key file must exist and be root-only ---------
 if [ ! -f "$INIT_JSON" ]; then
   log "FATAL: $INIT_JSON not found — cannot auto-unseal. (Has Vault been initialised? See VAULT_PERSISTENT_RUNBOOK §2.)"
