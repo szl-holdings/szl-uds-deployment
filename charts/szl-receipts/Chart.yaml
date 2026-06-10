@@ -7,8 +7,8 @@ description: >-
   cryptographic governance receipts to every Kubernetes workload deployment.
   Runs as a UDS add-on alongside uds-core. Does not modify uds-core internals.
 type: application
-version: 0.4.0
-appVersion: "0.4.0"
+version: 0.4.1
+appVersion: "0.4.1"
 keywords:
   - szl
   - receipts
