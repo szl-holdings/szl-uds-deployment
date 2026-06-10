@@ -48,6 +48,7 @@ install -m 0755 "$here/sbin/a11oy-uptime-notify"       /usr/local/sbin/a11oy-upt
 install -m 0755 "$here/sbin/dns-drift-check"           /usr/local/sbin/dns-drift-check
 install -m 0755 "$here/sbin/box-scripts-drift-check"     /usr/local/sbin/box-scripts-drift-check
 install -m 0755 "$here/sbin/szl-alert-relay"           /usr/local/sbin/szl-alert-relay
+install -m 0755 "$here/sbin/vault-auto-unseal"          /usr/local/sbin/vault-auto-unseal
 
 echo "[install] copying systemd units to /etc/systemd/system ..."
 install -m 0644 "$here/systemd/a11oy-coexist.service"        /etc/systemd/system/a11oy-coexist.service
@@ -78,6 +79,8 @@ install -m 0644 "$here/systemd/dns-drift-check.timer"       /etc/systemd/system/
 install -m 0644 "$here/systemd/box-scripts-drift-check.service" /etc/systemd/system/box-scripts-drift-check.service
 install -m 0644 "$here/systemd/box-scripts-drift-check.timer"   /etc/systemd/system/box-scripts-drift-check.timer
 install -m 0644 "$here/systemd/szl-alert-relay.service"      /etc/systemd/system/szl-alert-relay.service
+install -m 0644 "$here/systemd/vault-auto-unseal.service"   /etc/systemd/system/vault-auto-unseal.service
+install -m 0644 "$here/systemd/vault-auto-unseal.timer"     /etc/systemd/system/vault-auto-unseal.timer
 
 # The uptime/DNS watchers read their push-notification channel from
 # /etc/a11oy-uptime.env. That channel is a PRIVATE secret (an ntfy topic, etc.)
@@ -216,6 +219,7 @@ systemctl enable --now szl-ns-scratch-stale-watch.timer
 systemctl enable --now a11oy-uptime-check.timer
 systemctl enable --now dns-drift-check.timer
 systemctl enable --now box-scripts-drift-check.timer
+systemctl enable --now vault-auto-unseal.timer
 systemctl enable --now szl-alert-relay.service
 
 # Bring the cluster guards into a conformant state right now (idempotent no-ops
