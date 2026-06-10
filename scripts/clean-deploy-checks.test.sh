@@ -194,7 +194,7 @@ expect_fail inv4 "$F" "inv4: exemption reordered after key-init"
 
 # --- Invariant 4: server image tag downgraded ---
 F="$(new_fixture)"
-sed -i 's#szl-receipts-server:uds-v0.4.0#szl-receipts-server:uds-v0.3.1#g' "$F/$ZARF"
+sed -i 's#szl-receipts-server:uds-v0.4.1#szl-receipts-server:uds-v0.3.1#g' "$F/$ZARF"
 expect_fail inv4 "$F" "inv4: image tag downgraded to uds-v0.3.1"
 
 # --- Invariant 5: SMALL_SERVER_RIGHTSIZE variable removed ---
