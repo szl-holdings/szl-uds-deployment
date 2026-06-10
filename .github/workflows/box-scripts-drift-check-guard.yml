@@ -1,0 +1,79 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# box-scripts-drift-check-guard.yml — Guard the box-scripts-drift-check watcher
+# (the alarm that catches the box's host-level helper scripts/units drifting
+# from their committed box-scripts/ copies) AND its opt-in SELF_HEAL=1
+# auto-repair mode from silently regressing.
+#
+# box-scripts/sbin/box-scripts-drift-check has two behaviours that both produce
+# NO visible symptom when broken until a real drift goes unalerted or
+# un-repaired:
+#   * DETECTION-ONLY (default): edge-triggered DRIFT alert on the healthy->drift
+#     edge, de-duped so a persisting drift never spams, RECOVERED when it clears.
+#   * SELF_HEAL=1 (opt-in, added so the committed copy can be the source of
+#     truth): on the drift edge it re-installs each drifted host file from its
+#     committed copy, runs daemon-reload if a unit changed, pushes REPAIRED, and
+#     leaves an un-healable REPO-MISSING host file untouched.
+# Until now the only proof of either path was a manual throwaway-tree recipe in
+# box-scripts/box-scripts-drift-check.README.md. A sibling refactor could quietly
+# neuter detection or self-heal and nothing would notice.
+#
+# scripts/box-scripts-drift-check-guard.sh lifts that recipe into CI: it RUNS the
+# real watcher end-to-end against a temp tree (no cluster, no root) via its
+# overridable env vars (REPO/BOX_SCRIPTS/SBIN_DIR/UNIT_DIR/STATE_DIR/STATUS/
+# SIG_FILE/HEAL_TS_FILE/HEAL_RESULT_FILE, NOTIFY_CMD=cat, DAEMON_RELOAD_CMD stub,
+# INSTALL_CMD) and asserts the actual behaviour:
+#   detection: clean baseline -> one DRIFT push on the edge (host untouched) ->
+#     persisting drift de-duped (no repeat) -> RECOVERED when cleared;
+#   self-heal: DRIFT edge still alerts + REPAIRED push, drifted script AND unit
+#     restored from their committed copies, daemon-reload fired, next cycle
+#     RECOVERED, and an un-healable REPO-MISSING host file left untouched.
+#
+# scripts/box-scripts-drift-check-guard.test.sh is a negative-fixture self-test:
+# it applies deliberate regressions to a COPY of the watcher (neuter push, drop
+# self-heal, kill de-dup, drop RECOVERED) and asserts the guard FAILS on each,
+# so the guard can't pass vacuously. It runs as the `self-test` job below, which
+# the guard job depends on.
+
+name: Box Scripts Drift-Check Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves the
+  # guard's assertions still FAIL on a broken watcher (i.e. are not silently
+  # passing). The guard job depends on it so a broken assertion blocks the build
+  # before it can wave a regression through.
+  self-test:
+    name: Self-test the guard (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/box-scripts-drift-check-guard.test.sh
+
+  guard:
+    name: Drive box-scripts-drift-check end-to-end
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Watcher parses clean (bash -n)
+        run: bash -n box-scripts/sbin/box-scripts-drift-check
+
+      - name: Detection + self-heal behave correctly against a temp tree
+        run: bash scripts/box-scripts-drift-check-guard.sh
+
+      - name: box-scripts-drift-check detection + self-heal are intact
+        run: echo "The box-scripts-drift-check detection-only and SELF_HEAL=1 paths are intact."
