@@ -185,23 +185,40 @@ jobs:
           syft-version: ${{ env.SYFT_VERSION }}
 
       # ── Log in to ghcr.io ──────────────────────────────────────────────────
-      # The published bundle package (ghcr.io/szl-holdings/szl-uds-bundle) is an
-      # org-level GHCR package whose Actions/repo linkage points at a DIFFERENT
-      # repo (szl-holdings/uds-bundles), so the built-in GITHUB_TOKEN from THIS
-      # repo is rejected at push time with
-      #   403 denied: permission_denied: write_package
-      # There is no public REST API to re-link an existing org package to a repo
-      # (web UI only). The automatable fix is to authenticate the push with an
-      # org-owner PAT (secret GHCR_PUBLISH_TOKEN, scope write:packages) — an org
-      # owner can write any org package regardless of which repo it is linked to.
-      # uds publish + keyless cosign both reuse these docker credentials to push
-      # the bundle and its .sig to GHCR.
       - name: Log in to ghcr.io
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GHCR_PUBLISH_TOKEN }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Pre-warm large organ image layers into the Zarf cache (resumable) ──
+      # amaru (and to a lesser extent rosie) carry a fat single layer (~363MB)
+      # that repeatedly stalls/EOFs on the GHCR CDN. Both `zarf` and `docker`
+      # image pulls are NON-resumable (a stall restarts from byte 0), so one CDN
+      # hiccup would fail `zarf package create` for the whole organ. We pre-fetch
+      # every blob of each digest-pinned organ image into the Zarf image cache
+      # with a resumable curl + retry loop FIRST; zarf then cache-hits and skips
+      # the fragile pull. Best-effort: a miss falls through to zarf's own pull,
+      # which the retry wrapper in the build step below also covers.
+      - name: Pre-warm organ image layers into the Zarf cache (resumable)
+        env:
+          GHCR_BEARER: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          chmod +x scripts/prewarm-ghcr-blobs.sh
+          for organ in amaru rosie a11oy sentra killinchu; do
+            ref="$(grep -oE 'ghcr\.io/szl-holdings/[a-z0-9._/-]+@sha256:[0-9a-f]{64}' "packages/${organ}/zarf.yaml" | head -1 || true)"
+            if [ -z "${ref}" ]; then
+              echo "packages/${organ}/zarf.yaml has no digest-pinned image; zarf will pull it by tag"
+              continue
+            fi
+            echo "::group::pre-warm ${organ} ${ref}"
+            scripts/prewarm-ghcr-blobs.sh "${ref}" \
+              || echo "::warning title=prewarm-${organ}::pre-warm incomplete; zarf will attempt its own pull"
+            echo "::endgroup::"
+          done
 
       # ── Build the 5 member Zarf packages from the LIVE ghcr.io images ───────
       # Each packages/<organ>/zarf.yaml references
@@ -226,12 +243,21 @@ jobs:
           # annotations on failure and stop at the first failing organ.
           for organ in killinchu rosie a11oy sentra amaru; do
             echo "::group::zarf package create packages/${organ}"
-            zarf package create "packages/${organ}" \
-              --set VERSION="${PKG_VERSION}" \
-              --architecture "${{ matrix.arch }}" \
-              --confirm \
-              --output-directory dist > "/tmp/${organ}.log" 2>&1
-            RC=$?
+            # zarf image pulls are non-resumable; a transient GHCR stall would
+            # fail the whole create. Blobs are pre-warmed above, but retry with
+            # backoff so any not-pre-warmed pull also survives a transient hiccup.
+            RC=0
+            for attempt in 1 2 3; do
+              zarf package create "packages/${organ}" \
+                --set VERSION="${PKG_VERSION}" \
+                --architecture "${{ matrix.arch }}" \
+                --confirm \
+                --output-directory dist > "/tmp/${organ}.log" 2>&1
+              RC=$?
+              [ "${RC}" -eq 0 ] && break
+              echo "zarf package create ${organ} failed (attempt ${attempt}/3, rc=${RC}); retrying after backoff" >> "/tmp/${organ}.log"
+              sleep $(( attempt * 15 ))
+            done
             echo "::endgroup::"
             cat "/tmp/${organ}.log" || true
             # Always emit one ::error:: per organ (these reliably surface in the
