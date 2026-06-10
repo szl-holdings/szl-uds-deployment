@@ -27,6 +27,10 @@ BRANCH="${KILLINCHU_BRANCH:-main}"
 IMAGE="${KILLINCHU_IMAGE:-killinchu:local}"
 CONTAINER="${KILLINCHU_CONTAINER:-killinchu}"
 PORT_BIND="${KILLINCHU_PORT_BIND:-127.0.0.1:7862:7860}"
+# contracting-env-file-patch: inject operator-supplied container env (org registration
+# facts / secrets) from a root-only file that is NEVER committed to git.
+# Absent file => no-op (honest unknowns). Holds SZL_CONTRACTING_* values.
+ENV_FILE="${KILLINCHU_ENV_FILE:-/etc/szl-contracting.env}"
 # Host:port the recreated container is reachable on (derived from PORT_BIND's host
 # side) for the live endpoint probe.
 HEALTH_HOSTPORT="${KILLINCHU_HEALTH_HOSTPORT:-127.0.0.1:7862}"
@@ -211,6 +215,7 @@ else
   log "watchlist alerts -> ntfy channel not configured (in-app only)"
 fi
 
+[ -f "$ENV_FILE" ] && RUN_ENV+=(--env-file "$ENV_FILE")  # contracting-env-file-patch
 docker run -d --name "$CONTAINER" --restart unless-stopped -p "$PORT_BIND" \
   ${RUN_ENV[@]+"${RUN_ENV[@]}"} "$IMAGE" >/dev/null \
   || fail "docker run failed" 7

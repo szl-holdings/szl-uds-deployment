@@ -24,6 +24,10 @@ BRANCH="${A11OY_BRANCH:-main}"
 IMAGE="${A11OY_IMAGE:-a11oy:local}"
 CONTAINER="${A11OY_CONTAINER:-a11oy}"
 PORT_BIND="${A11OY_PORT_BIND:-127.0.0.1:7861:7860}"
+# contracting-env-file-patch: inject operator-supplied container env (org registration
+# facts / secrets) from a root-only file that is NEVER committed to git.
+# Absent file => no-op (honest unknowns). Holds SZL_CONTRACTING_* values.
+ENV_FILE="${A11OY_ENV_FILE:-/etc/szl-contracting.env}"
 # Published Hugging Face Space that holds the feature files never back-ported to
 # GitHub (real 3-way drift). Public repo → cloned anonymously, LFS smudge skipped
 # (the overlay files are plain .py/.json/.js/.txt, never LFS).
@@ -145,7 +149,8 @@ fi
 
 log "Recreating container $CONTAINER ..."
 docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-docker run -d --name "$CONTAINER" --restart unless-stopped -p "$PORT_BIND" "$IMAGE" >/dev/null \
+ENV_ARGS=(); [ -f "$ENV_FILE" ] && ENV_ARGS+=(--env-file "$ENV_FILE")  # contracting-env-file-patch
+docker run -d --name "$CONTAINER" --restart unless-stopped -p "$PORT_BIND" "${ENV_ARGS[@]}" "$IMAGE" >/dev/null \
   || fail "docker run failed" 7
 
 sleep 3
