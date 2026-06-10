@@ -23,6 +23,7 @@
 #   UDS Pattern guide: https://uds.defenseunicorns.com/docs/
 #   Andrew Greene Option A endorsement: 2026-05-22
 
+{{- if .Values.udsPackage.enabled }}
 apiVersion: uds.dev/v1alpha1
 kind: Package
 metadata:
@@ -124,3 +125,4 @@ spec:
       targetPort: 8080
       path: /metrics
       description: "SZL Receipts Prometheus metrics"
+{{- end }}
