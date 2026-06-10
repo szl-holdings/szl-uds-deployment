@@ -214,15 +214,15 @@ Each `Package` (`apiVersion: uds.dev/v1alpha1`, `kind: Package`) declares `spec.
 ### 4.1 — cosign verify the bundle signature (keyless OIDC)
 ```bash
 cosign verify ghcr.io/szl-holdings/szl-mesh:0.4.0 \
-  --certificate-identity-regexp="^https://github.com/szl-holdings/" \
+  --certificate-identity="https://github.com/szl-holdings/uds-bundles/.github/workflows/uds-bundle-publish.yml@refs/heads/main" \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
 
 cosign verify ghcr.io/szl-holdings/a11oy-bundle:0.5.0 \
-  --certificate-identity-regexp='.*szl-holdings/uds-bundles.*' \
+  --certificate-identity='https://github.com/szl-holdings/uds-bundles/.github/workflows/uds-canonical-bundles-publish.yml@refs/heads/main' \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
 
 cosign verify ghcr.io/szl-holdings/killinchu-bundle:0.5.0 \
-  --certificate-identity-regexp='.*szl-holdings/uds-bundles.*' \
+  --certificate-identity='https://github.com/szl-holdings/uds-bundles/.github/workflows/uds-canonical-bundles-publish.yml@refs/heads/main' \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
 # expect: "cosign claims validated · transparency-log existence verified · cert verified using trusted CA"
 ```
@@ -231,6 +231,10 @@ cosign verify ghcr.io/szl-holdings/killinchu-bundle:0.5.0 \
 ### 4.2 — gh attestation / cosign verify-attestation on the ORGAN IMAGES (SLSA L2)
 ```bash
 # SLSA Build L2 attestation on each organ image (slsa.dev/provenance/v0.2):
+# NOTE: this loop spans 5 separate organ repos via ${organ}; each image is signed
+# by its OWN repo's workflow and 3 of those repos (amaru/sentra/rosie) have since
+# been deleted, so there is no single exact --certificate-identity to pin here —
+# the per-repo prefix regexp is intentional and is left loose on purpose.
 for organ in a11oy sentra amaru rosie killinchu; do
   cosign verify-attestation --type slsaprovenance \
     "ghcr.io/szl-holdings/${organ}:uds-v0.2.0" \
@@ -344,7 +348,7 @@ kubectl apply -f szl-fleet-overlay/uds-packages/
 | Package CR stuck `Pending` | Istio not ready yet | `kubectl get pods -n istio-system`; wait for ztunnel/istiod Running, then it reconciles. |
 | SSO redirect loop | Keycloak client not registered | Re-run `uds deploy` (re-syncs `sso` CRs). |
 | `zarf init` hangs / "requires a zarf-init package, not found" | init seed not fetched | `zarf tools download-init` **before** `zarf init --confirm`. |
-| `cosign verify` fails on the bundle | wrong identity/issuer flags, or NTP skew | Use the exact `--certificate-identity-regexp` / `--certificate-oidc-issuer` in §4.1; keep node clock within ~5 min (Rekor timestamp). |
+| `cosign verify` fails on the bundle | wrong identity/issuer flags, or NTP skew | Use the exact `--certificate-identity` / `--certificate-oidc-issuer` in §4.1; keep node clock within ~5 min (Rekor timestamp). |
 | lambda-gate VAP `dsse-receipt` warning | binding is **`Audit`** (non-blocking) by design during rollout | Expected. Do **not** promote to `Deny` until pods carry the `dsse-receipt=required` label. |
 | a11oy-bundle looks out of date | **STALE pin** (`d801f8e4…` built on old a11oy image) | Use `szl-mesh:0.4.0`, or have the UDS squad re-pin a11oy-bundle and deploy the new digest (§3.1 note). |
 

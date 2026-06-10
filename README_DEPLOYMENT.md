@@ -91,7 +91,7 @@ Verify an image signature (keyless cosign) before deploy:
 
 ```bash
 cosign verify ghcr.io/szl-holdings/killinchu:uds-v0.2.0 \
-  --certificate-identity-regexp 'https://github.com/szl-holdings/killinchu/.*' \
+  --certificate-identity 'https://github.com/szl-holdings/killinchu/.github/workflows/ghcr-build-push.yml@refs/heads/main' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 

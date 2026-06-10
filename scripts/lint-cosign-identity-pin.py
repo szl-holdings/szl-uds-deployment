@@ -2,34 +2,43 @@
 # Copyright 2026 SZL Holdings
 # SPDX-License-Identifier: Apache-2.0
 #
-# lint-cosign-identity-pin.py — Keep szl-receipts cosign verify commands pinned to
-# an EXACT signer identity, so the loose --certificate-identity-regexp form can
-# never slip back into the docs/scripts.
+# lint-cosign-identity-pin.py — Keep cosign verify commands for published SZL
+# artifacts pinned to an EXACT signer identity, so the loose
+# --certificate-identity-regexp form can never slip back into the docs/scripts.
 #
 # Why this exists
 # ---------------
-# The published szl-receipts PACKAGE (signed keyless by zarf-package-sign.yml) and
-# the receipts-server IMAGE (signed keyless by receipts-server-image.yml) have a
-# KNOWN, exact signer identity. Their cosign verify commands were once written with
+# Several published SZL artifacts are signed keyless (Sigstore OIDC) by a KNOWN,
+# exact signer workflow:
+#   * the szl-receipts PACKAGE (zarf-package-sign.yml) and receipts-server IMAGE
+#     (receipts-server-image.yml)                                  — Task #545
+#   * the killinchu organ image (killinchu/ghcr-build-push.yml),
+#     the szl-mesh UDS bundle (uds-bundles/uds-bundle-publish.yml),
+#     the a11oy-bundle / killinchu-bundle canonical bundles
+#     (uds-bundles/uds-canonical-bundles-publish.yml), and the szl-fleet-overlay
+#     zarf package (szl-fleet-overlay/zarf-package-sign.yml)       — Task #680
+# Their cosign verify commands were once written with
 # `--certificate-identity-regexp`, which accepts a signature produced by that
-# workflow on ANY ref OR ANY fork — a materially weaker check. They have since been
-# pinned to an exact `--certificate-identity`. Nothing else stopped a future doc
-# edit from re-introducing the loose form; this lint does.
+# workflow on ANY ref OR ANY fork — a materially weaker check. They have since
+# been pinned to an exact `--certificate-identity`. Nothing else stopped a future
+# doc edit from re-introducing the loose form; this lint does.
 #
 # What it asserts
 # ---------------
 #   For every cosign verify command (in tracked .md / .sh files) that targets a
-#   szl-receipts artifact:
+#   pinnable published artifact:
 #     * it must NOT use --certificate-identity-regexp, and
 #     * it MUST carry an exact --certificate-identity.
-#   The exact identity is per-artifact (the image is signed per-tag, the package
-#   per-branch), so the guard only requires that *an* exact identity is present —
-#   never a specific ref string.
+#   The exact identity is per-artifact (an image is signed per-tag, a package /
+#   bundle per-branch), so the guard only requires that *an* exact identity is
+#   present — never a specific ref string.
 #
 # Scope / intentional exemptions
-#   * Only commands that reference a receipts artifact are checked. Loose regexp
-#     verifies for OTHER artifacts (killinchu, fleet-overlay, the uds bundles,
-#     a generic repo image) are deliberately left alone.
+#   * Only commands that reference one of the pinnable artifacts below are checked.
+#     Loose regexp verifies for OTHER artifacts — most importantly the templated
+#     per-organ SLSA attestation loop (`${organ}` spans 5 repos, 3 now deleted, so
+#     there is no single exact signer identity to pin) — are deliberately left
+#     alone.
 #   * The legacy key-pair path (`cosign verify --key ...`) is identity-less by
 #     design and is always allowed.
 #
@@ -47,13 +56,22 @@ import glob
 
 # A cosign verify command targeting any of these tokens is in scope. These are the
 # literal substrings that appear in the artifact ref or the signer identity of a
-# receipts verify command.
-RECEIPTS_TOKENS = (
+# pinnable verify command. Each token is chosen so it does NOT match the
+# intentionally-loose multi-organ attestation loop (which uses the `${organ}`
+# placeholder, e.g. `szl-holdings/${organ}:uds-v0.2.0`).
+PINNED_ARTIFACT_TOKENS = (
+    # --- szl-receipts (Task #545) ---
     "szl-receipts-server",       # the receipts-server image repo
     "packages/szl-receipts",     # the (retired) internal package repo
     "szl-receipts:",             # the published package ref, e.g. .../szl-receipts:0.4.0-upstream
     "receipts-server-image.yml", # the image signing workflow (keyless identity)
-    "zarf-package-sign.yml",     # the package signing workflow (keyless identity)
+    "zarf-package-sign.yml",     # a package signing workflow (keyless identity; receipts + fleet-overlay)
+    # --- other published artifacts with a KNOWN exact signer (Task #680) ---
+    "szl-holdings/killinchu:",   # killinchu organ image  -> killinchu/ghcr-build-push.yml@main
+    "szl-mesh:",                 # szl-mesh UDS bundle     -> uds-bundles/uds-bundle-publish.yml@main
+    "a11oy-bundle:",             # a11oy canonical bundle  -> uds-bundles/uds-canonical-bundles-publish.yml@main
+    "killinchu-bundle:",         # killinchu canon bundle  -> uds-bundles/uds-canonical-bundles-publish.yml@main
+    "szl-fleet-overlay",         # fleet overlay zarf pkg  -> szl-fleet-overlay/zarf-package-sign.yml@main
 )
 
 # --certificate-identity-regexp (loose) vs --certificate-identity (exact).
@@ -88,15 +106,15 @@ def logical_cosign_commands(text):
 
 def check_command(cmd):
     """Return a violation reason string, or None if the command is fine."""
-    if not any(tok in cmd for tok in RECEIPTS_TOKENS):
-        return None  # not a receipts artifact -> out of scope
+    if not any(tok in cmd for tok in PINNED_ARTIFACT_TOKENS):
+        return None  # not a pinnable artifact -> out of scope
     if KEY_RE.search(cmd):
         return None  # legacy key-pair path is identity-less by design -> allowed
     if REGEXP_RE.search(cmd):
         return ("uses the loose --certificate-identity-regexp form for a "
-                "szl-receipts artifact; pin an exact --certificate-identity")
+                "pinnable published artifact; pin an exact --certificate-identity")
     if not EXACT_RE.search(cmd):
-        return ("verifies a szl-receipts artifact without an exact "
+        return ("verifies a pinnable published artifact without an exact "
                 "--certificate-identity (and is not the --key legacy path)")
     return None
 
@@ -118,7 +136,7 @@ def main(argv):
     explicit = bool(argv)
     files = iter_target_files(argv)
     violations = []
-    receipts_cmds = 0
+    pinnable_cmds = 0
     for path in files:
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
@@ -126,8 +144,8 @@ def main(argv):
         except (IsADirectoryError, FileNotFoundError):
             continue
         for line_no, cmd in logical_cosign_commands(text):
-            if any(tok in cmd for tok in RECEIPTS_TOKENS) and not KEY_RE.search(cmd):
-                receipts_cmds += 1
+            if any(tok in cmd for tok in PINNED_ARTIFACT_TOKENS) and not KEY_RE.search(cmd):
+                pinnable_cmds += 1
             reason = check_command(cmd)
             if reason:
                 first = cmd.splitlines()[0].strip()
@@ -139,20 +157,20 @@ def main(argv):
 
     if violations:
         print(f"\nFAIL: {len(violations)} loose/missing-identity cosign verify "
-              f"command(s) for szl-receipts artifacts.")
+              f"command(s) for pinnable published artifacts.")
         return 1
 
     # In glob (CI) mode the guard must actually be covering something, or it is a
     # vacuous always-pass. Explicit single-file self-test runs are exempt.
-    if not explicit and receipts_cmds == 0:
-        print("FAIL: no cosign verify command for a szl-receipts artifact was "
+    if not explicit and pinnable_cmds == 0:
+        print("FAIL: no cosign verify command for a pinnable published artifact was "
               "found — the guard would be vacuous. Did the docs move?")
         return 1
 
     if explicit:
-        print(f"OK: checked {len(files)} file(s); no loose receipts identity verifies.")
+        print(f"OK: checked {len(files)} file(s); no loose pinnable-artifact identity verifies.")
     else:
-        print(f"OK: {receipts_cmds} receipts cosign verify command(s) all use an "
+        print(f"OK: {pinnable_cmds} pinnable-artifact cosign verify command(s) all use an "
               f"exact --certificate-identity (or the allowed --key path).")
     return 0
 

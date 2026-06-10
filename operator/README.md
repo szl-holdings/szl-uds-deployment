@@ -20,7 +20,7 @@ zarf package pull oci://ghcr.io/szl-holdings/szl-fleet-overlay:0.1.0
 
 # Verify before deploying
 cosign verify-blob \
-  --certificate-identity-regexp "https://github.com/szl-holdings/szl-fleet-overlay/.github/workflows/.*" \
+  --certificate-identity "https://github.com/szl-holdings/szl-fleet-overlay/.github/workflows/zarf-package-sign.yml@refs/heads/main" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --bundle zarf-package-szl-fleet-overlay-amd64-0.1.0.tar.zst.sigstore.json \
   zarf-package-szl-fleet-overlay-amd64-0.1.0.tar.zst

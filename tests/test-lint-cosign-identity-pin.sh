@@ -6,9 +6,9 @@
 #
 # Locks in the guard's behavior against curated fixtures so a future refactor of
 # the linter cannot silently:
-#   - stop detecting --certificate-identity-regexp on a receipts verify (false
-#     negative), or
-#   - start flagging a legit non-receipts regexp / the --key legacy path / prose
+#   - stop detecting --certificate-identity-regexp on a pinnable-artifact verify
+#     (false negative), or
+#   - start flagging a legit out-of-scope regexp / the --key legacy path / prose
 #     (false positive).
 #
 # Each fixture is passed to the linter EXPLICITLY (the linter only globs the repo
@@ -46,7 +46,7 @@ expect() {
   fi
 }
 
-# violations -> FAIL (exit 1)
+# --- szl-receipts: violations -> FAIL (exit 1) ---
 expect 1 "receipts image verify with loose regexp is flagged" \
   "$fixtures/fail-receipts-image-regexp.md"
 expect 1 "receipts package verify (single line) with loose regexp is flagged" \
@@ -54,22 +54,42 @@ expect 1 "receipts package verify (single line) with loose regexp is flagged" \
 expect 1 "receipts verify with no exact identity (and no --key) is flagged" \
   "$fixtures/fail-receipts-no-identity.md"
 
-# legit -> PASS (exit 0)
+# --- szl-receipts: legit -> PASS (exit 0) ---
 expect 0 "receipts verify with exact --certificate-identity passes" \
   "$fixtures/pass-receipts-exact.md"
 expect 0 "legacy --key receipts verify (identity-less by design) passes" \
   "$fixtures/pass-receipts-key.md"
-expect 0 "loose regexp for a NON-receipts artifact is ignored" \
+
+# --- other pinnable artifacts (Task #680): violations -> FAIL (exit 1) ---
+expect 1 "killinchu image verify with loose regexp is flagged" \
+  "$fixtures/fail-image-regexp.md"
+expect 1 "canonical bundle verify with loose regexp is flagged" \
+  "$fixtures/fail-bundle-regexp.md"
+expect 1 "fleet-overlay verify-blob with loose regexp is flagged" \
+  "$fixtures/fail-fleetoverlay-blob-regexp.md"
+
+# --- other pinnable artifacts (Task #680): legit -> PASS (exit 0) ---
+expect 0 "killinchu image verify with exact --certificate-identity passes" \
+  "$fixtures/pass-image-exact.md"
+expect 0 "canonical bundle verify with exact --certificate-identity passes" \
+  "$fixtures/pass-bundle-exact.md"
+expect 0 "fleet-overlay verify-blob with exact --certificate-identity passes" \
+  "$fixtures/pass-fleetoverlay-blob-exact.md"
+
+# --- out of scope -> PASS (exit 0) ---
+expect 0 "templated multi-organ attestation loop regexp is ignored" \
   "$fixtures/pass-other-regexp.md"
 expect 0 "prose mention of the loose flag (no artifact) is ignored" \
   "$fixtures/pass-prose.md"
 
-# combined runs
+# --- combined runs ---
 expect 0 "all legit fixtures together pass" \
   "$fixtures/pass-receipts-exact.md" "$fixtures/pass-receipts-key.md" \
+  "$fixtures/pass-image-exact.md" "$fixtures/pass-bundle-exact.md" \
+  "$fixtures/pass-fleetoverlay-blob-exact.md" \
   "$fixtures/pass-other-regexp.md" "$fixtures/pass-prose.md"
 expect 1 "a violation mixed with legit files still fails the run" \
-  "$fixtures/pass-receipts-exact.md" "$fixtures/fail-receipts-image-regexp.md"
+  "$fixtures/pass-receipts-exact.md" "$fixtures/fail-image-regexp.md"
 
 if [ "$fail" -ne 0 ]; then
   echo
@@ -79,4 +99,4 @@ if [ "$fail" -ne 0 ]; then
 fi
 
 echo
-echo "SELF-TEST OK: guard flags loose/missing receipts identities and ignores legit uses."
+echo "SELF-TEST OK: guard flags loose/missing pinnable-artifact identities and ignores legit uses."

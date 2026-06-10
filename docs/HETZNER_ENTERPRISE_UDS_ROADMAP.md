@@ -545,7 +545,7 @@ kubectl port-forward -n szl-a11oy     svc/a11oy     8080:8080 & sleep 2; curl -f
 kubectl port-forward -n szl-killinchu svc/killinchu 7860:7860 & sleep 2; curl -fsS http://localhost:7860/api/killinchu/healthz
 # supply-chain verify (bundle signature is the provenance — no bundle SLSA attestation):
 cosign verify ghcr.io/szl-holdings/szl-mesh:0.4.0 \
-  --certificate-identity-regexp="^https://github.com/szl-holdings/" \
+  --certificate-identity="https://github.com/szl-holdings/uds-bundles/.github/workflows/uds-bundle-publish.yml@refs/heads/main" \
   --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
 ```
 
