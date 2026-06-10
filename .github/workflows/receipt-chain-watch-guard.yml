@@ -1,0 +1,102 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# receipt-chain-watch-guard.yml — Guard the `receipt-chain-watch` box alarm (the
+# stalled signed-deploy-receipt alarm on the uds-szl-demo cluster) from silently
+# regressing.
+#
+# receipt-chain-watch (box-scripts/sbin/receipt-chain-watch) runs every ~5 min and
+# pages the team the moment signed deploy receipts STOP being recorded — the
+# receipts-server sink is unhealthy, the Pepr controller logged dropped POSTs, or
+# signing is happening but nothing lands in the chain. That POST is FAIL-OPEN, so
+# without this alarm a stalled chain is invisible until a manual log inspection.
+# Its value rests on a few fragile invariants that produce NO visible symptom when
+# broken until a real stall goes unalerted:
+#   * it still detects SINK health (receipts-server availableReplicas + Service
+#     endpoints);
+#   * it still scans the PEPR LOG window for dropped POSTs and chain-not-advancing
+#     (signed >=1 but accepted 0);
+#   * it is EDGE-triggered (reads + writes a last_status state file) so it pages
+#     exactly once on OK->ALERT and once on RECOVERED, never every cycle;
+#   * it NO-OPs (exit 0, no page) when the cluster is absent/unreachable or the
+#     receipts module is not deployed;
+#   * it stays WIRED into install.sh (copied + timer enabled) and documented in
+#     README.md, or a box rebuild silently ships without the alarm.
+# A sibling refactor of the script, install.sh, or README could quietly drop any
+# of these, re-opening the exact "a stalled receipt chain goes unalerted" hole
+# this alarm closed.
+#
+# The check logic lives in scripts/receipt-chain-watch-guard-checks.sh (pure
+# text/lint, no cluster). It was extracted from this workflow so it can be UNIT
+# TESTED: scripts/receipt-chain-watch-guard-checks.test.sh feeds each check a
+# deliberately-BROKEN fixture and asserts the check FAILS, plus asserts the
+# pristine repo PASSES. That self-test runs as the `self-test` job below, so a
+# future edit that neuters a check (passing vacuously — green while guarding
+# nothing) is caught here.
+#
+# The asserted invariants:
+#   chk1  receipt-chain-watch exists and parses clean (bash -n)
+#   chk2  detects sink health (availableReplicas + Service endpoints)
+#   chk3  scans the Pepr log for dropped POSTs + chain-not-advancing
+#   chk4  edge-triggered: reads+writes last_status, both edge guards present, and
+#         makes EXACTLY TWO notify calls (one OK->ALERT, one RECOVERED)
+#   chk5  cluster-absent / unreachable / receipts-module-absent paths all no-op
+#   chk6  wired into install.sh (script + units copied, timer enabled)
+#   chk7  documented in README.md (signed-deploy-receipts alarm section)
+
+name: Receipt Chain Watch Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves each check
+  # still FAILS on bad input (i.e. is not silently passing). The guard job
+  # depends on it so a broken check blocks the build before it can wave a
+  # regression through.
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/receipt-chain-watch-guard-checks.test.sh
+
+  guard:
+    name: Assert the stalled-receipt-chain alarm is intact
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check 1 — receipt-chain-watch exists and parses clean
+        run: bash scripts/receipt-chain-watch-guard-checks.sh chk1 .
+
+      - name: Check 2 — detects sink health (availableReplicas + endpoints)
+        run: bash scripts/receipt-chain-watch-guard-checks.sh chk2 .
+
+      - name: Check 3 — scans the Pepr log for dropped POSTs + chain-not-advancing
+        run: bash scripts/receipt-chain-watch-guard-checks.sh chk3 .
+
+      - name: Check 4 — edge-triggered (state file + exactly two notifies)
+        run: bash scripts/receipt-chain-watch-guard-checks.sh chk4 .
+
+      - name: Check 5 — cluster-absent / unreachable / module-absent no-op
+        run: bash scripts/receipt-chain-watch-guard-checks.sh chk5 .
+
+      - name: Check 6 — wired into install.sh (script + timer enabled)
+        run: bash scripts/receipt-chain-watch-guard-checks.sh chk6 .
+
+      - name: Check 7 — documented in README.md
+        run: bash scripts/receipt-chain-watch-guard-checks.sh chk7 .
+
+      - name: Stalled-receipt-chain alarm is intact
+        run: echo "The receipt-chain-watch stalled-receipt alarm is intact."

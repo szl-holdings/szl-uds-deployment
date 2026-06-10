@@ -1,0 +1,89 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# szl-alert-relay-watch-guard.yml — Guard the `szl-alert-relay-watch` box alarm
+# (the alert-relay watchdog) from silently regressing.
+#
+# szl-alert-relay-watch (box-scripts/sbin/szl-alert-relay-watch) runs every ~5 min
+# and pages the team if the szl-alert-relay service itself is down — the relay is
+# the SINGLE delivery path that flattens CI receipt-failure Slack webhooks into
+# clean ntfy pushes, so if it dies, ALL those alerts vanish silently ("who watches
+# the watcher"). Its value rests on a few fragile invariants that produce NO
+# visible symptom when broken until the relay dies unnoticed:
+#   * it still probes /relay/health for HTTP 200 and the systemd unit is-active;
+#   * it is EDGE-triggered via a signature file (exactly one page when the relay
+#     goes down, one on RECOVERED);
+#   * it always writes a fresh status file + heartbeat STATE log (so the
+#     monitor-liveness meta-monitor can watch IT) and the notifier is FAIL-SOFT;
+#   * it stays WIRED into install.sh and documented in its README.
+# A sibling refactor could quietly drop any of these, re-opening the "the alert
+# relay itself died and nobody is paged" hole this watchdog closed.
+#
+# The check logic lives in scripts/szl-alert-relay-watch-guard-checks.sh (pure
+# text/lint, no relay), extracted so it can be UNIT TESTED:
+# scripts/szl-alert-relay-watch-guard-checks.test.sh feeds each check a
+# deliberately-BROKEN fixture and asserts it FAILS (plus that the pristine repo
+# PASSES). That self-test runs as the `self-test` job below, so a future edit that
+# neuters a check (green while guarding nothing) is caught here.
+#
+# The asserted invariants:
+#   chk1  szl-alert-relay-watch exists and parses clean (bash -n)
+#   chk2  probes /relay/health for HTTP 200
+#   chk3  probes the relay systemd unit is-active
+#   chk4  edge-triggered via signature file (de-dup + RECOVERED, exactly 2 pushes)
+#   chk5  always writes status (atomic) + heartbeat STATE log; notifier fail-soft
+#   chk6  wired into install.sh (script + units copied, timer enabled)
+#   chk7  documented in its README ('Watch the relay itself' section)
+
+name: SZL Alert Relay Watch Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/szl-alert-relay-watch-guard-checks.test.sh
+
+  guard:
+    name: Assert the alert-relay watchdog is intact
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check 1 — szl-alert-relay-watch exists and parses clean
+        run: bash scripts/szl-alert-relay-watch-guard-checks.sh chk1 .
+
+      - name: Check 2 — probes /relay/health for HTTP 200
+        run: bash scripts/szl-alert-relay-watch-guard-checks.sh chk2 .
+
+      - name: Check 3 — probes the relay systemd unit is-active
+        run: bash scripts/szl-alert-relay-watch-guard-checks.sh chk3 .
+
+      - name: Check 4 — edge-triggered (signature file + exactly two pushes)
+        run: bash scripts/szl-alert-relay-watch-guard-checks.sh chk4 .
+
+      - name: Check 5 — always writes status + heartbeat; notifier fail-soft
+        run: bash scripts/szl-alert-relay-watch-guard-checks.sh chk5 .
+
+      - name: Check 6 — wired into install.sh (script + timer enabled)
+        run: bash scripts/szl-alert-relay-watch-guard-checks.sh chk6 .
+
+      - name: Check 7 — documented in its README
+        run: bash scripts/szl-alert-relay-watch-guard-checks.sh chk7 .
+
+      - name: Alert-relay watchdog is intact
+        run: echo "The szl-alert-relay-watch alert-relay watchdog is intact."

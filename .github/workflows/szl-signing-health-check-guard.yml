@@ -1,0 +1,96 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# szl-signing-health-check-guard.yml — Guard the `szl-signing-health-check` box
+# alarm (the receipt-signing-down alarm on the uds-szl-demo cluster) from
+# silently regressing.
+#
+# szl-signing-health-check (box-scripts/sbin/szl-signing-health-check) runs every
+# ~2 min and pages a human when szl-receipts SIGNING is down — Vault SEALED
+# (auto-unseal didn't recover) or the receipts-server crashlooping / Pending /
+# booted unsigned (/pubkey reports signed!=true). The self-heal helpers only log;
+# this watcher is the only thing that actively pages. Its value rests on a few
+# fragile invariants that produce NO visible symptom when broken until a real
+# signing outage goes unalerted:
+#   * it still checks VAULT seal status and the receipts /pubkey signing status;
+#   * it still enforces the GRACE WINDOW so a normal ~1-min auto-unseal cycle
+#     never pages;
+#   * it is EDGE-triggered via a signature file (exactly one page per outage, one
+#     on RECOVERED);
+#   * it NO-OPs (exit 0) when the cluster is absent/unreachable;
+#   * it stays WIRED into install.sh and documented in its README.
+# A sibling refactor could quietly drop any of these, re-opening the "signing is
+# down and nobody is paged" hole this alarm closed.
+#
+# The check logic lives in scripts/szl-signing-health-check-guard-checks.sh (pure
+# text/lint, no cluster), extracted so it can be UNIT TESTED:
+# scripts/szl-signing-health-check-guard-checks.test.sh feeds each check a
+# deliberately-BROKEN fixture and asserts it FAILS (plus that the pristine repo
+# PASSES). That self-test runs as the `self-test` job below, so a future edit that
+# neuters a check (green while guarding nothing) is caught here.
+#
+# The asserted invariants:
+#   chk1  szl-signing-health-check exists and parses clean (bash -n)
+#   chk2  checks Vault seal status (and pages when SEALED)
+#   chk3  probes receipts /pubkey and verifies signed=True
+#   chk4  enforces the grace window (THRESHOLD_SECS) before paging
+#   chk5  edge-triggered via signature file (de-dup + RECOVERED, exactly 2 pushes)
+#   chk6  cluster-absent / unreachable paths both no-op (exit 0)
+#   chk7  wired into install.sh (script + units copied, timer enabled)
+#   chk8  documented in its README (receipt-signing-down alarm)
+
+name: SZL Signing Health Check Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/szl-signing-health-check-guard-checks.test.sh
+
+  guard:
+    name: Assert the receipt-signing-down alarm is intact
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check 1 — szl-signing-health-check exists and parses clean
+        run: bash scripts/szl-signing-health-check-guard-checks.sh chk1 .
+
+      - name: Check 2 — checks Vault seal status
+        run: bash scripts/szl-signing-health-check-guard-checks.sh chk2 .
+
+      - name: Check 3 — probes /pubkey signing status
+        run: bash scripts/szl-signing-health-check-guard-checks.sh chk3 .
+
+      - name: Check 4 — enforces the grace window
+        run: bash scripts/szl-signing-health-check-guard-checks.sh chk4 .
+
+      - name: Check 5 — edge-triggered (signature file + exactly two pushes)
+        run: bash scripts/szl-signing-health-check-guard-checks.sh chk5 .
+
+      - name: Check 6 — cluster-absent / unreachable no-op
+        run: bash scripts/szl-signing-health-check-guard-checks.sh chk6 .
+
+      - name: Check 7 — wired into install.sh (script + timer enabled)
+        run: bash scripts/szl-signing-health-check-guard-checks.sh chk7 .
+
+      - name: Check 8 — documented in its README
+        run: bash scripts/szl-signing-health-check-guard-checks.sh chk8 .
+
+      - name: Receipt-signing-down alarm is intact
+        run: echo "The szl-signing-health-check receipt-signing-down alarm is intact."
