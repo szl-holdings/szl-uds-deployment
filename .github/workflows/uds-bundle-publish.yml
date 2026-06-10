@@ -252,7 +252,7 @@ jobs:
                 --set VERSION="${PKG_VERSION}" \
                 --architecture "${{ matrix.arch }}" \
                 --confirm \
-                --output-directory dist > "/tmp/${organ}.log" 2>&1
+                --output-directory "packages/${organ}" > "/tmp/${organ}.log" 2>&1
               RC=$?
               [ "${RC}" -eq 0 ] && break
               echo "zarf package create ${organ} failed (attempt ${attempt}/3, rc=${RC}); retrying after backoff" >> "/tmp/${organ}.log"
@@ -268,7 +268,10 @@ jobs:
             if [ "${RC}" -ne 0 ]; then exit 1; fi
           done
           echo "Built member packages:"
-          ls -lh dist/ || true
+          # uds create resolves a local-path member by looking for its built zarf
+          # tarball INSIDE the member path dir (packages/<organ>/), not a shared
+          # dist/, so each package is emitted there above.
+          ls -lh packages/*/zarf-package-*.tar.zst || true
 
       # ── Create the UDS bundle ──────────────────────────────────────────────
       # uds create reads bundles/szl-uds-bundle/uds-bundle.yaml; its packages are
