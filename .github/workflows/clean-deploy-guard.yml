@@ -32,7 +32,7 @@
 #   4. packages/szl-receipts/zarf.yaml           -> szl-key-init-exemption is
 #                                                  ordered BEFORE szl-key-init
 #                                                  AND the server image tag is
-#                                                  uds-v0.4.0
+#                                                  uds-v0.4.1
 #   5. packages/szl-receipts/zarf.yaml           -> szl-core-rightsize is the
 #                                                  FIRST component with an
 #                                                  onDeploy.before action that
@@ -84,7 +84,7 @@ jobs:
       - name: Invariant 3 — UDS Exemption (RequireNonRootUser) for the keygen pod
         run: bash scripts/clean-deploy-checks.sh inv3 .
 
-      - name: Invariant 4 — exemption ordered before key-init & image tag is uds-v0.4.0
+      - name: Invariant 4 — exemption ordered before key-init & image tag is uds-v0.4.1
         run: bash scripts/clean-deploy-checks.sh inv4 .
 
       - name: Invariant 5 — born-rightsized posture is baked into the package
