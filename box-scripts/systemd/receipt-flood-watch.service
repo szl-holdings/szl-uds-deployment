@@ -1,0 +1,9 @@
+[Unit]
+Description=Alarm when the signed receipt chain grows TOO FAST on uds-szl-demo (flood that can overload the Ed25519 signer)
+Documentation=file:///usr/local/sbin/receipt-flood-watch
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/receipt-flood-watch

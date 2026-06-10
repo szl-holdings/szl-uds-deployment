@@ -107,13 +107,47 @@ tests:
                 end-to-end — investigate immediately.
               runbook_url: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/README.md#receipt-chain-watch"
 
-  # ── 4. HEALTHY: sink up, chain advancing, valid=1 -> NO alerts fire ───────
+  # ── 4. FLOOD: chain growing ~200/min -> SZLReceiptsChainFlooding fires ─────
+  - interval: 1m
+    input_series:
+      # Sink up + valid so only the flood alert can fire.
+      - series: 'up{namespace="szl-receipts", job="szl-receipts-server"}'
+        values: '1+0x20'
+      - series: 'szl_chain_valid{namespace="szl-receipts", job="szl-receipts-server"}'
+        values: '1+0x20'
+      # Chain climbing 200/min (rate over 5m = 200/min > 120/min threshold).
+      - series: 'szl_chain_length{namespace="szl-receipts", job="szl-receipts-server"}'
+        values: '1000+200x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: SZLReceiptsChainFlooding
+        exp_alerts: []           # within `for: 5m`, not yet firing
+      - eval_time: 12m
+        alertname: SZLReceiptsChainFlooding
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: szl-receipts
+              szl_alarm: receipt-chain-flood
+              namespace: szl-receipts
+            exp_annotations:
+              summary: "SZL receipt chain is FLOODING (growing too fast)"
+              description: >-
+                The szl-receipts chain in namespace szl-receipts has been growing at
+                more than 120 receipts/min (over a 5m window) for 5m. A receipt flood can
+                overload the Ed25519 signer (it once let the chain balloon to ~205,919
+                entries). Check the ingest rate-limit (SZL_INGEST_RATE_LIMIT), the pepr
+                per-subject throttle, and the receipt producers. This in-cluster rule
+                complements the host guard receipt-flood-watch.
+              runbook_url: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/README.md#receipt-flood-watch"
+
+  # ── 5. HEALTHY: sink up, chain advancing slowly, valid=1 -> NO alerts fire ─
   - interval: 1m
     input_series:
       - series: 'up{namespace="szl-receipts", job="szl-receipts-server"}'
         values: '1+0x15'
       - series: 'szl_chain_length{namespace="szl-receipts", job="szl-receipts-server"}'
-        values: '40+1x15'        # chain advancing
+        values: '40+1x15'        # chain advancing ~1/min (well under flood)
       - series: 'szl_chain_valid{namespace="szl-receipts", job="szl-receipts-server"}'
         values: '1+0x15'
     alert_rule_test:
@@ -125,4 +159,7 @@ tests:
         exp_alerts: []
       - eval_time: 15m
         alertname: SZLReceiptChainTampered
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: SZLReceiptsChainFlooding
         exp_alerts: []

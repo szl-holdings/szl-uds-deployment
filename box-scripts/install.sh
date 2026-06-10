@@ -38,6 +38,7 @@ install -m 0755 "$here/sbin/a11oy-port-guard"          /usr/local/sbin/a11oy-por
 install -m 0755 "$here/sbin/szl-core-rightsize"        /usr/local/sbin/szl-core-rightsize
 install -m 0755 "$here/sbin/istiod-fit-strategy"       /usr/local/sbin/istiod-fit-strategy
 install -m 0755 "$here/sbin/receipt-chain-watch"       /usr/local/sbin/receipt-chain-watch
+install -m 0755 "$here/sbin/receipt-flood-watch"       /usr/local/sbin/receipt-flood-watch
 install -m 0755 "$here/sbin/szl-receipts-retention"    /usr/local/sbin/szl-receipts-retention
 install -m 0755 "$here/sbin/szl-ns-scratch"            /usr/local/sbin/szl-ns-scratch
 install -m 0755 "$here/sbin/szl-ns-scratch-watch"      /usr/local/sbin/szl-ns-scratch-watch
@@ -60,6 +61,10 @@ install -m 0644 "$here/systemd/receipt-chain-watch.service" /etc/systemd/system/
 install -m 0644 "$here/systemd/receipt-chain-watch.timer"   /etc/systemd/system/receipt-chain-watch.timer
 install -m 0644 "$here/systemd/receipt-chain-watch@.service" /etc/systemd/system/receipt-chain-watch@.service
 install -m 0644 "$here/systemd/receipt-chain-watch@.timer"   /etc/systemd/system/receipt-chain-watch@.timer
+install -m 0644 "$here/systemd/receipt-flood-watch.service" /etc/systemd/system/receipt-flood-watch.service
+install -m 0644 "$here/systemd/receipt-flood-watch.timer"   /etc/systemd/system/receipt-flood-watch.timer
+install -m 0644 "$here/systemd/receipt-flood-watch@.service" /etc/systemd/system/receipt-flood-watch@.service
+install -m 0644 "$here/systemd/receipt-flood-watch@.timer"   /etc/systemd/system/receipt-flood-watch@.timer
 install -m 0644 "$here/systemd/szl-receipts-retention.service" /etc/systemd/system/szl-receipts-retention.service
 install -m 0644 "$here/systemd/szl-receipts-retention.timer"   /etc/systemd/system/szl-receipts-retention.timer
 install -m 0644 "$here/systemd/szl-ns-scratch-watch.service" /etc/systemd/system/szl-ns-scratch-watch.service
@@ -165,6 +170,7 @@ fi
 # SINCE, ...) live in /etc/receipt-chain-watch/<cluster>.env. Override the set of
 # extra clusters with RECEIPT_WATCH_EXTRA_CLUSTERS="a b c" ./install.sh.
 install -d -m 0755 /etc/receipt-chain-watch
+install -d -m 0755 /etc/receipt-flood-watch
 read -r -a receipt_extra_clusters <<< "${RECEIPT_WATCH_EXTRA_CLUSTERS:-uds-tenant}"
 for c in "${receipt_extra_clusters[@]}"; do
   [ -n "$c" ] || continue
@@ -178,6 +184,17 @@ for c in "${receipt_extra_clusters[@]}"; do
     fi
     echo "[install] seeded $envf"
   fi
+  # Companion flood watcher for the same extra cluster.
+  floodf="/etc/receipt-flood-watch/${c}.env"
+  if [ ! -e "$floodf" ]; then
+    if [ -f "$here/etc/receipt-flood-watch/${c}.env" ]; then
+      install -m 0644 "$here/etc/receipt-flood-watch/${c}.env" "$floodf"
+    else
+      printf '# receipt-flood-watch tunables for cluster %s (see box-scripts/README.md).\n#KUBECONFIG_FILE=\n#RNS=szl-receipts\n#RX_SELECTOR=app.kubernetes.io/name=szl-receipts-server\n#RX_CONTAINER=receipts-server\n#METRICS_PORT=8080\n#FLOOD_PER_MIN=120\n#MIN_INTERVAL_SECS=60\n' "$c" > "$floodf"
+      chmod 0644 "$floodf"
+    fi
+    echo "[install] seeded $floodf"
+  fi
 done
 
 echo "[install] reloading systemd + enabling units ..."
@@ -187,9 +204,11 @@ systemctl enable --now a11oy-port-guard.timer
 systemctl enable --now szl-core-rightsize.timer
 systemctl enable --now istiod-fit-strategy.timer
 systemctl enable --now receipt-chain-watch.timer
+systemctl enable --now receipt-flood-watch.timer
 for c in "${receipt_extra_clusters[@]}"; do
   [ -n "$c" ] || continue
   systemctl enable --now "receipt-chain-watch@${c}.timer"
+  systemctl enable --now "receipt-flood-watch@${c}.timer"
 done
 systemctl enable --now szl-receipts-retention.timer
 systemctl enable --now szl-ns-scratch-watch.timer
@@ -204,9 +223,11 @@ systemctl enable --now szl-alert-relay.service
 [ -x /usr/local/sbin/szl-core-rightsize ]  && /usr/local/sbin/szl-core-rightsize  || true
 [ -x /usr/local/sbin/istiod-fit-strategy ] && /usr/local/sbin/istiod-fit-strategy || true
 [ -x /usr/local/sbin/receipt-chain-watch ]  && /usr/local/sbin/receipt-chain-watch   || true
+[ -x /usr/local/sbin/receipt-flood-watch ]  && /usr/local/sbin/receipt-flood-watch   || true
 for c in "${receipt_extra_clusters[@]}"; do
   [ -n "$c" ] || continue
   systemctl start "receipt-chain-watch@${c}.service" || true
+  systemctl start "receipt-flood-watch@${c}.service" || true
 done
 # Run retention once now (idempotent no-op if the cluster is down or nothing is
 # sealed to archive).

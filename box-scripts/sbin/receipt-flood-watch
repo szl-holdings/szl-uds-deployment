@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+#
+# receipt-flood-watch — alarm when the signed DSSE receipt chain starts growing
+# TOO FAST on a k3d/UDS cluster (box 167.233.50.75), the OPPOSITE failure to
+# receipt-chain-watch (which alarms when the chain STALLS).
+#
+# WHY: receipt-chain-watch catches a chain that has stopped advancing. It does
+# NOT catch a runaway chain — a flood of receipts that hammers the Ed25519
+# signer. That exact failure once let the chain balloon to ~205,919 entries and
+# overloaded the signer before anyone noticed; a flood-rate watcher would have
+# paged within minutes. The server now carries an ingest rate-limit
+# (SZL_INGEST_RATE_LIMIT ~1/s, burst ~60) and pepr a per-subject throttle, but
+# this guard is defense-in-depth: it alarms if the chain grows abnormally fast
+# regardless of WHY (a cap that regressed, a removed throttle, a misbehaving
+# producer, or a brand-new path the caps don't cover).
+#
+# WHAT IT DOES: samples the canonical `szl_chain_length` gauge from the
+# receipts-server `/metrics` endpoint (the same series Prometheus scrapes),
+# persists the sample (count + epoch) per cluster, and on the next run computes
+# the growth rate in receipts/min over the inter-sample interval. If the rate is
+# at/above FLOOD_PER_MIN it raises an ALERT.
+#   - The /metrics value is read by exec-ing python3 INSIDE the receipts-server
+#     pod (the slim image has no curl) to fetch http://127.0.0.1:$METRICS_PORT.
+#   - A chain reset (count goes DOWN) is treated as "no flood": the sample is
+#     re-baselined and the rate is reported as 0 (never a negative/false alarm).
+#   - The first run (no prior sample) just records a baseline and reports OK —
+#     a rate needs two samples.
+#
+# It is EDGE-triggered and de-duped via a state file: it fires the notifier only
+# on the healthy->flood edge and once on RECOVERED, never every cycle (honours
+# the "recurring alerts = one ping" policy). Every run still appends to the log
+# + status file, so a broken notifier can never hide a flood.
+#
+# Cluster intentionally stopped (k3d down) or receipts module not deployed = a
+# true no-op (exit 0, no alert) — we only alarm when the chain SHOULD be working.
+#
+# MULTI-CLUSTER: every cluster-specific input is a parameter (env override), not
+# a baked-in constant, so one script body watches any number of clusters
+# (CLUSTER / KUBECONFIG_FILE / RNS / RX_SELECTOR / RX_CONTAINER / METRICS_PORT).
+# State/log/status/sample files are namespaced by $CLUSTER so multiple instances
+# (one per cluster, driven by receipt-flood-watch@<cluster>.timer) never clobber
+# each other's de-dup state. See receipt-flood-watch@.service.
+#
+# NOTIFY: pipes the alert text on STDIN to NOTIFY_CMD (default the box's working
+# push channel /usr/local/sbin/a11oy-uptime-notify -> ntfy/Telegram/webhook,
+# channel in /etc/a11oy-uptime.env). This box has NO Gmail/nodemailer transport
+# and outbound TCP 465 is firewalled, so SMS/email is not used here (see memory
+# sms-alerts-on-hetzner.md / a11oy-uptime-channel-restore.md).
+#
+# Driven by receipt-flood-watch.timer (uds-szl-demo) and
+# receipt-flood-watch@<cluster>.timer (additional clusters), every 5 min.
+# Mirrors the receipt-chain-watch / szl-receipts-retention pattern.
+set -uo pipefail
+
+CLUSTER="${CLUSTER:-uds-szl-demo}"
+# Explicit kubeconfig override. When empty, resolve from the local k3d cluster
+# named $CLUSTER; when set, use it verbatim (for a non-local-k3d cluster).
+KUBECONFIG_FILE="${KUBECONFIG_FILE:-}"
+RNS="${RNS:-szl-receipts}"
+RX_SELECTOR="${RX_SELECTOR:-app.kubernetes.io/name=szl-receipts-server}"
+RX_CONTAINER="${RX_CONTAINER:-receipts-server}"
+# Port the server serves /metrics on inside the pod (server.py SZL_PORT default).
+METRICS_PORT="${METRICS_PORT:-8080}"
+
+# Flood threshold: sustained chain growth at/above this many receipts/min is an
+# ALERT. Normal deploy cadence is a handful of receipts per (infrequent) deploy;
+# even a busy CI day is dozens/hour. The server's own ingest cap is ~1/s
+# (~60/min), so a sustained rate well above that means a cap failed or a path
+# bypassed it. Default 120/min (2/s) is comfortably above legitimate activity
+# and below a true flood. Tune via FLOOD_PER_MIN.
+FLOOD_PER_MIN="${FLOOD_PER_MIN:-120}"
+# Ignore tiny inter-sample intervals (a manual back-to-back run divides a small
+# delta by a near-zero time and yields a huge bogus rate). Require at least this
+# many seconds since the last sample before computing a rate.
+MIN_INTERVAL_SECS="${MIN_INTERVAL_SECS:-60}"
+
+KREQ_TIMEOUT="${KREQ_TIMEOUT:-20s}"
+EXEC_TIMEOUT="${EXEC_TIMEOUT:-30s}"
+
+STATE_DIR="${STATE_DIR:-/var/lib/receipt-flood-watch}"
+LOG_DIR="${LOG_DIR:-/var/log/receipt-flood-watch}"
+# Per-cluster file names so concurrent instances stay isolated. Overridable.
+LAST_FILE="${LAST_FILE:-$STATE_DIR/$CLUSTER.last_status}"
+SAMPLE_FILE="${SAMPLE_FILE:-$STATE_DIR/$CLUSTER.sample}"
+STATUS="${STATUS:-$STATE_DIR/$CLUSTER.status.json}"
+LOG="${LOG:-$LOG_DIR/$CLUSTER.log}"
+
+# Notifier: stdin = message. Default to the box's working push channel.
+NOTIFY_CMD="${NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
+ALERT_PREFIX="${ALERT_PREFIX:-}"
+
+# Python on the BOX (not the pod) for arithmetic. Falls back to python.
+PY="${PY:-python3}"; command -v "$PY" >/dev/null 2>&1 || PY=python
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
+
+now_epoch() { date -u +%s; }
+log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$1" >>"$LOG" 2>/dev/null; }
+
+notify() {
+  # $1 = message. Fail-soft: log a warning if the notifier is missing/fails.
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed (alert was logged only)"
+}
+
+write_status() {
+  # $1 = overall (OK|ALERT|UNKNOWN)  $2 = reason
+  printf '{"overall":"%s","reason":"%s","checked_at":"%s","cluster":"%s"}\n' \
+    "$1" "$(printf '%s' "$2" | sed 's/"/\\"/g')" "$(date -u +%FT%TZ)" "$CLUSTER" \
+    >"$STATUS" 2>/dev/null
+}
+
+# ---- Resolve cluster; no-op if it is down (intentionally stopped) -----------
+if [ -n "$KUBECONFIG_FILE" ]; then
+  if [ ! -r "$KUBECONFIG_FILE" ]; then
+    log "INFO KUBECONFIG_FILE '$KUBECONFIG_FILE' unreadable — skip"; write_status UNKNOWN "kubeconfig unreadable"; exit 0
+  fi
+  export KUBECONFIG="$KUBECONFIG_FILE"
+else
+  KC="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" || { log "INFO cluster '$CLUSTER' absent — skip"; write_status UNKNOWN "cluster absent"; exit 0; }
+  export KUBECONFIG="$KC"
+fi
+kubectl --request-timeout="$KREQ_TIMEOUT" get --raw='/readyz' >/dev/null 2>&1 \
+  || { log "INFO cluster '$CLUSTER' not reachable — skip"; write_status UNKNOWN "cluster unreachable"; exit 0; }
+
+# Receipts module deployed at all? If not, there is nothing producing receipts —
+# no-op (don't alarm on a cluster without the receipts module installed).
+kubectl --request-timeout="$KREQ_TIMEOUT" -n "$RNS" get deploy szl-receipts-server >/dev/null 2>&1 \
+  || { log "INFO $RNS/szl-receipts-server absent — receipts module not deployed, skip"; write_status UNKNOWN "receipts module absent"; exit 0; }
+
+# ---- Find a Ready receipts-server pod ---------------------------------------
+pods_json="$(kubectl --request-timeout="$KREQ_TIMEOUT" -n "$RNS" get pods -l "$RX_SELECTOR" -o json 2>/dev/null)"
+pod="$(printf '%s' "$pods_json" | RX_CONTAINER="$RX_CONTAINER" "$PY" -c '
+import sys,json,os
+c=os.environ["RX_CONTAINER"]
+try: d=json.load(sys.stdin)
+except Exception: print(""); sys.exit()
+for p in d.get("items",[]):
+    for cs in (p.get("status",{}).get("containerStatuses") or []):
+        if cs.get("name")==c and cs.get("ready"):
+            print(p["metadata"]["name"]); sys.exit()
+print("")' 2>/dev/null)"
+
+if [ -z "$pod" ]; then
+  # No Ready pod = the sink is down; that is receipt-chain-watch's job to page.
+  # Here we just no-op (don't double-page) and don't disturb the sample baseline.
+  log "INFO no Ready '$RX_CONTAINER' pod in ns/$RNS — cannot sample chain length, skip"
+  write_status UNKNOWN "no ready receipts-server pod"
+  exit 0
+fi
+
+# ---- Read szl_chain_length from the pod's own /metrics ----------------------
+# The slim image has no curl, so fetch with python3 inside the pod (mirrors the
+# Prometheus scrape). Robust to extra HELP/TYPE lines; takes the gauge value.
+metrics="$(kubectl --request-timeout="$EXEC_TIMEOUT" -n "$RNS" exec "$pod" -c "$RX_CONTAINER" -- \
+  python3 -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:${METRICS_PORT}/metrics',timeout=10).read().decode())" 2>/dev/null)"
+
+cur="$(printf '%s\n' "$metrics" | awk '/^szl_chain_length[ {]/ {print $2; exit} /^szl_chain_length / {print $2; exit}')"
+# Normalise: must be a non-negative integer.
+case "$cur" in
+  ''|*[!0-9]*) log "INFO szl_chain_length not readable from $pod (got '${cur:-<empty>}') — skip"; write_status UNKNOWN "chain length unreadable"; exit 0 ;;
+esac
+
+nowts="$(now_epoch)"
+
+# ---- Compare against the previous sample to compute receipts/min ------------
+prev_count=""; prev_ts=""
+if [ -r "$SAMPLE_FILE" ]; then
+  read -r prev_count prev_ts < "$SAMPLE_FILE" 2>/dev/null || { prev_count=""; prev_ts=""; }
+fi
+
+# Always update the sample for the next run.
+printf '%s %s\n' "$cur" "$nowts" > "$SAMPLE_FILE" 2>/dev/null
+
+# First run / unreadable prior sample: just baseline, report OK.
+case "$prev_count" in ''|*[!0-9]*) prev_count=""; esac
+case "$prev_ts" in ''|*[!0-9]*) prev_ts=""; esac
+if [ -z "$prev_count" ] || [ -z "$prev_ts" ]; then
+  write_status OK "baselined chain length=$cur (need 2 samples for a rate)"
+  log "STATE OK baseline count=$cur (no prior sample)"
+  # Don't clobber an existing ALERT->OK recovery edge accounting; treat baseline
+  # as OK for the edge state too.
+  prev="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
+  if [ "$prev" = "ALERT" ]; then
+    notify "RECOVERED: receipt flood watcher re-baselined on $CLUSTER (chain length=$cur); growth rate back under threshold."
+    log "EDGE ALERT->OK recovered (re-baseline), notified"
+  fi
+  echo OK >"$LAST_FILE" 2>/dev/null
+  exit 0
+fi
+
+# Elapsed too short → don't compute a misleading rate this cycle.
+elapsed=$(( nowts - prev_ts ))
+if [ "$elapsed" -lt "$MIN_INTERVAL_SECS" ] 2>/dev/null; then
+  write_status OK "interval ${elapsed}s < ${MIN_INTERVAL_SECS}s; chain length=$cur (rate not computed)"
+  log "STATE OK interval ${elapsed}s too short for a rate (count=$cur prev=$prev_count)"
+  exit 0
+fi
+
+# Compute receipts/min (float) on the box. A reset (cur < prev) => rate 0.
+rate="$("$PY" -c "
+cur=$cur; prev=$prev_count; el=$elapsed
+d=cur-prev
+print('%.2f' % ((d/el*60.0) if (d>0 and el>0) else 0.0))
+" 2>/dev/null)"
+case "$rate" in ''|*[!0-9.]*) rate="0.00" ;; esac
+
+over="$("$PY" -c "print(1 if float('$rate') >= float('$FLOOD_PER_MIN') else 0)" 2>/dev/null)"
+[ "$over" = "1" ] || over=0
+
+# ---- Decide + edge-trigger --------------------------------------------------
+prev_state="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
+
+if [ "$over" = "1" ]; then
+  reason="receipt chain growing ${rate}/min (>= ${FLOOD_PER_MIN}/min threshold) over ${elapsed}s: $prev_count -> $cur"
+  write_status ALERT "$reason"
+  log "STATE ALERT rate=${rate}/min count=$cur prev=$prev_count elapsed=${elapsed}s :: $reason"
+  if [ "$prev_state" != "ALERT" ]; then
+    notify "ALERT: signed receipt chain FLOODING on $CLUSTER — growing ${rate} receipts/min (threshold ${FLOOD_PER_MIN}/min) over ${elapsed}s (length $prev_count -> $cur). The Ed25519 signer can be overwhelmed; check the ingest rate-limit (SZL_INGEST_RATE_LIMIT) + pepr throttle + producers in $RNS."
+    log "EDGE OK->ALERT notified"
+  else
+    log "DEDUP still ALERT — no re-notify"
+  fi
+  echo ALERT >"$LAST_FILE" 2>/dev/null
+else
+  write_status OK "chain growing ${rate}/min (< ${FLOOD_PER_MIN}/min) over ${elapsed}s; length=$cur"
+  log "STATE OK rate=${rate}/min count=$cur prev=$prev_count elapsed=${elapsed}s"
+  if [ "$prev_state" = "ALERT" ]; then
+    notify "RECOVERED: receipt chain growth back to normal on $CLUSTER (${rate} receipts/min, < ${FLOOD_PER_MIN}/min threshold; length=$cur)."
+    log "EDGE ALERT->OK recovered, notified"
+  fi
+  echo OK >"$LAST_FILE" 2>/dev/null
+fi
+
+exit 0

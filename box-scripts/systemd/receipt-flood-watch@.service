@@ -1,0 +1,14 @@
+[Unit]
+Description=Alarm when the signed receipt chain grows TOO FAST on cluster %i (flood that can overload the Ed25519 signer)
+Documentation=file:///usr/local/sbin/receipt-flood-watch
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The systemd instance name (%i) is the cluster to watch. Per-cluster tunables
+# (KUBECONFIG_FILE, namespaces, FLOOD_PER_MIN, ...) live in an OPTIONAL env file
+# so a cluster that is not a local-k3d-by-name cluster can still be watched.
+Environment=CLUSTER=%i
+EnvironmentFile=-/etc/receipt-flood-watch/%i.env
+ExecStart=/usr/local/sbin/receipt-flood-watch

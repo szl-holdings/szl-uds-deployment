@@ -681,3 +681,115 @@ STATE_DIR=/tmp/nssw/state LOG_DIR=/tmp/nssw/log NOTIFY_CMD=/bin/cat \
   /usr/local/sbin/szl-ns-scratch-stale-watch                                 # -> RECOVERED
 rm -rf /tmp/nssw
 ```
+---
+
+# box-scripts (part 9) — receipt-FLOOD alarm (uds-szl-demo)
+
+`receipt-chain-watch` (the in-cluster `prometheusrule.yaml` mirror included) catches
+the receipt chain when it **stalls** — when signed DSSE deploy receipts stop being
+recorded. It does **not** catch the opposite, equally dangerous failure: the chain
+growing **too fast**. A receipt flood hammers the Ed25519 signer; that exact failure
+once let the chain balloon to **~205,919** entries before anyone noticed. The server
+now carries an ingest rate-limit (`SZL_INGEST_RATE_LIMIT` ~1/s, burst ~60) and pepr a
+per-subject throttle, but nothing **paged** if those caps ever regressed or a new
+producer bypassed them.
+
+**`receipt-flood-watch`** closes that gap. Every 5 min it samples the canonical
+`szl_chain_length` gauge from the receipts-server `/metrics` endpoint (the same series
+Prometheus scrapes — read by exec-ing `python3` inside the pod, since the slim image
+has no `curl`), persists the sample (count + epoch) per cluster, and on the next run
+computes the growth rate in **receipts/min** over the inter-sample interval. If the
+rate is at/above `FLOOD_PER_MIN` (default **120/min**, comfortably above the server's
+own ~60/min ingest cap and any legitimate deploy cadence) it raises an **ALERT**.
+
+- A chain **reset** (length goes *down*) is treated as "no flood": the sample is
+  re-baselined and the rate reported as 0 — never a negative/false alarm.
+- The **first** run (no prior sample) just records a baseline and reports OK; a rate
+  needs two samples. A too-short interval (`MIN_INTERVAL_SECS`, default 60s — e.g. a
+  manual back-to-back run) is skipped rather than divided into a bogus huge rate.
+- Cluster stopped/unreachable, receipts module not deployed, or no Ready
+  receipts-server pod = a true **no-op** (exit 0, no alarm). A down sink is
+  `receipt-chain-watch`'s job to page — this guard does not double-page.
+
+It is **edge-triggered** + de-duped via `/var/lib/receipt-flood-watch/<cluster>.last_status`:
+one push on the healthy→flood edge, one on RECOVERED, never every cycle. Every run
+still appends `/var/log/receipt-flood-watch/<cluster>.log` and writes
+`/var/lib/receipt-flood-watch/<cluster>.status.json`, so a broken notifier can never
+hide a flood. It reuses the shared push channel
+(`/usr/local/sbin/a11oy-uptime-notify` → ntfy/Telegram/webhook in
+`/etc/a11oy-uptime.env`). Mirrors the `receipt-chain-watch` / `szl-receipts-retention`
+guard pattern, including the multi-cluster split below.
+
+## Files
+
+```
+sbin/
+  receipt-flood-watch                  # sample szl_chain_length, alert on the edge when growth >= FLOOD_PER_MIN/min
+systemd/
+  receipt-flood-watch.service          # oneshot: runs receipt-flood-watch for the primary cluster (uds-szl-demo)
+  receipt-flood-watch.timer            # 3 min after boot, then every 5 min
+  receipt-flood-watch@.service         # oneshot, templated: CLUSTER=%i, EnvironmentFile=-/etc/receipt-flood-watch/%i.env
+  receipt-flood-watch@.timer           # 4 min after boot, then every 5 min
+etc/receipt-flood-watch/
+  uds-tenant.env                       # sample per-cluster tunables (commented defaults)
+```
+
+## Multi-cluster
+
+The primary cluster (`uds-szl-demo`) is covered by `receipt-flood-watch.timer`. Any
+additional cluster is covered by an instanced `receipt-flood-watch@<cluster>.timer`
+that runs the SAME guard with `CLUSTER` set to the systemd instance name. Per-cluster
+tunables (`KUBECONFIG_FILE`, `RNS`, `RX_SELECTOR`, `RX_CONTAINER`, `METRICS_PORT`,
+`FLOOD_PER_MIN`, `MIN_INTERVAL_SECS`) live in `/etc/receipt-flood-watch/<cluster>.env`.
+The set of extra clusters mirrors `receipt-chain-watch`: override with
+`RECEIPT_WATCH_EXTRA_CLUSTERS="a b c" ./install.sh` (default `uds-tenant`).
+
+## Reinstall
+
+The top-level `./install.sh` installs + enables this guard (and its instanced
+per-cluster timers) along with the others. To (re)install just this guard manually:
+
+```bash
+sudo install -m 0755 sbin/receipt-flood-watch /usr/local/sbin/receipt-flood-watch
+sudo install -m 0644 systemd/receipt-flood-watch.service  /etc/systemd/system/
+sudo install -m 0644 systemd/receipt-flood-watch.timer    /etc/systemd/system/
+sudo install -m 0644 systemd/receipt-flood-watch@.service /etc/systemd/system/
+sudo install -m 0644 systemd/receipt-flood-watch@.timer   /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now receipt-flood-watch.timer
+```
+
+## Verify (safe, reversible — isolated state + captured notifier)
+
+```bash
+systemctl is-enabled receipt-flood-watch.timer
+# Drive the edge logic with fake samples in an ISOLATED state dir + a capture
+# notifier so the team channel isn't paged and the real state isn't disturbed.
+# A low threshold + hand-written prior sample simulates a flood deterministically
+# without touching the cluster:
+rm -rf /tmp/rfw; mkdir -p /tmp/rfw/state /tmp/rfw/log
+# Seed a prior sample 60s ago at count 1000; the next real sample (current chain
+# length) will almost certainly be > 1000+small, but to make it deterministic we
+# instead exercise the math directly with a tiny threshold against a known delta.
+# (Cluster-up path:) point at the live cluster with FLOOD_PER_MIN=1 to confirm a
+# healthy slowly-advancing chain does NOT trip, then a hand-seeded flood does:
+RUN(){ STATE_DIR=/tmp/rfw/state LOG_DIR=/tmp/rfw/log NOTIFY_CMD=/bin/cat \
+       ALERT_PREFIX="[TEST] " "$@" /usr/local/sbin/receipt-flood-watch; }
+RUN                                              # baseline -> OK, no push
+# Hand-seed a prior sample 60s ago far below current to force a high rate:
+printf '0 %s\n' "$(( $(date -u +%s) - 60 ))" > /tmp/rfw/state/uds-szl-demo.sample
+RUN FLOOD_PER_MIN=1                              # current chain length over 1/min -> ALERT, one [TEST] push
+RUN FLOOD_PER_MIN=1                              # -> DEDUP, no push (still ALERT)
+RUN FLOOD_PER_MIN=100000000                      # absurd threshold -> OK -> RECOVERED, one [TEST] push
+rm -rf /tmp/rfw
+```
+
+## Complementary in-cluster rule
+
+Like `receipt-chain-watch`, this host guard has an in-cluster twin so the alarm
+survives the box going dark: `charts/szl-receipts/templates/prometheusrule.yaml`
+adds **`SZLReceiptsChainFlooding`** —
+`rate(szl_chain_length[5m]) * 60 > floodPerMin` for `floodFor` (defaults 120/min,
+5m window, sustained 5m; tune via `prometheusRule.floodPerMin` / `floodRateWindow`
+/ `floodFor`). Covered by the promtool unit tests in
+`charts/szl-receipts/tests/alerts/` (a flood-fires case + a healthy-silent case),
+run via `tests/alerts/run-alert-tests.sh`.

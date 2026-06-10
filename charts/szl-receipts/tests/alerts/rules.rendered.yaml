@@ -58,3 +58,21 @@ groups:
             hash-link in the chain broke. The audit trail can no longer be trusted
             end-to-end — investigate immediately.
           runbook_url: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/README.md#receipt-chain-watch"
+
+      - alert: SZLReceiptsChainFlooding
+        expr: max by (namespace) (rate(szl_chain_length{namespace="szl-receipts"}[5m])) * 60 > 120
+        for: 5m
+        labels:
+          severity: critical
+          component: szl-receipts
+          szl_alarm: receipt-chain-flood
+        annotations:
+          summary: "SZL receipt chain is FLOODING (growing too fast)"
+          description: >-
+            The szl-receipts chain in namespace szl-receipts has been growing at
+            more than 120 receipts/min (over a 5m window) for 5m. A receipt flood can
+            overload the Ed25519 signer (it once let the chain balloon to ~205,919
+            entries). Check the ingest rate-limit (SZL_INGEST_RATE_LIMIT), the pepr
+            per-subject throttle, and the receipt producers. This in-cluster rule
+            complements the host guard receipt-flood-watch.
+          runbook_url: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/README.md#receipt-flood-watch"

@@ -308,3 +308,12 @@ prometheusRule:
   sinkDownFor: "5m"
   sinkAbsentFor: "10m"
   chainTamperFor: "2m"
+  # Flood alarm (SZLReceiptsChainFlooding) — the OPPOSITE of the stall alarms.
+  # Fires when szl_chain_length grows faster than floodPerMin receipts/min
+  # (rate() over floodRateWindow) sustained for floodFor. A receipt flood can
+  # overload the Ed25519 signer; this is the in-cluster analog of the host guard
+  # receipt-flood-watch. The server's own ingest cap is ~1/s (~60/min), so the
+  # default 120/min is comfortably above legitimate activity (see box-scripts).
+  floodPerMin: 120
+  floodRateWindow: "5m"
+  floodFor: "5m"

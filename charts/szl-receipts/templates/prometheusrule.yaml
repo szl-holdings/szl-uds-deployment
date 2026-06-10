@@ -32,6 +32,12 @@
 #                            to 0 (a stored receipt was altered / a hash-link
 #                            broke). This is an IMPROVEMENT over the box guard,
 #                            which only watched recording, not at-rest integrity.
+#   SZLReceiptsChainFlooding—the chain is GROWING TOO FAST: szl_chain_length is
+#                            climbing at a sustained rate above floodPerMin
+#                            receipts/min. This is the OPPOSITE of the stall
+#                            alarms — a flood that can overload the Ed25519
+#                            signer (once let the chain balloon to ~205,919).
+#                            In-cluster analog of the host guard receipt-flood-watch.
 #
 # HONEST SCOPE NOTE
 # -----------------
@@ -120,4 +126,28 @@ spec:
               audit trail can no longer be trusted end-to-end — investigate
               immediately.
             runbook_url: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/README.md#receipt-chain-watch"
+
+        - alert: SZLReceiptsChainFlooding
+          # The chain is growing TOO FAST. szl_chain_length is a monotonically
+          # increasing gauge; rate() over the window gives receipts/sec, *60 =>
+          # receipts/min. A chain reset (length drops) is treated by rate() as a
+          # counter reset and contributes 0, so a reset never false-fires.
+          expr: max by (namespace) (rate(szl_chain_length{namespace="{{ $ns }}"}[{{ .Values.prometheusRule.floodRateWindow | default "5m" }}])) * 60 > {{ .Values.prometheusRule.floodPerMin | default 120 }}
+          for: {{ .Values.prometheusRule.floodFor | default "5m" }}
+          labels:
+            severity: critical
+            component: szl-receipts
+            szl_alarm: receipt-chain-flood
+          annotations:
+            summary: "SZL receipt chain is FLOODING (growing too fast)"
+            description: >-
+              The szl-receipts chain in namespace {{ $ns }} has been growing at
+              more than {{ .Values.prometheusRule.floodPerMin | default 120 }} receipts/min
+              (over a {{ .Values.prometheusRule.floodRateWindow | default "5m" }} window)
+              for {{ .Values.prometheusRule.floodFor | default "5m" }}. A receipt flood can
+              overload the Ed25519 signer (it once let the chain balloon to ~205,919
+              entries). Check the ingest rate-limit (SZL_INGEST_RATE_LIMIT), the pepr
+              per-subject throttle, and the receipt producers. This in-cluster rule
+              complements the host guard receipt-flood-watch.
+            runbook_url: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/README.md#receipt-flood-watch"
 {{- end }}
