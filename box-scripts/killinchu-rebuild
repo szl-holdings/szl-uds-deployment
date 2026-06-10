@@ -55,14 +55,22 @@ NTFY_ENV_FILE="${KILLINCHU_NTFY_ENV_FILE:-/etc/a11oy-uptime.env}"
 # Key feature modules to md5-guard: the live image MUST bake these byte-for-byte
 # from origin/$BRANCH (Dockerfile WORKDIR=/app, every COPY lands at /app/<path>).
 # A build from a stale/wrong tree silently ships the old module — this catches it.
-GUARD_FILES=(
-  "szl_evidence_research.py"     # resilient live paper/evidence feed
-  "killinchu_backend.py"         # real Postgres-first persistent backend
-  "killinchu_elite_console.py"   # the /elite console UI
-  "killinchu_osint.py"           # real adsb.lol military ADS-B scrape
-  "szl_readiness.py"             # operational readiness console
-  "killinchu_cannonico.py"       # canonical app module (hf-sync mirrored)
-  "serve.py"                     # FastAPI app entry / route registration
+# Grouped into DISTINGUISHABLE categories (CATEGORY|<repo path>) so front-door,
+# backend, OSINT-feed, liveness and readiness drift are each reported separately;
+# extended beyond the original flat set to also guard the live OSINT-feed overlays
+# (killinchu_live_feeds / fleet_vessels / naval_haps) and the contracting panel.
+GUARD_SPECS=(
+  "FRONT-DOOR|killinchu_elite_console.py" # the /elite console UI
+  "FRONT-DOOR|killinchu_cannonico.py"     # canonical app module (hf-sync mirrored)
+  "APP-ENTRY|serve.py"                    # FastAPI app entry / route registration
+  "BACKEND|killinchu_backend.py"          # real Postgres-first persistent backend
+  "LIVENESS|szl_evidence_research.py"     # resilient live paper/evidence feed
+  "OSINT|killinchu_osint.py"              # real adsb.lol military ADS-B scrape
+  "OSINT|killinchu_live_feeds.py"         # live OSINT feed overlays
+  "OSINT|killinchu_fleet_vessels.py"      # naval fleet vessel feed
+  "OSINT|killinchu_naval_haps.py"         # naval / HAPS feed
+  "READINESS|szl_readiness.py"            # operational readiness console
+  "READINESS|szl_contracting.py"          # SAM/CAGE + SBIR/STTR contracting panel
 )
 
 log(){ echo "[killinchu-rebuild $(date +%H:%M:%S)] $*"; }
@@ -70,19 +78,31 @@ fail(){ echo "[killinchu-rebuild] FATAL: $*" >&2; exit "${2:-1}"; }
 
 # Compare the key feature modules baked into $IMAGE against origin/$BRANCH
 # byte-for-byte (md5). WORKDIR is /app so repo path <p> maps to image /app/<p>.
+# Each file logs VERIFY OK/FAIL with its CATEGORY; a closing VERIFY SUMMARY reports
+# PASS/FAIL per category so drift stays distinguishable. Fails closed (non-zero) if
+# ANY guarded module drifts; a file genuinely absent from origin is reported SKIP.
 verify_modules(){
-  local rc=0 rp want got
-  for rp in "${GUARD_FILES[@]}"; do
+  local rc=0 spec cat rp want got c
+  local cats=()
+  declare -A CAT_FAIL=() CAT_SEEN=()
+  for spec in "${GUARD_SPECS[@]}"; do
+    cat="${spec%%|*}"; rp="${spec#*|}"
+    if [ -z "${CAT_SEEN[$cat]:-}" ]; then CAT_SEEN[$cat]=1; CAT_FAIL[$cat]=0; cats+=("$cat"); fi
     want="$(git show "origin/$BRANCH:$rp" 2>/dev/null | md5sum | awk '{print $1}')"
     got="$(docker run --rm --entrypoint cat "$IMAGE" "/app/$rp" 2>/dev/null | md5sum | awk '{print $1}')"
     if [ -z "$want" ]; then
-      log "VERIFY SKIP $rp (not in origin/$BRANCH)"
+      log "VERIFY SKIP [$cat] $rp (not in origin/$BRANCH)"
     elif [ "$want" = "$got" ]; then
-      log "VERIFY OK   $rp == image:/app/$rp  ($want)"
+      log "VERIFY OK   [$cat] $rp == image:/app/$rp  ($want)"
     else
-      log "VERIFY FAIL $rp ($want) != image:/app/$rp ($got)"; rc=1
+      log "VERIFY FAIL [$cat] $rp ($want) != image:/app/$rp ($got)"; rc=1; CAT_FAIL[$cat]=1
     fi
   done
+  local summary=""
+  for c in "${cats[@]}"; do
+    summary+=" $c=$([ "${CAT_FAIL[$c]}" -eq 0 ] && echo PASS || echo FAIL)"
+  done
+  log "VERIFY SUMMARY:$summary"
   return $rc
 }
 

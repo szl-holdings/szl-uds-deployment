@@ -39,33 +39,66 @@ TS="$(date +%Y%m%d-%H%M%S)"
 log(){ echo "[a11oy-rebuild $(date +%H:%M:%S)] $*"; }
 fail(){ echo "[a11oy-rebuild] FATAL: $*" >&2; exit "${2:-1}"; }
 
-# Compare the files baked into $IMAGE against origin/$BRANCH byte-for-byte (md5),
-# grouped into two categories so FRONT-DOOR drift and LIVENESS drift are reported
-# and DISTINGUISHABLE per file:
-#   FRONT-DOOR  pages/console.html, console/index.html (the cathedral UI front door)
-#   LIVENESS    szl_evidence_research.py — powers the Evidence & Research
-#               "/sources/live" reachability badges; a rebuild that drops or
-#               regresses it used to pass verify silently. Guarding it here closes
-#               that gap (the Dockerfile COPYs it to /app/szl_evidence_research.py).
+# Curated high-value guard set: the live image MUST bake each of these files
+# byte-for-byte from origin/$BRANCH. The Dockerfile COPYs ~150 sources; verify()
+# used to guard only THREE (the two front-door HTML files + szl_evidence_research.py),
+# so a rebuild from a stale/wrong tree could silently DROP or regress ANY other
+# powered feature module and still pass verify. This curated subset extends the
+# guard across the high-value powered features — live OSINT/vertical feeds, the
+# governance gateway + audit, operational readiness / contracting / fleet, B2
+# security data, the bounty board, and the FastAPI app entry — grouped into
+# DISTINGUISHABLE categories so front-door drift, feed drift, governance drift, etc.
+# are each reported separately.
+# Format per entry: CATEGORY|<repo path>|<image path>
 # Dockerfile maps: pages/ -> /app/pages/ , console/ -> /app/static/ , root -> /app/ .
-# Returns non-zero if ANY guarded file drifts; always prints a per-category summary.
+GUARD_SPECS=(
+  "FRONT-DOOR|pages/console.html|/app/pages/console.html"          # cathedral UI front door
+  "FRONT-DOOR|console/index.html|/app/static/index.html"          # cathedral UI front door
+  "APP-ENTRY|serve.py|/app/serve.py"                              # FastAPI app entry / route registration
+  "LIVENESS|szl_evidence_research.py|/app/szl_evidence_research.py" # Evidence & Research /sources/live badges
+  "FEEDS|a11oy_live_feeds.py|/app/a11oy_live_feeds.py"            # live OSINT feed overlays
+  "FEEDS|a11oy_vertical_feeds.py|/app/a11oy_vertical_feeds.py"    # vertical-specific live feeds
+  "FEEDS|a11oy_deva_feeds.py|/app/a11oy_deva_feeds.py"           # dev-A live feeds
+  "FEEDS|a11oy_amaru_feeds.py|/app/a11oy_amaru_feeds.py"        # amaru (memory organ) feeds
+  "GOVERNANCE|szl_governance_gateway.py|/app/szl_governance_gateway.py" # governed operator/reason gateway
+  "GOVERNANCE|szl_abacus_verify.py|/app/szl_abacus_verify.py"   # abacus verification surface
+  "GOVERNANCE|szl_decision_uncertainty.py|/app/szl_decision_uncertainty.py" # decision uncertainty surface
+  "GOVERNANCE|szl_gor_audit.py|/app/szl_gor_audit.py"          # governance-of-record audit
+  "READINESS|szl_readiness.py|/app/szl_readiness.py"           # operational readiness console
+  "READINESS|szl_contracting.py|/app/szl_contracting.py"       # SAM/CAGE + SBIR/STTR contracting panel
+  "READINESS|szl_uds_fleet.py|/app/szl_uds_fleet.py"          # UDS fleet-trust console
+  "SECDATA|szl_b2_secdata.py|/app/szl_b2_secdata.py"          # B2 security-data feeds
+  "BOUNTIES|szl_bounties.py|/app/szl_bounties.py"             # open-problem bounty board
+  "BOUNTIES|szl_putnam.py|/app/szl_putnam.py"               # putnam showcase
+)
+
+# Compare every guarded file baked into $IMAGE against origin/$BRANCH byte-for-byte
+# (md5). Each file logs VERIFY OK/FAIL with its CATEGORY; a closing VERIFY SUMMARY
+# reports PASS/FAIL per category so drift stays distinguishable. A file genuinely
+# absent from origin/$BRANCH is reported VERIFY SKIP (it is not the image's drift).
+# Returns non-zero if ANY guarded file drifts (fails closed).
 verify(){
-  local rc=0 fd_fail=0 lv_fail=0 cat rest rp ip want got
-  for spec in \
-    "FRONT-DOOR|pages/console.html|/app/pages/console.html" \
-    "FRONT-DOOR|console/index.html|/app/static/index.html" \
-    "LIVENESS|szl_evidence_research.py|/app/szl_evidence_research.py"; do
+  local rc=0 spec cat rest rp ip want got c
+  local cats=()
+  declare -A CAT_FAIL=() CAT_SEEN=()
+  for spec in "${GUARD_SPECS[@]}"; do
     cat="${spec%%|*}"; rest="${spec#*|}"; rp="${rest%%|*}"; ip="${rest##*|}"
+    if [ -z "${CAT_SEEN[$cat]:-}" ]; then CAT_SEEN[$cat]=1; CAT_FAIL[$cat]=0; cats+=("$cat"); fi
     want="$(git show "origin/$BRANCH:$rp" 2>/dev/null | md5sum | awk '{print $1}')"
     got="$(docker run --rm --entrypoint cat "$IMAGE" "$ip" 2>/dev/null | md5sum | awk '{print $1}')"
-    if [ -n "$want" ] && [ "$want" = "$got" ]; then
+    if [ -z "$want" ]; then
+      log "VERIFY SKIP [$cat] $rp (not in origin/$BRANCH)"
+    elif [ "$want" = "$got" ]; then
       log "VERIFY OK   [$cat] $rp == image:$ip  ($want)"
     else
-      log "VERIFY FAIL [$cat] $rp ($want) != image:$ip ($got)"; rc=1
-      if [ "$cat" = "FRONT-DOOR" ]; then fd_fail=1; else lv_fail=1; fi
+      log "VERIFY FAIL [$cat] $rp ($want) != image:$ip ($got)"; rc=1; CAT_FAIL[$cat]=1
     fi
   done
-  log "VERIFY SUMMARY: front-door=$([ "$fd_fail" -eq 0 ] && echo PASS || echo FAIL)  liveness=$([ "$lv_fail" -eq 0 ] && echo PASS || echo FAIL)"
+  local summary=""
+  for c in "${cats[@]}"; do
+    summary+=" $c=$([ "${CAT_FAIL[$c]}" -eq 0 ] && echo PASS || echo FAIL)"
+  done
+  log "VERIFY SUMMARY:$summary"
   return $rc
 }
 
