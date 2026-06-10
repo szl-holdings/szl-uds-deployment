@@ -185,12 +185,23 @@ jobs:
           syft-version: ${{ env.SYFT_VERSION }}
 
       # ── Log in to ghcr.io ──────────────────────────────────────────────────
+      # The published bundle package (ghcr.io/szl-holdings/szl-uds-bundle) is an
+      # org-level GHCR package whose Actions/repo linkage points at a DIFFERENT
+      # repo (szl-holdings/uds-bundles), so the built-in GITHUB_TOKEN from THIS
+      # repo is rejected at push time with
+      #   403 denied: permission_denied: write_package
+      # There is no public REST API to re-link an existing org package to a repo
+      # (web UI only). The automatable fix is to authenticate the push with an
+      # org-owner PAT (secret GHCR_PUBLISH_TOKEN, scope write:packages) — an org
+      # owner can write any org package regardless of which repo it is linked to.
+      # uds publish + keyless cosign both reuse these docker credentials to push
+      # the bundle and its .sig to GHCR.
       - name: Log in to ghcr.io
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GHCR_PUBLISH_TOKEN }}
 
       # ── Build the 5 member Zarf packages from the LIVE ghcr.io images ───────
       # Each packages/<organ>/zarf.yaml references
