@@ -31,9 +31,21 @@
 # that neuters a check (green while guarding nothing) is caught by the self-test
 # job below.
 #
-# A heavier, opt-in `workflow_dispatch` job runs `uds run bundle` end-to-end on a
-# runner with real disk and asserts the bundle tarball is produced — the only
-# thing that catches a break a text scan cannot (class 3 and beyond).
+# The static scan cannot see breakage that only surfaces at BUILD time —
+# toolchain/version drift in uds/zarf, an unpullable image, a zarf schema change,
+# a /tmp overflow (class 3 above). The heavy `e2e-bundle` job runs the real
+# `uds run bundle` end-to-end on a runner with real disk and asserts the bundle
+# tarball is produced. It runs:
+#   • NIGHTLY on a schedule — an UNATTENDED drift catcher so a real build break
+#     is noticed even when no PR touches the bundle; and
+#   • on manual `workflow_dispatch` when run_e2e is checked.
+# It never runs on PR/push (the static guard covers those without paying the
+# multi-minute build cost on every change). Because the nightly run has no human
+# watching it, a scheduled FAILURE surfaces visibly two ways: a direct push to
+# the org's ntfy alert channel (the same SLACK_WEBHOOK_URL relay used by
+# szl-holdings/a11oy's scheduled monitors; soft-skips if the secret is not yet
+# provisioned) AND a single rolling GitHub incident issue that opens on failure
+# and auto-closes on the next green nightly run (always works — built-in token).
 #
 # Complements (does not duplicate): package-build-guard.yml (szl-receipts zarf
 # build dry-run), chart-guard.yml (helm lint/template), image-pin-guard.yml.
@@ -62,6 +74,11 @@ on:
       - "scripts/bundle-build-guard.py"
       - "scripts/bundle-build-guard.test.py"
       - ".github/workflows/bundle-build-guard.yml"
+  schedule:
+    # Nightly end-to-end build (03:41 UTC). Catches toolchain/version drift and
+    # other build-time breakage the static scan cannot see, with no human in the
+    # loop — so a green main can still hide a broken `uds run bundle`.
+    - cron: "41 3 * * *"
   workflow_dispatch:
     inputs:
       run_e2e:
@@ -76,6 +93,9 @@ jobs:
   # ── Lightweight static guard (every PR/push) ────────────────────────────────
   guard:
     name: bundle members <-> pre-build steps + flavor gating
+    # Skip the static scan on the schedule event — the nightly run exists purely
+    # to exercise the heavy e2e-bundle job below.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -90,6 +110,7 @@ jobs:
   # ── Self-test: prove the guard actually fails on broken fixtures ─────────────
   self-test:
     name: guard self-test (broken fixtures must fail)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -101,15 +122,19 @@ jobs:
       - name: Run guard self-test
         run: python scripts/bundle-build-guard.test.py
 
-  # ── Heavy, opt-in end-to-end build (workflow_dispatch only) ─────────────────
+  # ── Heavy end-to-end build (nightly schedule + opt-in workflow_dispatch) ─────
   # Proves the FULL `uds run bundle` actually produces the bundle tarball on a
   # runner with real disk — catches breakage a text scan cannot (e.g. /tmp
-  # overflow, an unpullable image, a zarf schema error). Off by default on PRs
-  # because it pulls the init/core OCI packages and builds every local package.
+  # overflow, an unpullable image, a zarf schema error, uds/zarf version drift).
+  # Off on PRs because it pulls the init/core OCI packages and builds every local
+  # package; the nightly run carries that cost once a day instead.
   e2e-bundle:
     name: end-to-end `uds run bundle`
-    if: github.event_name == 'workflow_dispatch' && inputs.run_e2e
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_e2e) }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
       - name: Free up disk space
@@ -136,3 +161,88 @@ jobs:
           fi
           echo "OK: produced ${BUNDLE}"
           ls -lh "${BUNDLE}"
+
+      # ── Surface a FAILURE of the unattended nightly run ──────────────────────
+      # Direct push to the org's watched ntfy channel via the shared
+      # SLACK_WEBHOOK_URL relay (same mechanism a11oy's rekor-recheck /
+      # release-receipt-verify monitors use). Fires only on a scheduled failure;
+      # manual dispatch failures are watched by the person who triggered them.
+      # Posts a Slack-incoming-webhook body with curl (no third-party action, per
+      # org policy). Soft-skips with a notice if the secret is not yet
+      # provisioned — the red run + the incident issue below still stand.
+      - name: Alert the team on nightly build failure (ntfy)
+        if: ${{ failure() && github.event_name == 'schedule' }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL secret not configured — skipping ntfy alert. The red scheduled run and the rolling e2e-bundle incident issue still stand."
+            exit 0
+          fi
+          text=":rotating_light: *Nightly e2e bundle build FAILED* in ${REPO}.
+          \`uds run bundle\` did not produce the bundle tarball — likely uds/zarf toolchain or version drift, an unpullable image, or a real build break that the static bundle-build-guard scan cannot see.
+          *Failing run:* ${RUN_URL}"
+          payload=$(jq -n --arg text "$text" '{text: $text}')
+          echo "Posting nightly-build-failure alert to the webhook..."
+          code=$(curl -sS -o /tmp/alert_resp.txt -w '%{http_code}' \
+                   -X POST -H 'Content-Type: application/json' \
+                   --max-time 20 --data "${payload}" "${SLACK_WEBHOOK_URL}")
+          echo "Webhook responded HTTP ${code}."
+          if [ "${code}" -lt 200 ] || [ "${code}" -ge 300 ]; then
+            echo "::error::Alert webhook POST failed (HTTP ${code}): $(cat /tmp/alert_resp.txt)"
+            exit 1
+          fi
+          echo "Alert delivered."
+
+      # Always-on fallback that needs no external secret: open / refresh a single
+      # rolling incident issue so a broken nightly build is visible in the repo
+      # even before the ntfy relay secret is provisioned.
+      - name: Open / refresh rolling incident issue on failure
+        if: ${{ failure() && github.event_name == 'schedule' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- e2e-bundle-incident -->';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const now = new Date().toISOString();
+            const q = `repo:${context.repo.owner}/${context.repo.repo} in:body "${marker}" label:e2e-bundle`;
+            const res = await github.rest.search.issuesAndPullRequests({ q, sort: 'created', order: 'desc', per_page: 5 });
+            const existing = res.data.items.find(i => !i.pull_request) || null;
+            const body = `## Nightly e2e bundle build is FAILING\n\n${marker}\n` +
+              `**State:** FAILING\n**Detected:** ${now}\n**Run:** ${runUrl}\n\n` +
+              `The scheduled \`uds run bundle\` end-to-end build did not produce the bundle ` +
+              `tarball. This usually means uds/zarf toolchain or version drift, an unpullable ` +
+              `image, or a real build break that the static bundle-build-guard scan cannot see. ` +
+              `This is a single rolling incident; it updates in place and auto-closes on the ` +
+              `next green nightly run.`;
+            if (existing) {
+              if (existing.state === 'closed') {
+                await github.rest.issues.update({ owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, state: 'open' });
+              }
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, body: `Still FAILING as of ${now}.\nRun: ${runUrl}` });
+              core.notice(`Refreshed rolling incident issue #${existing.number}.`);
+            } else {
+              const created = await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title: '[E2E-BUNDLE] Nightly `uds run bundle` build is failing', body, labels: ['e2e-bundle', 'incident'] });
+              core.notice(`Opened rolling incident issue #${created.data.number}.`);
+            }
+
+      # Close the rolling incident on the next green nightly run.
+      - name: Close rolling incident issue on recovery
+        if: ${{ success() && github.event_name == 'schedule' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- e2e-bundle-incident -->';
+            const now = new Date().toISOString();
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const q = `repo:${context.repo.owner}/${context.repo.repo} in:body "${marker}" label:e2e-bundle state:open`;
+            const res = await github.rest.search.issuesAndPullRequests({ q, sort: 'created', order: 'desc', per_page: 5 });
+            const existing = res.data.items.find(i => !i.pull_request) || null;
+            if (existing) {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, body: `Recovered: the nightly e2e bundle build is green again as of ${now}.\nAuto-closing this rolling incident.\nRun: ${runUrl}` });
+              await github.rest.issues.update({ owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, state: 'closed' });
+              core.notice(`Closed rolling incident issue #${existing.number}.`);
+            }
