@@ -1,0 +1,61 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# SZL "prove-organs" substrate bundle
+# =============================================================================
+# This is the minimal UDS substrate the organ-proof job stands up on a throwaway
+# k3d cluster BEFORE it deploys a single organ package: Zarf init (in-cluster
+# registry + agent) plus core-base (Istio + Pepr/UDS Operator). core-base is the
+# only hard prerequisite an organ package has — it installs the uds.dev/v1alpha1
+# Package CRD and the operator that reconciles each organ's UDS Package CR
+# (NetworkPolicies / ServiceMonitor / Istio config).
+#
+# Deliberately NOT included:
+#   - core-identity-authorization (Keycloak / AuthService). The proof asserts the
+#     organ Deployment reaches Available, which does not depend on SSO; skipping
+#     identity keeps each throwaway cluster light and fast. (An organ's UDS
+#     Package CR may declare an SSO client; the operator simply cannot satisfy it
+#     without Keycloak, which does not block the organ's own Deployment.)
+#   - szl-receipts and the organ packages themselves. Doctrine: organs are
+#     "individually deployable, NOT all five boot together" — the proof job
+#     deploys exactly ONE organ Zarf package on top of this substrate, one
+#     throwaway cluster at a time (see tasks/prove-organs.yaml).
+#
+# Refs mirror uds-bundle.yaml (the catalog-grade 0.4.0 bundle) so the substrate
+# is byte-for-byte the same init + core-base this repo already deploys.
+
+kind: UDSBundle
+metadata:
+  name: szl-prove-substrate
+  version: "0.4.0"
+  description: Minimal UDS substrate (init + core-base) for proving organs deploy individually
+
+packages:
+  # ── Layer 1: Zarf init — internal registry + agent ──────────────────────────
+  - name: init
+    repository: ghcr.io/zarf-dev/packages/init
+    ref: v0.77.0
+
+  # ── Layer 2: UDS Core (base only) — Istio + Pepr/UDS Operator ───────────────
+  # Pulls anonymously from the public GHCR mirror (no Defense Unicorns registry
+  # creds needed). The overrides below mirror uds-bundle.yaml: they rightsize
+  # istiod to a single replica with a small CPU request and pin the tenant
+  # gateway Service to ClusterIP so `uds deploy` completes RC=0 on a constrained
+  # single-node runner (a LoadBalancer tenant gateway would block helm --wait
+  # forever on an external IP that k3d cannot assign).
+  - name: core-base
+    repository: ghcr.io/defenseunicorns/packages/uds/core-base
+    ref: 1.5.0-upstream
+    overrides:
+      istio-controlplane:
+        istiod:
+          values:
+            - path: pilot.autoscaleMax
+              value: 1
+            - path: pilot.resources.requests.cpu
+              value: 150m
+      istio-tenant-gateway:
+        gateway:
+          values:
+            - path: service.type
+              value: ClusterIP

@@ -1,0 +1,120 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# Prove Organs — szl-uds-deployment
+# =============================================================================
+# Dispatch-only proof that each organ (a11oy, killinchu, amaru, sentra, rosie)
+# ACTUALLY deploys individually from its UDS bundle package onto a THROWAWAY k3d
+# cluster and that its Deployment reaches Available. One organ per matrix leg,
+# one fresh cluster per leg — doctrine: "individually deployable, NOT all five
+# boot together."
+#
+# Resource-heavy (each leg stands up Zarf init + UDS core-base, then one organ),
+# so it is workflow_dispatch ONLY — never on push/PR. fail-fast is disabled so
+# one organ failing does not mask the verdict of the others. Every leg ends with
+# a LOUD pass/fail (no silent-pass) and always tears its cluster down.
+#
+# Run:  Actions -> Prove Organs -> Run workflow  (organ: all | <one organ>)
+#
+# Action SHA pins + uds/zarf versions match .github/workflows/test.yaml.
+
+name: Prove Organs
+
+on:
+  workflow_dispatch:
+    inputs:
+      organ:
+        description: "Which organ to prove"
+        type: choice
+        default: all
+        options:
+          - all
+          - a11oy
+          - killinchu
+          - amaru
+          - sentra
+          - rosie
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  # ── Compute the matrix from the dispatch input ───────────────────────────────
+  setup:
+    name: Resolve organ matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    env:
+      ORGAN: ${{ inputs.organ }}
+    steps:
+      - id: m
+        name: Build matrix JSON
+        run: |
+          set -euo pipefail
+          # a11oy ships at 0.3.0; the manifest-based organs ship at 0.2.0.
+          A='{"organ":"a11oy","version":"0.3.0"}'
+          K='{"organ":"killinchu","version":"0.2.0"}'
+          M='{"organ":"amaru","version":"0.2.0"}'
+          S='{"organ":"sentra","version":"0.2.0"}'
+          R='{"organ":"rosie","version":"0.2.0"}'
+          if [ "${ORGAN}" = "all" ]; then
+            echo "matrix={\"include\":[${A},${K},${M},${S},${R}]}" >> "$GITHUB_OUTPUT"
+          else
+            case "${ORGAN}" in
+              a11oy) V="0.3.0" ;;
+              *)     V="0.2.0" ;;
+            esac
+            echo "matrix={\"include\":[{\"organ\":\"${ORGAN}\",\"version\":\"${V}\"}]}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Prove one organ per leg on a throwaway cluster ───────────────────────────
+  prove:
+    name: Prove ${{ matrix.organ }}
+    needs: setup
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install UDS CLI
+        uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1 (v1.0.1)
+        with:
+          version: v0.31.0
+
+      - name: Install Zarf
+        run: |
+          curl -sL "https://github.com/zarf-dev/zarf/releases/download/v0.77.0/zarf_v0.77.0_Linux_amd64" \
+            -o /usr/local/bin/zarf && chmod +x /usr/local/bin/zarf
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+      - name: Install kubectl
+        run: |
+          curl -sLO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+
+      - name: Log in to GHCR (so organ images pull as the org token allows)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Prove ${{ matrix.organ }} deploys individually + reaches Available
+        run: uds run prove-organs --set ORGAN=${{ matrix.organ }} --set VERSION=${{ matrix.version }}
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          NS="szl-${{ matrix.organ }}"
+          echo "==== cluster namespaces ===="; kubectl get ns || true
+          echo "==== ${NS} workloads ===="; kubectl -n "${NS}" get deploy,pods,svc -o wide || true
+          echo "==== ${NS} describe ===="; kubectl -n "${NS}" describe "deployment/${{ matrix.organ }}" || true
+          echo "==== ${NS} events ===="; kubectl -n "${NS}" get events --sort-by=.lastTimestamp || true
+          echo "==== ${NS} logs ===="; kubectl -n "${NS}" logs "deployment/${{ matrix.organ }}" --all-containers --tail=200 || true
+          echo "==== UDS operator (pepr) logs ===="; kubectl -n pepr-system logs deploy/pepr-uds-core-watcher --tail=100 2>/dev/null || true
+
+      - name: Teardown throwaway cluster
+        if: always()
+        run: k3d cluster delete "uds-prove-${{ matrix.organ }}" || true

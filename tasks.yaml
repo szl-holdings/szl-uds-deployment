@@ -74,6 +74,7 @@ includes:
   - test: ./tasks/test.yaml
   - demo: ./tasks/demo.yaml
   - smoke: ./tasks/smoke.yaml
+  - prove-organs: ./tasks/prove-organs.yaml
 
 tasks:
   # ── Cold smoke entry point ────────────────────────────────────────────────
@@ -84,6 +85,18 @@ tasks:
     description: "Cold k3d up + deploy + honest readiness of receipts and the 5 apps"
     actions:
       - task: smoke:smoke
+
+  # ── Per-organ individual-deploy proof ─────────────────────────────────────
+  # `uds run prove-organs --set ORGAN=<organ>`: prove ONE organ (a11oy |
+  # killinchu | amaru | sentra | rosie) deploys individually from its UDS bundle
+  # package onto a THROWAWAY k3d cluster and reaches Available — one organ at a
+  # time (doctrine: individually deployable, NOT all five boot together).
+  # Implemented in tasks/prove-organs.yaml; aliased here. The dispatch-only CI
+  # job .github/workflows/prove-organs.yaml runs this across all five organs.
+  - name: prove-organs
+    description: "Prove ONE organ (--set ORGAN=...) deploys individually on a throwaway k3d cluster and reaches Available"
+    actions:
+      - task: prove-organs:prove
 
   # ── Primary entry point ───────────────────────────────────────────────────
   - name: start

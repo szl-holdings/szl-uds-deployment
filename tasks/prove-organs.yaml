@@ -1,0 +1,157 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+# yaml-language-server: $schema=https://raw.githubusercontent.com/defenseunicorns/uds-cli/refs/heads/main/tasks.schema.json
+#
+# Organ-proof task — szl-uds-deployment
+# =============================================================================
+# `uds run prove-organs --set ORGAN=<organ>` proves ONE organ ACTUALLY deploys
+# individually from its UDS bundle package onto a THROWAWAY k3d cluster and that
+# its Deployment reaches Available — one organ at a time, per doctrine
+# ("individually deployable, NOT all five boot together").
+#
+# Flow (per invocation, one organ):
+#   1. Create a COLD throwaway k3d cluster (deleted first if it exists).
+#   2. Stand up the minimal UDS substrate (init + core-base) from
+#      bundles/prove-organs — this installs the UDS Operator + the
+#      uds.dev/v1alpha1 Package CRD every organ package requires.
+#   3. Build the selected organ's Zarf package (bakes its cosign-signed image).
+#   4. Deploy ONLY that organ package. The package's own onDeploy.after wait
+#      (condition: Available, 180s) already gates the deploy; this task then
+#      RE-ASSERTS Available with `kubectl wait` for a clear, loud verdict.
+#   5. Failures are LOUD (non-zero exit + diagnostics) — never silent-pass.
+#
+# Teardown is the caller's responsibility (the CI workflow deletes the cluster in
+# an always() step; locally run `k3d cluster delete ${PROVE_CLUSTER}-<organ>`),
+# so a failed run leaves the cluster intact for inspection.
+#
+# Honest readiness pattern mirrors tasks/smoke.yaml (PASS only on Available; loud
+# FAIL with pod/event diagnostics otherwise).
+#
+# Requires: uds, zarf, k3d, docker, kubectl. See docs/INSTALL.md.
+
+variables:
+  - name: ORGAN
+    description: "Which organ to prove: a11oy | killinchu | amaru | sentra | rosie (required)"
+    default: ""
+  - name: VERSION
+    description: "Organ Zarf package version / image tag (a11oy=0.3.0, others=0.2.0)"
+    default: "0.2.0"
+  - name: PROVE_CLUSTER
+    description: "Base name for the throwaway k3d cluster (organ name is appended)"
+    default: "uds-prove"
+  - name: WAIT_TIMEOUT
+    description: "How long to wait for the organ Deployment to reach Available"
+    default: "240s"
+
+tasks:
+  - name: prove
+    description: "Prove ONE organ (--set ORGAN=...) deploys individually on a throwaway k3d cluster and reaches Available"
+    actions:
+      - description: "Validate ORGAN is exactly one of the five organs"
+        cmd: |
+          case "${ORGAN}" in
+            a11oy|killinchu|amaru|sentra|rosie)
+              echo "Proving organ: ${ORGAN} (version ${VERSION})"
+              ;;
+            "")
+              echo "ERROR: ORGAN is required."
+              echo "       uds run prove-organs --set ORGAN=a11oy|killinchu|amaru|sentra|rosie"
+              exit 1
+              ;;
+            *)
+              echo "ERROR: unknown ORGAN='${ORGAN}' (expected a11oy|killinchu|amaru|sentra|rosie)."
+              exit 1
+              ;;
+          esac
+
+      - description: "Check required tools"
+        cmd: |
+          for tool in uds zarf k3d docker kubectl; do
+            command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: $tool not installed. See docs/INSTALL.md."; exit 1; }
+          done
+          echo "All required tools found."
+
+      - description: "Create a COLD throwaway k3d cluster for ${ORGAN}"
+        cmd: |
+          CL="${PROVE_CLUSTER}-${ORGAN}"
+          if k3d cluster list 2>/dev/null | grep -q "${CL}"; then
+            echo "Cluster ${CL} already exists — deleting for a cold start."
+            k3d cluster delete "${CL}"
+          fi
+          k3d cluster create "${CL}" \
+            --k3s-arg "--disable=traefik@server:0" \
+            --wait
+          echo "Throwaway cluster ${CL} created."
+
+      - description: "Stand up the UDS substrate (init + core-base) — provides the UDS Operator + Package CRD"
+        cmd: |
+          mkdir -p "${BUILD_TMPDIR}"
+          # init + core-base are remote OCI packages; --skip-signature-validation
+          # is required on create because they are keyless-signed by different
+          # OIDC identities (same reason the root `bundle` task uses it).
+          uds create bundles/prove-organs \
+            --skip-signature-validation \
+            --confirm \
+            --no-progress \
+            --tmpdir "${BUILD_TMPDIR}"
+          BUNDLE=$(ls -t uds-bundle-szl-prove-substrate-*.tar.zst 2>/dev/null | head -1)
+          if [ -z "${BUNDLE}" ]; then
+            echo "ERROR: no uds-bundle-szl-prove-substrate-*.tar.zst found after build." >&2
+            exit 1
+          fi
+          echo "Deploying substrate bundle: ${BUNDLE}"
+          uds deploy "${BUNDLE}" \
+            --set DOMAIN="${DOMAIN}" \
+            --set INSECURE_ADMIN_PASSWORD_GENERATION=true \
+            --confirm \
+            --no-progress
+
+      - description: "Build the ${ORGAN} Zarf package (bakes its cosign-signed image)"
+        cmd: |
+          mkdir -p "${BUILD_TMPDIR}"
+          # --set VERSION feeds ###ZARF_PKG_TMPL_VERSION### for the manifest-based
+          # organs (killinchu/amaru/sentra/rosie); a11oy hard-codes 0.3.0 and
+          # ignores it. Output into BUILD_TMPDIR so the glob below is unambiguous.
+          zarf package create "packages/${ORGAN}" \
+            --set VERSION="${VERSION}" \
+            --architecture amd64 \
+            --output "${BUILD_TMPDIR}" \
+            --tmpdir "${BUILD_TMPDIR}" \
+            --confirm \
+            --no-progress
+
+      - description: "Deploy ONLY the ${ORGAN} organ package (its onDeploy wait already requires Available)"
+        cmd: |
+          PKG=$(ls -t "${BUILD_TMPDIR}"/zarf-package-szl-${ORGAN}-*.tar.zst 2>/dev/null | head -1)
+          if [ -z "${PKG}" ]; then
+            echo "ERROR: no zarf-package-szl-${ORGAN}-*.tar.zst found after build." >&2
+            exit 1
+          fi
+          echo "Deploying organ package: ${PKG}"
+          zarf package deploy "${PKG}" \
+            --set DOMAIN="${DOMAIN}" \
+            --confirm \
+            --no-progress
+
+      - description: "ASSERT: ${ORGAN} Deployment reached Available (loud fail + diagnostics)"
+        cmd: |
+          NS="szl-${ORGAN}"
+          echo "== ${ORGAN} (${NS}) =="
+          if kubectl wait --for=condition=Available "deployment/${ORGAN}" \
+               -n "${NS}" --timeout="${WAIT_TIMEOUT}"; then
+            echo "PASS: ${ORGAN} Deployment is Available in ${NS}."
+          else
+            echo "FAIL: ${ORGAN} Deployment did NOT reach Available in ${NS}."
+            echo "---- deployments ----"; kubectl -n "${NS}" get deploy -o wide || true
+            echo "---- pods ----";        kubectl -n "${NS}" get pods -o wide || true
+            echo "---- describe ----";    kubectl -n "${NS}" describe "deployment/${ORGAN}" || true
+            echo "---- events ----";      kubectl -n "${NS}" get events --sort-by=.lastTimestamp || true
+            echo "---- pod logs ----";    kubectl -n "${NS}" logs "deployment/${ORGAN}" --all-containers --tail=100 || true
+            exit 1
+          fi
+
+      - description: "Proof summary"
+        cmd: |
+          echo "----"
+          echo "PROVEN: organ '${ORGAN}' deploys individually on a clean UDS substrate and reaches Available."
+          echo "Cluster left intact for inspection: ${PROVE_CLUSTER}-${ORGAN} (delete with: k3d cluster delete ${PROVE_CLUSTER}-${ORGAN})"
