@@ -189,6 +189,11 @@ signing:
 # PhD Systems Scope 9 fix: the server now links the OTel SDK and exports spans.
 # The uds-package.yaml egress allow-rule already permits monitoring/
 # opentelemetry-collector:4317. On by default; set endpoint to "" to disable.
+# OOM decision: the szl-receipts pod OOM-crashloop was accumulated in-memory
+# chain bloat, resolved by the bounded-memory server image (uds-v0.4.1+; RAM is
+# now flat regardless of chain length). OTel export was investigated as a memory
+# suspect and CLEARED -- confirmed safe live on the 2-vCPU box (pod 2/2, ~22Mi of
+# the 512Mi limit). KEEP enabled: true; do NOT flip to false to chase a phantom OOM.
 otel:
   enabled: true
   endpoint: "http://opentelemetry-collector.monitoring.svc.cluster.local:4317"
