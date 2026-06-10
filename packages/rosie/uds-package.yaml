@@ -30,7 +30,9 @@ metadata:
     szl.io/mesh-version: v0.4.0
   annotations:
     szl.io/role: "operator console (human-facing top of stack)"
-    szl.io/image-status: "PUBLISHED + cosign-signed — ghcr.io/szl-holdings/rosie:uds-v0.2.0@sha256:1984a15f53c2e1b91c7dafaa0ed5df9148d57e3e86eb73db879c2b0443302848 (.sig + .att SLSA attestation present in GHCR; FA-001 resolved)"
+    szl.io/image-status: >-
+      PUBLISHED + cosign-signed — ghcr.io/szl-holdings/rosie:uds-v0.2.0@sha256:1984a15f53c2e1b91c7dafaa0ed5df9148d57e3e86eb73db879c2b0443302848
+      (.sig + .att SLSA attestation present in GHCR; FA-001 resolved)
 spec:
   # ── SSO — rosie is human-facing; protect with authservice + Keycloak OIDC ──
   # gateway: tenant exposure puts rosie behind the authservice sidecar so every
