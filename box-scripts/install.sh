@@ -52,6 +52,7 @@ install -m 0755 "$here/sbin/szl-alert-relay-watch"     /usr/local/sbin/szl-alert
 install -m 0755 "$here/sbin/szl-signing-health-check"  /usr/local/sbin/szl-signing-health-check
 install -m 0755 "$here/sbin/szl-receipts-orphan-watch" /usr/local/sbin/szl-receipts-orphan-watch
 install -m 0755 "$here/sbin/vault-auto-unseal"          /usr/local/sbin/vault-auto-unseal
+install -m 0755 "$here/sbin/vault-keystore-offbox-backup" /usr/local/sbin/vault-keystore-offbox-backup
 
 echo "[install] copying systemd units to /etc/systemd/system ..."
 install -m 0644 "$here/systemd/a11oy-coexist.service"        /etc/systemd/system/a11oy-coexist.service
@@ -90,6 +91,8 @@ install -m 0644 "$here/systemd/szl-receipts-orphan-watch.service" /etc/systemd/s
 install -m 0644 "$here/systemd/szl-receipts-orphan-watch.timer"   /etc/systemd/system/szl-receipts-orphan-watch.timer
 install -m 0644 "$here/systemd/vault-auto-unseal.service"   /etc/systemd/system/vault-auto-unseal.service
 install -m 0644 "$here/systemd/vault-auto-unseal.timer"     /etc/systemd/system/vault-auto-unseal.timer
+install -m 0644 "$here/systemd/vault-keystore-offbox-backup.service" /etc/systemd/system/vault-keystore-offbox-backup.service
+install -m 0644 "$here/systemd/vault-keystore-offbox-backup.timer"   /etc/systemd/system/vault-keystore-offbox-backup.timer
 
 # The uptime/DNS watchers read their push-notification channel from
 # /etc/a11oy-uptime.env. That channel is a PRIVATE secret (an ntfy topic, etc.)
@@ -135,6 +138,41 @@ NTFY_PRIORITY=high
 EOF
   chmod 600 /etc/szl-alert-relay.env
   echo "[install] seeded /etc/szl-alert-relay.env with a fresh RELAY_TOKEN"
+fi
+
+
+# The off-box Vault-keystore backup (vault-keystore-offbox-backup) ships an
+# ENCRYPTED copy of the signing-key keystore (barrier + unseal shares) to durable
+# storage off this box. Its config is a PRIVATE secret (encryption recipient +
+# destination) and is NEVER committed to git. Seed a commented-out stub so the
+# job installs as a SAFE log-only no-op until an operator fills it in. The unit
+# loads it as an OPTIONAL EnvironmentFile (leading "-").
+if [ ! -e /etc/vault-keystore-offbox.env ]; then
+  cat > /etc/vault-keystore-offbox.env <<'EOF'
+# vault-keystore off-box backup config (PRIVATE - keep OUT of git).
+# Set ONE encryption method AND ONE destination, then the weekly timer ships an
+# encrypted copy off the box. Until both are set this job is a log-only no-op.
+#
+# --- encryption (pick one) ---
+# Asymmetric (recommended): the box holds only the recipient PUBLIC key; the
+# private key lives OFF-BOX with the operator for restore.
+#OFFBOX_GPG_RECIPIENT=YOUR_PUBKEY_ID
+# Symmetric fallback (root:600 passphrase file):
+#OFFBOX_GPG_PASSPHRASE_FILE=/root/vault-keystore-offbox.pass
+#
+# --- destination (pick one; transport auto-detected, or force OFFBOX_TRANSPORT) ---
+#OFFBOX_SSH_TARGET=backup@second-host:/srv/szl/vault-keystore
+#OFFBOX_SSH_KEY=/root/.ssh/offbox_backup
+#OFFBOX_LOCAL_DIR=/mnt/offbox/vault-keystore
+#OFFBOX_RCLONE_REMOTE=offbox:szl/vault-keystore
+#OFFBOX_S3_URI=s3://my-bucket/szl/vault-keystore
+#OFFBOX_S3_ENDPOINT=
+#
+# --- retention (keep newest N off-box copies) ---
+#OFFBOX_KEEP=14
+EOF
+  chmod 600 /etc/vault-keystore-offbox.env
+  echo "[install] seeded commented-out /etc/vault-keystore-offbox.env (off-box keystore backup log-only until configured)"
 fi
 
 # Install the nginx location snippet and idempotently wire it into the a11oy.net
@@ -285,6 +323,7 @@ systemctl enable --now a11oy-uptime-check.timer
 systemctl enable --now dns-drift-check.timer
 systemctl enable --now box-scripts-drift-check.timer
 systemctl enable --now vault-auto-unseal.timer
+systemctl enable --now vault-keystore-offbox-backup.timer
 systemctl enable --now szl-alert-relay.service
 systemctl enable --now szl-alert-relay-watch.timer
 systemctl enable --now szl-signing-health-check.timer

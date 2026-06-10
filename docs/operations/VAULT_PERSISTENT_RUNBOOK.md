@@ -326,3 +326,80 @@ Ampere A1** VM with the Transit secrets engine and point this box's seal at it
 (`seal "transit"`). That keeps the wrapping key under SZL control instead of
 Oracle's, at the cost of maintaining a second Vault. Migration mechanics are
 identical (`-migrate`); only the seal stanza differs.
+
+
+## 7. Off-box disaster recovery — the box itself is gone (Task #670)
+
+§4/§5 (`scripts/vault-keystore-backup.sh` + `vault-keystore-restore.sh`) make the
+signing key survive a **cluster** recreate, but the snapshot lives only host-local
+under `/root/vault-keystore-backup`. If box `167.233.50.75`'s **disk dies**, that
+snapshot — and with it the szl-receipts Transit signing key and every receipt's
+verifiability — is gone. This section adds a durable **off-box** copy.
+
+### What runs
+`box-scripts/sbin/vault-keystore-offbox-backup` + its
+`vault-keystore-offbox-backup.{service,timer}` (weekly, `Persistent=true`),
+installed/enabled by `box-scripts/install.sh`. Each run refreshes the local
+snapshot, packages the latest one, **encrypts it on the box**, ships the
+ciphertext off-box, and prunes to the newest `OFFBOX_KEEP` (default 14).
+
+It alerts via ntfy `a11oy-uptime-notify` (edge-triggered) on a configured push
+that fails. Until configured it is a safe log-only no-op (never pages). Last-run
+state: `/var/lib/vault-keystore-offbox/status.json`. Full reference:
+`box-scripts/vault-keystore-offbox-backup.README.md`.
+
+### Security
+The snapshot holds the unseal share(s) + root token **and** the encrypted
+barrier, so:
+- The plaintext tar is built in a root-only `0700` temp dir and **shredded** the
+  instant the ciphertext exists. **Only the `*.tar.gz.gpg` ciphertext leaves the
+  box.**
+- Prefer **asymmetric** GPG (`OFFBOX_GPG_RECIPIENT`): the box holds only the
+  recipient *public* key; the *private* key lives off-box, so a box compromise
+  cannot decrypt past off-box copies.
+- The destination is **still secret** — no plaintext, no shared/public bucket.
+
+### Configure (`/etc/vault-keystore-offbox.env`, PRIVATE, not in git)
+`install.sh` seeds a commented-out stub. Set one encryption method + one
+destination (see the README for every transport). Asymmetric + a second host:
+```sh
+# on the box, import only the PUBLIC key whose PRIVATE half you keep off-box:
+gpg --import /root/offbox-restore-pubkey.asc
+gpg --list-keys                                  # -> OFFBOX_GPG_RECIPIENT
+# /etc/vault-keystore-offbox.env:
+#   OFFBOX_GPG_RECIPIENT=<key id>
+#   OFFBOX_SSH_TARGET=backup@second-host:/srv/szl/vault-keystore
+#   OFFBOX_SSH_KEY=/root/.ssh/offbox_backup
+sudo systemctl start vault-keystore-offbox-backup.service     # first push now
+journalctl -u vault-keystore-offbox-backup --no-pager -n 40
+```
+
+### Recover the signing key from the off-box copy (box is gone)
+On the **new** box, after installing the toolchain + this repo:
+```sh
+# 1) Pull the NEWEST off-box artifact + its checksum (transport-specific), e.g.:
+scp backup@second-host:/srv/szl/vault-keystore/'vault-keystore-*' ./   # or rclone/aws/local
+
+# 2) Verify integrity, then DECRYPT with the OFF-BOX private key (or passphrase):
+ART=$(ls -1t vault-keystore-*.tar.gz.gpg | head -1)
+sha256sum -c "$ART.sha256"
+gpg --output "${ART%.gpg}" --decrypt "$ART"        # asymmetric: prompts for the off-box private key
+#   symmetric fallback: gpg --pinentry-mode loopback --passphrase-file <pass> -o "${ART%.gpg}" -d "$ART"
+
+# 3) Unpack into the canonical local backup dir (the tar's top level is the <ts> snapshot):
+mkdir -p /root/vault-keystore-backup
+tar xzf "${ART%.gpg}" -C /root/vault-keystore-backup
+TS=$(tar tzf "${ART%.gpg}" | head -1 | cut -d/ -f1)
+ln -sfn "/root/vault-keystore-backup/$TS" /root/vault-keystore-backup/latest
+
+# 4) Restore the barrier + unseal shares into a freshly-provisioned Vault PVC:
+scripts/vault-keystore-restore.sh --backup-dir /root/vault-keystore-backup --from "$TS"
+#   (restores /vault/data + /root/vault-init/init.json; the pubkey must match
+#   the snapshot's pubkey.txt — that is the proof the signing key is recovered.)
+
+# 5) Shred the decrypted plaintext immediately:
+shred -u "${ART%.gpg}"
+```
+The restored Transit key reproduces the **same** szl-receipts public key, so the
+entire historical receipt chain verifies again. Confirm with the receipts server
+`/pubkey` endpoint vs `pubkey.txt` in the restored snapshot.
