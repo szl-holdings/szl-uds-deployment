@@ -5,7 +5,7 @@
 
 ### A ready-to-run deployment that proves SZL's governance receipts working live on a Kubernetes cluster, signed and verifiable end to end.
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square)](LICENSE) [![Build](https://github.com/szl-holdings/szl-uds-deployment/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/szl-holdings/szl-uds-deployment/actions/workflows/release.yml) [![Doctrine v11](https://img.shields.io/badge/Doctrine-v11_LOCKED-3b82f6?style=flat-square)](https://github.com/szl-holdings/.github/tree/main/doctrine) [![SLSA](https://img.shields.io/badge/SLSA-L1_honest_·_L2_roadmap-22c55e?style=flat-square)](https://slsa.dev/spec/v1.0/levels)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square)](LICENSE) [![Build](https://github.com/szl-holdings/szl-uds-deployment/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/szl-holdings/szl-uds-deployment/actions/workflows/release.yml) [![Doctrine v11](https://img.shields.io/badge/Doctrine-v11_LOCKED-3b82f6?style=flat-square)](https://github.com/szl-holdings/.github/tree/main/doctrine) [![Λ Conjecture 1](https://img.shields.io/badge/Λ-Conjecture_1_(conditional_Theorem_U)-B79BD6?style=flat-square)](https://github.com/szl-holdings/lutar-lean/blob/main/BOUNTY.md) [![SLSA](https://img.shields.io/badge/SLSA-L1_honest_·_L2_build--attested_·_L3_roadmap-c9b787?style=flat-square)](https://slsa.dev/spec/v1.0/levels)
 
 [Docs](https://szl-holdings.github.io/docs-site) · [Quickstart](https://szl-holdings.github.io/docs-site/quickstart) · [SZL Holdings](https://a11oy.net)
 
@@ -48,7 +48,7 @@ In two sentences: this component is part of SZL's governed-AI mesh — it enforc
 
 **uds deploy**
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20434276.svg)](https://doi.org/10.5281/zenodo.20434276) [![ORCID](https://img.shields.io/badge/ORCID-0009--0001--0110--4173-a6ce39?style=flat-square&logo=orcid&logoColor=white)](https://orcid.org/0009-0001-0110-4173) [![Doctrine v11 LOCKED](https://img.shields.io/badge/Doctrine-v11_LOCKED-d4a444?style=flat-square)](https://github.com/szl-holdings/lutar-lean) [![SLSA](https://img.shields.io/badge/SLSA-L1_honest_·_L2_roadmap-22c55e?style=flat-square)](https://slsa.dev/spec/v1.0/levels)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20434276.svg)](https://doi.org/10.5281/zenodo.20434276) [![ORCID](https://img.shields.io/badge/ORCID-0009--0001--0110--4173-a6ce39?style=flat-square&logo=orcid&logoColor=white)](https://orcid.org/0009-0001-0110-4173) [![Doctrine v11 LOCKED](https://img.shields.io/badge/Doctrine-v11_LOCKED-d4a444?style=flat-square)](https://github.com/szl-holdings/lutar-lean) [![SLSA](https://img.shields.io/badge/SLSA-L1_honest_·_L2_build--attested_·_L3_roadmap-c9b787?style=flat-square)](https://slsa.dev/spec/v1.0/levels)
 
 [Hugging Face](https://huggingface.co/SZLHOLDINGS) · [Demo](https://szlholdings-readme.static.hf.space/) · [GitHub Org](https://github.com/szl-holdings)
 
@@ -69,7 +69,7 @@ In two sentences: this component is part of SZL's governed-AI mesh — it enforc
 
 [![GHAS Code Security](https://img.shields.io/badge/GHAS-Code_Security-2DA44E.svg?style=flat-square&logo=github)](https://github.com/szl-holdings/szl-uds-deployment/security/code-scanning)
 [![Secret Protection](https://img.shields.io/badge/GHAS-Secret_Protection-2DA44E.svg?style=flat-square&logo=github)](https://github.com/szl-holdings/szl-uds-deployment/security/secret-scanning)
-[![SLSA L1 honest; L2 roadmap](https://img.shields.io/badge/SLSA-L1_honest_·_L2_roadmap-0B1F3A.svg?style=flat-square)](https://slsa.dev/spec/v1.0/levels)
+[![SLSA L1 honest · L2 build-attested · L3 roadmap](https://img.shields.io/badge/SLSA-L1_honest_·_L2_build--attested_·_L3_roadmap-0B1F3A.svg?style=flat-square)](https://slsa.dev/spec/v1.0/levels)
 
 **SZL Governance Receipts — UDS Running Deployment**
 
@@ -256,4 +256,4 @@ rather than an Ed25519 signature.
 
 Cite this work via [`CITATION.cff`](CITATION.cff). Math foundations: [szl-papers](https://github.com/szl-holdings/szl-papers) · [lutar-lean](https://github.com/szl-holdings/lutar-lean) (kernel `c7c0ba17`).
 
-<sub>Λ Conjecture 1 (not a theorem) · locked kernel 749/14/163 @ `c7c0ba17` (5 proven) · experimental main 1323 decls / 23 axioms (22 unique) CI-green (reported separately, never folded into the locked 5) · v11 LOCKED · SLSA L1 honest; L2 roadmap (NOT L3) · Section 889 = 5 vendors · [SZL Holdings](https://a11oy.net) · Apache-2.0 code · CC-BY-4.0 papers</sub>
+<sub>Λ Conjecture 1 (not a theorem) · locked kernel 749/14/163 @ `c7c0ba17` (5 proven) · experimental main 1323 decls / 23 axioms (22 unique) CI-green (reported separately, never folded into the locked 5) · v11 LOCKED · SLSA L1 honest · L2 build-attested (product images: a11oy, killinchu) · L3 roadmap · Section 889 = 5 vendors · [SZL Holdings](https://a11oy.net) · Apache-2.0 code · CC-BY-4.0 papers</sub>
