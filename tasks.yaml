@@ -387,9 +387,9 @@ tasks:
       - description: "Zarf init"
         cmd: |
           zarf init --confirm
-      - description: "Deploy previous release (v0.3.1) from OCI"
+      - description: "Deploy published baseline release (v0.4.0-upstream) from OCI"
         cmd: |
-          zarf package deploy oci://ghcr.io/szl-holdings/packages/szl-receipts:0.3.1 --confirm 2>/dev/null || \
+          zarf package deploy oci://ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream --confirm 2>/dev/null || \
           echo "WARN: Previous OCI release not found — skipping baseline deploy (FA-001 staged)"
       - description: "Build and deploy current branch package"
         cmd: |
