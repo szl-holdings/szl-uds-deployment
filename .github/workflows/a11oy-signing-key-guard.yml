@@ -1,0 +1,113 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# a11oy-signing-key-guard.yml — Stop a11oy's signing key silently going ephemeral.
+#
+# a11oy signs its release/decision receipts with a PERSISTENT ECDSA P-256
+# (secp256r1) key loaded from a mounted Secret. Four independent things on the
+# charts/a11oy side must ALL hold or a11oy silently falls back to a throwaway
+# in-process key that changes on every pod restart — which breaks offline
+# verification of every receipt it ever signed. Each had silently regressed:
+#
+#   1. The receipt-key-init Job must provision an ECDSA P-256 (SECP256R1) Secret
+#      whose data keys are exactly ecdsa-p256.key + ecdsa-p256.pem (the loader's
+#      filenames), NOT the old Ed25519 scheme (which produced a key a11oy could
+#      not load).
+#   2. The Secret the Deployment MOUNTS (values.receiptKeySecret) must be exactly
+#      the Secret the key-init Job PROVISIONS (its KEY_SECRET). A drift mounts an
+#      absent Secret -> ephemeral fallback.
+#   3. `zarf.dev/agent: ignore` must be emitted on the workload pod template when
+#      .Values.zarfAgentIgnore is set (and absent when not) — the value was wired
+#      to nothing.
+#   4. The uds.dev/v1alpha1 Package must render only when udsPackage.enabled — it
+#      was rendered unconditionally.
+#
+# All of this is checked with `helm template` only (no cluster). The bespoke
+# assertion logic lives in scripts/a11oy-signing-key-checks.py so the self-test
+# job can feed it deliberately-broken fixtures and prove each check still FAILS
+# on a regression (green-while-guarding-nothing protection). Mirrors the
+# chart-guard.yml / package-build-guard.yml pattern.
+
+name: a11oy Signing Key Guard
+
+on:
+  pull_request:
+    paths:
+      - "charts/a11oy/**"
+      - "scripts/a11oy-signing-key-checks.py"
+      - "scripts/a11oy-signing-key-checks.test.py"
+      - ".github/workflows/a11oy-signing-key-guard.yml"
+  push:
+    branches: [main]
+    paths:
+      - "charts/a11oy/**"
+      - "scripts/a11oy-signing-key-checks.py"
+      - "scripts/a11oy-signing-key-checks.test.py"
+      - ".github/workflows/a11oy-signing-key-guard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ── 0. Self-test the guard logic (negative fixtures) ────────────────────────
+  # The guard job below asserts properties via scripts/a11oy-signing-key-checks.py.
+  # That logic could break silently and PASS VACUOUSLY (green while guarding
+  # nothing — e.g. a keygen reverting to Ed25519 slipping past). This job feeds the
+  # checks deliberately-broken fixtures and asserts they FAIL, so a future edit
+  # that neuters a check turns CI red here. The guard job `needs: self-test`.
+  self-test:
+    name: Self-test signing-key checks (negative fixtures)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+      - name: Run signing-key checks self-test
+        run: python3 scripts/a11oy-signing-key-checks.test.py
+
+  signing-key-guard:
+    name: Render charts/a11oy + assert signing-key invariants
+    needs: self-test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: v3.14.0
+
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      # Render the chart under the value combinations the four checks need. No
+      # cluster: a render error in any of these fails the build immediately.
+      - name: helm template charts/a11oy (value matrix)
+        run: |
+          set -euo pipefail
+          helm lint charts/a11oy/
+          # Defaults: receiptKeyInit on, udsPackage on, zarfAgentIgnore off.
+          helm template a charts/a11oy/ > /tmp/render-default.yaml
+          helm template a charts/a11oy/ --set zarfAgentIgnore=true \
+            > /tmp/render-zarf-on.yaml
+          helm template a charts/a11oy/ --set udsPackage.enabled=false \
+            > /tmp/render-uds-off.yaml
+          echo "OK: charts/a11oy rendered under the value matrix"
+
+      - name: 1. key-init provisions an ECDSA P-256 Secret (not Ed25519)
+        run: python3 scripts/a11oy-signing-key-checks.py keyinit-ecdsa /tmp/render-default.yaml
+
+      - name: 2. mounted Secret name matches the provisioned Secret name
+        run: python3 scripts/a11oy-signing-key-checks.py secret-name-match /tmp/render-default.yaml
+
+      - name: 3. zarf.dev/agent ignore label tracks .Values.zarfAgentIgnore
+        run: python3 scripts/a11oy-signing-key-checks.py zarf-agent-ignore /tmp/render-zarf-on.yaml /tmp/render-default.yaml
+
+      - name: 4. uds.dev Package renders only when udsPackage.enabled
+        run: python3 scripts/a11oy-signing-key-checks.py udspackage-gated /tmp/render-default.yaml /tmp/render-uds-off.yaml
+
+      - name: All signing-key chart guards passed
+        run: echo "charts/a11oy provisions a persistent ECDSA P-256 signing key and mounts it."

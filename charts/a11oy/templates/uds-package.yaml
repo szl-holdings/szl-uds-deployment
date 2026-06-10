@@ -26,6 +26,13 @@
 #     helm render + server-side dry-run).
 #
 # UDS Package CRD: https://uds.defenseunicorns.com/reference/configuration/custom-resources/packages-v1alpha1-cr/
+#
+# The whole Package CR is gated on .Values.udsPackage.enabled. Off the UDS-Core
+# mesh (e.g. a plain Helm/k3d install, or a bundle that exposes a11oy another
+# way) the uds.dev/v1alpha1 CRD is not installed, so an always-rendered Package
+# would make `helm install` fail with "no matches for kind Package". Render it
+# only when the operator opts in.
+{{- if .Values.udsPackage.enabled }}
 apiVersion: uds.dev/v1alpha1
 kind: Package
 metadata:
@@ -113,3 +120,4 @@ spec:
       path: {{ .Values.monitoring.path }}
       description: "a11oy metrics scrape"
   {{- end }}
+{{- end }}

@@ -42,7 +42,7 @@ zarfAgentIgnore: false
 
 # Receipt-signing key (Ed25519). Provisioned by the receipt-key-init pre-install
 # hook into Secret `receiptKeySecret` unless it already exists (BYOK supported).
-receiptKeySecret: szl-a11oy-receipts-ed25519
+receiptKeySecret: szl-a11oy-receipts-ecdsa-p256
 
 # Cross-organ DSSE receipt sink (a11oy emits decision-time receipts here).
 receiptsSink:
@@ -102,4 +102,4 @@ resources:
 # in-process key, so this is OFF by default (and the alpine+kubectl hook is not
 # airgap-friendly). Enable for BYOK Secret provisioning on internet clusters.
 receiptKeyInit:
-  enabled: false
+  enabled: true

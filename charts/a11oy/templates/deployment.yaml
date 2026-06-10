@@ -18,6 +18,11 @@ spec:
       labels:
         app: a11oy
         app.kubernetes.io/name: a11oy
+        {{- if .Values.zarfAgentIgnore }}
+        # Local/dev (k3d) image rewrite opt-out: tell the Zarf agent to leave
+        # this pod's image refs alone (it already runs the in-cluster image).
+        zarf.dev/agent: ignore
+        {{- end }}
     spec:
       automountServiceAccountToken: false
       securityContext:

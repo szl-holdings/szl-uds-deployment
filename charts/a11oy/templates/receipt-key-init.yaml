@@ -2,9 +2,27 @@
 # Copyright 2026 SZL Holdings — SPDX-License-Identifier: Apache-2.0
 #
 # Receipt-key init — Helm PRE-INSTALL hook (weight -5, runs before workload).
-# Generates an Ed25519 receipt-signing keypair into Secret {{ .Values.receiptKeySecret }}
-# unless it already exists (BYOK path). Key material never leaves the cluster.
-# Image: docker.io/library/alpine:3.21 (public; openssl via apk).
+# ============================================================================
+# Generates a11oy's PERSISTENT receipt-signing keypair into Secret
+# {{ .Values.receiptKeySecret }} unless it already exists (BYOK path). Key
+# material is generated inside the cluster and is never logged.
+#
+# Curve is ECDSA P-256 (SECP256R1) to MATCH a11oy's signing-key loader
+# (a11oy_signing_key.py), which mounts the Secret at /etc/szl/receipt-key and
+# rejects anything that is not secp256r1. The private key is stored under
+# `ecdsa-p256.key` (the loader's first candidate filename) and the public key
+# under `ecdsa-p256.pem`. The previous Ed25519 hook produced a key the app
+# could not load, so a11oy silently fell back to a throwaway in-process key that
+# changed on every restart (broke offline verification of its signed receipts).
+#
+# Provisioner uses the a11oy image's own python3 + cryptography talking to the
+# in-cluster Kubernetes API (no `kubectl` binary, no `apk add`), which is
+# airgap-friendly: the ONLY image pulled is the already-baked, cosign-signed
+# a11oy organ image (the same image the Deployment runs, so it is in the Zarf
+# package and is mirrored/rewritten by the Zarf agent on the bundle path).
+# Behaviour mirrors the raw-manifest path (packages/a11oy/manifests/
+# receipt-key-init.yaml): idempotent (created only if absent) and fail-loud
+# (any unexpected Kubernetes API error aborts the Job).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -25,32 +43,129 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: a11oy-receipt-key-init
+        {{- if .Values.zarfAgentIgnore }}
+        # Local/dev (k3d) image rewrite opt-out: tell the Zarf agent to leave
+        # this pod's image refs alone (it already runs the in-cluster image).
+        zarf.dev/agent: ignore
+        {{- end }}
+      annotations:
+        # Jobs must terminate; never wrap them in an Istio sidecar (no-op in
+        # ambient mode, prevents the never-completing-sidecar trap in sidecar mode).
+        sidecar.istio.io/inject: "false"
     spec:
       serviceAccountName: a11oy-receipt-key-init
       restartPolicy: OnFailure
       securityContext:
+        runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
+        runAsUser: {{ .Values.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.securityContext.runAsGroup }}
         seccompProfile:
-          type: RuntimeDefault
+          type: {{ .Values.securityContext.seccompProfile.type }}
       containers:
         - name: keygen
-          image: docker.io/library/alpine:3.21
-          command: ["/bin/sh", "-c"]
+          # The already-baked, cosign-signed a11oy organ image (python3 +
+          # cryptography), byte-identical to the workload image so the Zarf agent
+          # rewrite resolves to the same in-cluster registry ref on the bundle path.
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ end }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: {{ .Values.securityContext.allowPrivilegeEscalation }}
+            readOnlyRootFilesystem: {{ .Values.securityContext.readOnlyRootFilesystem }}
+            capabilities:
+              drop: {{ .Values.securityContext.capabilities.drop | toYaml | nindent 16 }}
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          env:
+            - name: KEY_NS
+              value: {{ .Values.namespace | quote }}
+            - name: KEY_SECRET
+              value: {{ .Values.receiptKeySecret | quote }}
+          command: ["python3", "-c"]
           args:
             - |
-              set -eu
-              SECRET="{{ .Values.receiptKeySecret }}"
-              NS="{{ .Values.namespace }}"
-              if kubectl -n "$NS" get secret "$SECRET" >/dev/null 2>&1; then
-                echo "receipt key Secret $SECRET already present in $NS — BYOK, leaving untouched."
-                exit 0
-              fi
-              apk add --no-cache openssl >/dev/null
-              openssl genpkey -algorithm ed25519 -out /tmp/receipt.key
-              openssl pkey -in /tmp/receipt.key -pubout -out /tmp/receipt.pub
-              kubectl -n "$NS" create secret generic "$SECRET" \
-                --from-file=ed25519.key=/tmp/receipt.key \
-                --from-file=ed25519.pub=/tmp/receipt.pub
-              echo "created receipt-signing Secret $SECRET in $NS"
+              import base64, json, os, ssl, sys, urllib.request, urllib.error
+              from cryptography.hazmat.primitives.asymmetric import ec
+              from cryptography.hazmat.primitives import serialization
+
+              ns = os.environ["KEY_NS"]
+              secret = os.environ["KEY_SECRET"]
+              sa = "/var/run/secrets/kubernetes.io/serviceaccount"
+              with open(sa + "/token") as fh:
+                  token = fh.read().strip()
+              host = "https://kubernetes.default.svc"
+              ctx = ssl.create_default_context(cafile=sa + "/ca.crt")
+
+              def api(method, path, body=None):
+                  data = json.dumps(body).encode() if body is not None else None
+                  req = urllib.request.Request(host + path, data=data, method=method)
+                  req.add_header("Authorization", "Bearer " + token)
+                  req.add_header("Accept", "application/json")
+                  if data is not None:
+                      req.add_header("Content-Type", "application/json")
+                  try:
+                      with urllib.request.urlopen(req, context=ctx) as r:
+                          return r.status, r.read()
+                  except urllib.error.HTTPError as e:
+                      return e.code, e.read()
+
+              # 1) Idempotent BYOK check — never touch an existing Secret.
+              status, _ = api("GET", "/api/v1/namespaces/%s/secrets/%s" % (ns, secret))
+              if status == 200:
+                  print("receipt key Secret %s already present in %s -- BYOK, leaving untouched." % (secret, ns))
+                  sys.exit(0)
+              if status != 404:
+                  sys.stderr.write("FATAL: unexpected status %s probing Secret %s\n" % (status, secret))
+                  sys.exit(1)
+
+              # 2) Generate a persistent ECDSA P-256 (secp256r1) keypair.
+              priv = ec.generate_private_key(ec.SECP256R1())
+              key_pem = priv.private_bytes(
+                  serialization.Encoding.PEM,
+                  serialization.PrivateFormat.PKCS8,
+                  serialization.NoEncryption(),
+              )
+              pub_pem = priv.public_key().public_bytes(
+                  serialization.Encoding.PEM,
+                  serialization.PublicFormat.SubjectPublicKeyInfo,
+              )
+
+              # 3) Create the Secret (fail-loud on anything but success / BYOK race).
+              body = {
+                  "apiVersion": "v1",
+                  "kind": "Secret",
+                  "metadata": {
+                      "name": secret,
+                      "namespace": ns,
+                      "labels": {
+                          "app.kubernetes.io/name": "a11oy-receipt-key-init",
+                          "szl.ai/doctrine-version": "v11",
+                      },
+                  },
+                  "type": "Opaque",
+                  "data": {
+                      "ecdsa-p256.key": base64.b64encode(key_pem).decode("ascii"),
+                      "ecdsa-p256.pem": base64.b64encode(pub_pem).decode("ascii"),
+                  },
+              }
+              status, resp = api("POST", "/api/v1/namespaces/%s/secrets" % ns, body)
+              if status == 409:
+                  print("Secret %s created concurrently -- BYOK race, leaving untouched." % secret)
+                  sys.exit(0)
+              if status not in (200, 201):
+                  sys.stderr.write("FATAL: create Secret %s failed (status %s): %s\n" % (secret, status, resp[:300]))
+                  sys.exit(1)
+              print("created persistent ECDSA P-256 receipt-signing Secret %s in %s" % (secret, ns))
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -70,6 +185,7 @@ metadata:
     "helm.sh/hook": pre-install
     "helm.sh/hook-weight": "-10"
 rules:
+  # Minimal: read to honour BYOK, create to provision when absent. No update/delete.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "create"]
