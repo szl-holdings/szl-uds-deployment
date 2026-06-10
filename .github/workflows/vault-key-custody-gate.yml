@@ -1,0 +1,266 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# Vault Key-Custody Gate — szl-receipts (Tier-2, HashiCorp Vault Transit)
+# ============================================================================
+# Re-verifies the szl-receipts Tier-2 key-custody deploy on EVERY release.
+#
+# What this proves, live, on a throwaway cluster, end-to-end:
+#   1. The receipts server, deployed with the documented Helm overlay
+#      (charts/szl-receipts/values.yaml + values-vault.yaml, signing.backend=vault),
+#      boots with NO Ed25519 signing-key Secret in the cluster at all.
+#   2. It authenticates to a real HashiCorp Vault by its pod ServiceAccount
+#      (Kubernetes auth) and signs receipts via Vault Transit.
+#   3. The Transit Ed25519 key is non-exportable: the private key can NEVER
+#      leave Vault. Reading any Kubernetes Secret yields no signing key.
+#   4. Receipts verify offline against the published public key with the
+#      INDEPENDENT auditor tool (verify_receipts_ed25519.py) — the proof is
+#      backend-agnostic, so Tier-2 custody changed WHERE the key lives without
+#      weakening the cryptographic proof.
+#
+# It deliberately asserts /pubkey backend=="vault" AND signed==true, because the
+# server self-heals to an unsigned state if Vault is unreachable — a silent
+# downgrade this gate must catch.
+#
+# The signing wiring (signing.backend / signing.vault.*) comes ENTIRELY from the
+# committed values-vault.yaml; it is NEVER overridden with --set here. The only
+# --set flags are CI substrate (local image, drop UDS/monitoring CRDs that need
+# UDS Core, emptyDir store) and signing.requireKey=false — which only governs the
+# FILE backend's Secret mount and lets the pod boot with zero key Secret present,
+# the cleanest possible custody demonstration.
+
+name: Vault Key-Custody Gate
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vault-key-custody-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CLUSTER: szl-vault-gate
+  NS: szl-receipts
+  IMG: szl-receipts-server:ci-gate
+
+jobs:
+  vault-key-custody:
+    name: Vault Transit key-custody (live)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install tools (kubectl, helm, k3d, vault CLI, cryptography)
+        run: |
+          set -euo pipefail
+          # kubectl
+          curl -fsSLo /tmp/kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          # helm
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          # k3d
+          curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+          # vault CLI (needed by scripts/setup-vault-transit.sh and the custody assertion)
+          VAULT_VERSION=1.18.5
+          curl -fsSLo /tmp/vault.zip "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip"
+          unzip -o /tmp/vault.zip -d /tmp
+          sudo install -m 0755 /tmp/vault /usr/local/bin/vault
+          # offline auditor dependency
+          python3 -m pip install --quiet cryptography
+          kubectl version --client
+          helm version
+          k3d version
+          vault version
+
+      - name: Create throwaway k3d cluster
+        run: |
+          set -euo pipefail
+          k3d cluster create "$CLUSTER" --wait --timeout 180s
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Build receipts-server image and import into the cluster
+        run: |
+          set -euo pipefail
+          docker build -t "$IMG" services/szl-receipts-server
+          k3d image import "$IMG" -c "$CLUSTER"
+
+      - name: Deploy persistent Vault (namespace + StatefulSet/Deployment)
+        run: |
+          set -euo pipefail
+          kubectl apply -f manifests/vault-namespace.yaml
+          kubectl apply -f k8s/vault/vault-persistent.yaml
+          # The Vault pod reports Ready while still SEALED (health override), so
+          # rollout completes and we can init/unseal it next.
+          kubectl -n vault rollout status deploy/vault --timeout=180s
+
+      - name: Bootstrap Vault (init, unseal, transit + Kubernetes auth)
+        run: |
+          set -euo pipefail
+
+          echo "==> vault operator init (1 share / 1 threshold)"
+          INIT_JSON="$(kubectl -n vault exec deploy/vault -- \
+            vault operator init -key-shares=1 -key-threshold=1 -format=json)"
+          UNSEAL_KEY="$(printf '%s' "$INIT_JSON" | jq -r '.unseal_keys_b64[0]')"
+          ROOT_TOKEN="$(printf '%s' "$INIT_JSON" | jq -r '.root_token')"
+          # Never let these surface in any log.
+          echo "::add-mask::$UNSEAL_KEY"
+          echo "::add-mask::$ROOT_TOKEN"
+
+          echo "==> unseal"
+          kubectl -n vault exec deploy/vault -- vault operator unseal "$UNSEAL_KEY" >/dev/null
+
+          echo "==> port-forward Vault API to localhost:8200"
+          kubectl -n vault port-forward svc/vault 8200:8200 >/tmp/vault-pf.log 2>&1 &
+          PF_PID=$!
+          trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8200/v1/sys/health?sealedcode=200 >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+          echo "==> setup-vault-transit.sh (transit engine + non-exportable Ed25519 key + k8s auth role)"
+          export VAULT_ADDR="http://127.0.0.1:8200"
+          export VAULT_TOKEN="$ROOT_TOKEN"
+          # All other flags default to the values baked into values-vault.yaml
+          # (role/sa/policy = szl-receipts, transit/szl-receipts key).
+          scripts/setup-vault-transit.sh \
+            --k8s-auth \
+            --k8s-namespace "$NS" \
+            --k8s-sa szl-receipts \
+            --k8s-role szl-receipts \
+            --k8s-host "https://kubernetes.default.svc"
+
+          echo "==> assert the Transit key is NON-EXPORTABLE (private key cannot leave Vault)"
+          KEY_JSON="$(vault read -format=json transit/keys/szl-receipts)"
+          EXPORTABLE="$(printf '%s' "$KEY_JSON" | jq -r '.data.exportable')"
+          KEY_TYPE="$(printf '%s' "$KEY_JSON" | jq -r '.data.type')"
+          echo "transit/keys/szl-receipts: type=$KEY_TYPE exportable=$EXPORTABLE"
+          if [ "$EXPORTABLE" != "false" ]; then
+            echo "::error::Vault Transit signing key is exportable=$EXPORTABLE (custody violation)"
+            exit 1
+          fi
+          if [ "$KEY_TYPE" != "ed25519" ]; then
+            echo "::error::Vault Transit signing key type=$KEY_TYPE (expected ed25519)"
+            exit 1
+          fi
+
+      - name: Deploy szl-receipts with the Vault overlay (signing wiring un-overridden)
+        run: |
+          set -euo pipefail
+          # -f values.yaml -f values-vault.yaml carries the FULL signing.backend=vault
+          # wiring verbatim. --set touches only CI substrate + requireKey (file-only).
+          helm upgrade --install szl-receipts charts/szl-receipts \
+            --namespace "$NS" --create-namespace \
+            -f charts/szl-receipts/values.yaml \
+            -f charts/szl-receipts/values-vault.yaml \
+            --set server.image.repository=szl-receipts-server \
+            --set server.image.tag=ci-gate \
+            --set server.image.digest="" \
+            --set server.image.pullPolicy=IfNotPresent \
+            --set server.persistence.enabled=false \
+            --set signing.requireKey=false \
+            --set dashboard.enabled=false \
+            --set otel.enabled=false \
+            --set udsPackage.enabled=false \
+            --set networkPolicy.enabled=false \
+            --set prometheusRule.enabled=false \
+            --wait --timeout 240s
+
+          DEPLOY="$(kubectl -n "$NS" get deploy -l app.kubernetes.io/name=szl-receipts-server -o name | head -1)"
+          [ -n "$DEPLOY" ] || { echo "::error::receipts-server Deployment not found"; exit 1; }
+          echo "DEPLOY=$DEPLOY" >> "$GITHUB_ENV"
+          kubectl -n "$NS" rollout status "$DEPLOY" --timeout=240s
+
+      - name: Assert no signing-key Secret exists in the cluster
+        run: |
+          set -euo pipefail
+          # helm-direct provisions NO key Secret (szl-key-init is a zarf component,
+          # not a helm hook). Reading Secrets must yield no Ed25519 signing key.
+          if kubectl -n "$NS" get secret szl-receipts-ed25519 >/dev/null 2>&1; then
+            echo "::error::Unexpected signing-key Secret szl-receipts-ed25519 present — custody is supposed to live in Vault"
+            exit 1
+          fi
+          echo "OK: no szl-receipts-ed25519 Secret in namespace $NS"
+
+      - name: Assert the server is signing via Vault (not the silent unsigned fallback)
+        run: |
+          set -euo pipefail
+          LOGS="$(kubectl -n "$NS" logs "$DEPLOY" -c receipts-server --tail=-1 2>/dev/null \
+                  || kubectl -n "$NS" logs "$DEPLOY" --all-containers --tail=-1)"
+          echo "----- receipts-server log -----"
+          echo "$LOGS"
+          echo "-------------------------------"
+          # Exact success line emitted by VaultTransitSigner._init() in server.py:
+          #   "[vault] Transit signer ready; addr=... key=... keyid=... ..."
+          if ! printf '%s' "$LOGS" | grep -qiE '\[vault\] Transit signer ready'; then
+            echo "::error::No '[vault] Transit signer ready' line in server logs"
+            exit 1
+          fi
+          # Negative control: the server logs "...running unsigned..." whenever it
+          # falls back (VAULT_ADDR unset, init failed, key not Ed25519, etc.).
+          if printf '%s' "$LOGS" | grep -qiE 'running unsigned'; then
+            echo "::error::Server logged an UNSIGNED fallback — Vault signing did not engage"
+            exit 1
+          fi
+
+      - name: Live custody assertions (/pubkey backend=vault, /receipt signs, offline verify)
+        run: |
+          set -euo pipefail
+          kubectl -n "$NS" port-forward "$DEPLOY" 18080:8080 >/tmp/srv-pf.log 2>&1 &
+          PF_PID=$!
+          trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+          echo "==> GET /pubkey"
+          PUBKEY="$(curl -fsS http://127.0.0.1:18080/pubkey)"
+          echo "$PUBKEY"
+          SIGNED="$(printf '%s' "$PUBKEY" | jq -r '.signed')"
+          BACKEND="$(printf '%s' "$PUBKEY" | jq -r '.backend')"
+          if [ "$SIGNED" != "true" ]; then
+            echo "::error::/pubkey reports signed=$SIGNED (expected true)"
+            exit 1
+          fi
+          if [ "$BACKEND" != "vault" ]; then
+            echo "::error::/pubkey reports backend=$BACKEND (expected vault — silent file/unsigned downgrade)"
+            exit 1
+          fi
+
+          echo "==> POST /receipt"
+          RESP="$(curl -fsS -X POST http://127.0.0.1:18080/receipt \
+            -H 'content-type: application/json' \
+            -d '{"subject":"vault-key-custody-gate","action":"release-verify","source":"ci"}')"
+          echo "$RESP"
+          VALID="$(printf '%s' "$RESP" | jq -r '.valid')"
+          if [ "$VALID" != "true" ]; then
+            echo "::error::POST /receipt returned valid=$VALID (expected true)"
+            exit 1
+          fi
+
+          echo "==> Independent offline verification against the published public key"
+          python3 scripts/verify_receipts_ed25519.py --url http://127.0.0.1:18080
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          set +e
+          echo "===== pods (all ns) ====="; kubectl get pods -A -o wide
+          echo "===== receipts ns describe ====="; kubectl -n "$NS" describe pods
+          echo "===== receipts logs ====="; kubectl -n "$NS" logs -l app.kubernetes.io/name=szl-receipts-server --all-containers --tail=-1
+          echo "===== vault describe ====="; kubectl -n vault describe pods
+          echo "===== vault logs ====="; kubectl -n vault logs deploy/vault --tail=200
+          echo "===== vault port-forward log ====="; cat /tmp/vault-pf.log 2>/dev/null
+          echo "===== server port-forward log ====="; cat /tmp/srv-pf.log 2>/dev/null
+
+      - name: Tear down cluster
+        if: always()
+        run: k3d cluster delete "$CLUSTER" || true
