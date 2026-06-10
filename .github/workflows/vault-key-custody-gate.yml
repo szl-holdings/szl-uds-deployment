@@ -156,8 +156,12 @@ jobs:
           set -euo pipefail
           # -f values.yaml -f values-vault.yaml carries the FULL signing.backend=vault
           # wiring verbatim. --set touches only CI substrate + requireKey (file-only).
+          # NS is pre-created by the Vault bootstrap (k8s-auth SA lives here); ensure it
+          # idempotently and let Helm ADOPT it. --create-namespace would error
+          # ("namespaces already exists") against a namespace Helm doesn't own.
+          kubectl get namespace "$NS" >/dev/null 2>&1 || kubectl create namespace "$NS"
           helm upgrade --install szl-receipts charts/szl-receipts \
-            --namespace "$NS" --create-namespace \
+            --namespace "$NS" \
             -f charts/szl-receipts/values.yaml \
             -f charts/szl-receipts/values-vault.yaml \
             --set server.image.repository=szl-receipts-server \
