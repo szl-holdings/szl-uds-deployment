@@ -1,0 +1,72 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# box-helper-install-coverage-guard.yml — PR-time gate asserting every committed
+# box helper file under box-scripts/{sbin,systemd}/ is EITHER wired into
+# box-scripts/install.sh by a matching `install -m "$here/<kind>/NAME" ...` line,
+# OR on a small explicit allowlist of files that ship via their OWN installer.
+#
+# WHY THIS EXISTS
+# box-scripts/sbin/box-scripts-drift-check derives the set of files it watches at
+# RUNTIME by parsing install.sh — it only watches what install.sh installs. So a
+# brand-new sbin script or systemd unit committed WITHOUT a matching install line
+# is silently never installed on the box AND silently never covered by the
+# runtime drift watcher. The runtime watcher closed the drift gap for installed
+# files; it cannot close the gap for files nobody wired up. This guard is the
+# PR-time gate that catches that omission before it merges — a bare new unwired
+# script FAILS the build.
+#
+# It is a pure grep/awk text check (no cluster, no root). The allowlist currently
+# holds only the szl-box-sync* family (installed by install-repo-sync.sh).
+#
+# scripts/box-helper-install-coverage-checks.sh holds the check (its install.sh
+# parser is kept in lockstep with derive_install_set() in box-scripts-drift-check
+# so "covered" means the same thing at PR time and at runtime).
+# scripts/box-helper-install-coverage-checks.test.sh is the negative-fixture
+# self-test: it sources the check and asserts the pristine repo passes, a bare
+# new sbin/systemd file fails, an added install line fixes it, the allowlist is
+# actually consulted (emptying it fails the pristine repo), and an allowlisted
+# new file passes — so the guard cannot pass vacuously. It runs as the
+# `self-test` job, which the guard job depends on.
+
+name: Box Helper Install-Coverage Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves the
+  # check's assertions still FAIL on an unwired file (i.e. are not silently
+  # passing). The guard job depends on it so a broken check blocks the build
+  # before it can wave an unwired script through.
+  self-test:
+    name: Self-test the guard (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/box-helper-install-coverage-checks.test.sh
+
+  guard:
+    name: Every box helper is wired into install.sh or allowlisted
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check parses clean (bash -n)
+        run: bash -n scripts/box-helper-install-coverage-checks.sh
+
+      - name: Assert install-coverage of box-scripts/{sbin,systemd}
+        run: bash scripts/box-helper-install-coverage-checks.sh .
+
+      - name: All box helpers are wired or allowlisted
+        run: echo "Every box-scripts/{sbin,systemd}/ file is wired into install.sh or on the own-installer allowlist."

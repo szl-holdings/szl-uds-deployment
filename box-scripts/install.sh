@@ -49,6 +49,8 @@ install -m 0755 "$here/sbin/dns-drift-check"           /usr/local/sbin/dns-drift
 install -m 0755 "$here/sbin/box-scripts-drift-check"     /usr/local/sbin/box-scripts-drift-check
 install -m 0755 "$here/sbin/szl-alert-relay"           /usr/local/sbin/szl-alert-relay
 install -m 0755 "$here/sbin/szl-alert-relay-watch"     /usr/local/sbin/szl-alert-relay-watch
+install -m 0755 "$here/sbin/szl-signing-health-check"  /usr/local/sbin/szl-signing-health-check
+install -m 0755 "$here/sbin/szl-receipts-orphan-watch" /usr/local/sbin/szl-receipts-orphan-watch
 install -m 0755 "$here/sbin/vault-auto-unseal"          /usr/local/sbin/vault-auto-unseal
 
 echo "[install] copying systemd units to /etc/systemd/system ..."
@@ -80,8 +82,12 @@ install -m 0644 "$here/systemd/dns-drift-check.timer"       /etc/systemd/system/
 install -m 0644 "$here/systemd/box-scripts-drift-check.service" /etc/systemd/system/box-scripts-drift-check.service
 install -m 0644 "$here/systemd/box-scripts-drift-check.timer"   /etc/systemd/system/box-scripts-drift-check.timer
 install -m 0644 "$here/systemd/szl-alert-relay.service"      /etc/systemd/system/szl-alert-relay.service
-install -m 0644 "$here/systemd/szl-alert-relay-watch.service" /etc/systemd/system/szl-alert-relay-watch.service
-install -m 0644 "$here/systemd/szl-alert-relay-watch.timer"   /etc/systemd/system/szl-alert-relay-watch.timer
+install -m 0644 "$here/systemd/szl-alert-relay-watch.service"     /etc/systemd/system/szl-alert-relay-watch.service
+install -m 0644 "$here/systemd/szl-alert-relay-watch.timer"       /etc/systemd/system/szl-alert-relay-watch.timer
+install -m 0644 "$here/systemd/szl-signing-health-check.service"  /etc/systemd/system/szl-signing-health-check.service
+install -m 0644 "$here/systemd/szl-signing-health-check.timer"    /etc/systemd/system/szl-signing-health-check.timer
+install -m 0644 "$here/systemd/szl-receipts-orphan-watch.service" /etc/systemd/system/szl-receipts-orphan-watch.service
+install -m 0644 "$here/systemd/szl-receipts-orphan-watch.timer"   /etc/systemd/system/szl-receipts-orphan-watch.timer
 install -m 0644 "$here/systemd/vault-auto-unseal.service"   /etc/systemd/system/vault-auto-unseal.service
 install -m 0644 "$here/systemd/vault-auto-unseal.timer"     /etc/systemd/system/vault-auto-unseal.timer
 
@@ -281,6 +287,8 @@ systemctl enable --now box-scripts-drift-check.timer
 systemctl enable --now vault-auto-unseal.timer
 systemctl enable --now szl-alert-relay.service
 systemctl enable --now szl-alert-relay-watch.timer
+systemctl enable --now szl-signing-health-check.timer
+systemctl enable --now szl-receipts-orphan-watch.timer
 
 # Bring the cluster guards into a conformant state right now (idempotent no-ops
 # if the cluster is down or already conformant).
@@ -298,6 +306,10 @@ done
 [ -x /usr/local/sbin/szl-receipts-retention ] && /usr/local/sbin/szl-receipts-retention || true
 [ -x /usr/local/sbin/szl-ns-scratch-watch ] && /usr/local/sbin/szl-ns-scratch-watch  || true
 [ -x /usr/local/sbin/szl-ns-scratch-stale-watch ] && /usr/local/sbin/szl-ns-scratch-stale-watch || true
+# Alert-only watchers (idempotent: cluster/endpoint down = no-op, no false page).
+[ -x /usr/local/sbin/szl-alert-relay-watch ] && /usr/local/sbin/szl-alert-relay-watch || true
+[ -x /usr/local/sbin/szl-signing-health-check ] && /usr/local/sbin/szl-signing-health-check || true
+[ -x /usr/local/sbin/szl-receipts-orphan-watch ] && /usr/local/sbin/szl-receipts-orphan-watch || true
 
 echo "[install] done. current status:"
 a11oy-mode status || true
