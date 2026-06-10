@@ -189,8 +189,14 @@ jobs:
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # The GHCR package `szl-uds-bundle` is repo-linked to a DIFFERENT repo
+          # (szl-holdings/uds-bundles), so this repo's built-in GITHUB_TOKEN gets
+          # `403 denied: permission_denied: write_package` on `uds publish`. We
+          # log in with an org-owner PAT (repo secret GHCR_PUBLISH_TOKEN) which
+          # has write:packages org-wide; uds publish (oras) reuses these docker
+          # credentials.
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GHCR_PUBLISH_TOKEN }}
 
       # ── Pre-warm large organ image layers into the Zarf cache (resumable) ──
       # amaru (and to a lesser extent rosie) carry a fat single layer (~363MB)
@@ -203,7 +209,7 @@ jobs:
       # which the retry wrapper in the build step below also covers.
       - name: Pre-warm organ image layers into the Zarf cache (resumable)
         env:
-          GHCR_BEARER: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_BEARER: ${{ secrets.GHCR_PUBLISH_TOKEN }}
         shell: bash
         run: |
           set -uo pipefail
