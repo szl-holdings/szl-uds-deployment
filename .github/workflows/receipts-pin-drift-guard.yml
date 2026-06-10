@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # receipts-pin-drift-guard.yml — Catch a STALE receipts-server digest pin before
-# it sits on main, AND self-heal it on the scheduled run.
+# it sits on main.
 #
 # Why this exists
 # ---------------
@@ -14,28 +14,26 @@
 #   * receipts-image-digest-guard.yml — the reference is digest-pinned at all
 #                                    (i.e. not reverted to a movable tag-only ref).
 # Neither asserts the pinned digest STILL MATCHES the digest the published tag
-# resolves to today. The post-rebuild auto-repin step (receipts-server-image.yml)
-# opens a PR after a rebuild, but a stale pin can still land if that PR is
-# ignored, or be introduced by a hand-edit, or appear when the SAME tag is
-# re-published out-of-band.
+# resolves to today. The auto-repin step opens a PR after a rebuild, but a stale
+# pin can still land if that PR is ignored, or be introduced by a hand-edit.
 #
-# What it does, by trigger
-# ------------------------
-#   * pull_request  — FAIL LOUD. Runs `pin-receipts-image-digest.sh --check`
-#                     and fails the PR (printing the one-line fix command) when
-#                     the committed pins differ from the published image. A
-#                     contributor PR is NEVER auto-rewritten.
-#   * schedule /     SELF-HEAL. The daily/manual run catches a freshly
-#     workflow_dispatch  re-published tag whose new digest main hasn't picked up
-#                     (no PR touches the pinned files in that case). When drift
-#                     is detected it runs the re-pin script and opens (or
-#                     updates) a clearly-labelled auto-repin PR, mirroring the
-#                     post-rebuild auto-repin flow — so a re-published tag never
-#                     sits stale waiting for someone to notice.
+# This workflow runs `scripts/pin-receipts-image-digest.sh --check`, which
+# resolves the published szl-receipts-server tag and exits non-zero (printing the
+# one-line fix command) when the committed pins differ from what's published.
 #
 # Pure registry inspection (docker buildx imagetools + jq) — no cluster, no
 # kubectl, airgap-friendly (it only talks to the image registry, exactly like the
 # re-pin tool it wraps).
+#
+# Direct alerting
+# ---------------
+# On its DAILY scheduled run a drift failure must page the team, not just turn the
+# Actions tab red — nobody watches the tab, and a freshly re-published tag can
+# leave main's pins stale for a day before anyone notices. A scheduled-run failure
+# posts one clean line through the shared szl-alert-relay -> ntfy path
+# (SLACK_WEBHOOK_URL secret), exactly like the a11oy receipt-verify guards. PR
+# runs do NOT alert (the contributor already sees the red check), so the relay only
+# fires on the unattended schedule.
 
 name: Receipts Pin Drift Guard
 
@@ -53,14 +51,9 @@ on:
     - cron: "23 7 * * *"
   workflow_dispatch:
 
-# contents: write + pull-requests: write are needed by the schedule/dispatch
-# self-heal path to push the auto-repin branch and open the PR. The PR-triggered
-# path never writes (it only runs --check), so a contributor PR cannot trigger
-# an auto-rewrite regardless of these permissions.
 permissions:
-  contents: write
+  contents: read
   packages: read
-  pull-requests: write
 
 jobs:
   pin-drift-guard:
@@ -86,79 +79,77 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" \
             | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      # ---- PR PATH: fail loud, never auto-rewrite a contributor branch -------
-      - name: Assert committed pins match the published receipts-server image
-        if: ${{ github.event_name == 'pull_request' }}
+      # Run the drift check WITHOUT aborting, so a scheduled-run failure can be
+      # turned into a direct alert before the run is failed by the gate below.
+      - name: Check committed pins against the published receipts-server image
+        id: check
+        run: |
+          set +e
+          out="$(scripts/pin-receipts-image-digest.sh --check 2>&1)"
+          rc=$?
+          echo "${out}"
+
+          # The tag the guard checked (same default the script infers from zarf.yaml),
+          # so the alert can name it and print the exact one-line fix command.
+          tag="$(grep -oE 'szl-receipts-server:[^@[:space:]]+' zarf.yaml | head -n1 | cut -d: -f2)"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "fix_cmd=scripts/pin-receipts-image-digest.sh --tag ${tag}" >> "$GITHUB_OUTPUT"
+
+          if [ "${rc}" -ne 0 ]; then
+            echo "drift=1" >> "$GITHUB_OUTPUT"
+            echo "::warning::Receipts-server digest pins are STALE vs the published image."
+          else
+            echo "drift=0" >> "$GITHUB_OUTPUT"
+            echo "OK: committed receipts-server pins match the published image."
+          fi
+          exit 0
+
+      # Direct push notification so a stale pin found by the UNATTENDED daily run
+      # is noticed within a day, not whenever someone next looks at the Actions
+      # tab. Fires ONLY on a SCHEDULED run that found drift — contributor PR
+      # failures already show a red check, so they never page the team. Posts a
+      # Slack-compatible payload via curl (no third-party action, so it stays
+      # within the org's github-owned/verified-actions-only policy) to the shared
+      # szl-alert-relay -> ntfy webhook. If the webhook secret is unset it logs a
+      # notice and soft-skips; the gate below still fails the run.
+      - name: Alert the team on a scheduled-run drift failure
+        if: ${{ always() && github.event_name == 'schedule' && steps.check.outputs.drift == '1' }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.check.outputs.tag }}
+          FIX_CMD: ${{ steps.check.outputs.fix_cmd }}
         run: |
           set -euo pipefail
-          if ! scripts/pin-receipts-image-digest.sh --check; then
+          if [ -z "${SLACK_WEBHOOK_URL}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL secret not configured — skipping direct alert. The failed run still stands."
+            exit 0
+          fi
+
+          # One clean line naming the repo, the stale tag, and the fix command.
+          text=":rotating_light: *Receipts pin-drift guard FAILED* in ${REPO} — committed szl-receipts-server digest pins are STALE vs the published tag \`${TAG}\`. Fix: \`${FIX_CMD}\` then commit. Run: ${RUN_URL}"
+
+          # JSON-encode with jq so quotes/backticks can't break the payload.
+          payload=$(jq -n --arg text "$text" '{text: $text}')
+
+          echo "Posting pin-drift alert to the szl-alert-relay webhook..."
+          code=$(curl -sS -o /tmp/relay_resp.txt -w '%{http_code}' \
+                   -X POST -H 'Content-Type: application/json' \
+                   --max-time 20 --data "${payload}" "${SLACK_WEBHOOK_URL}")
+          echo "Webhook responded HTTP ${code}."
+          if [ "${code}" -lt 200 ] || [ "${code}" -ge 300 ]; then
+            echo "::error::Direct alert webhook POST failed (HTTP ${code}): $(cat /tmp/relay_resp.txt)"
+            exit 1
+          fi
+          echo "Direct alert delivered."
+
+      - name: Fail the run if committed pins are stale
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.check.outputs.drift }}" = "1" ]; then
             echo "::error file=zarf.yaml::Receipts-server digest pins are STALE vs the published image. Run the printed fix command and commit the result."
             exit 1
           fi
           echo "OK: committed receipts-server pins match the published image."
-
-      # ---- SCHEDULE / DISPATCH PATH: self-heal by opening an auto-repin PR ----
-      # When the daily run finds drift (no PR is touching the pinned files), close
-      # the loop automatically: re-pin to the published digest and open (or
-      # update) a clearly-labelled PR. main is protected, so we open a PR rather
-      # than pushing to main (mirrors receipts-server-image.yml's auto-repin).
-      - name: Detect drift and open an auto-repin PR (scheduled / manual only)
-        if: ${{ github.event_name != 'pull_request' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          if scripts/pin-receipts-image-digest.sh --check; then
-            echo "OK: committed receipts-server pins match the published image; nothing to heal."
-            exit 0
-          fi
-
-          echo "::warning::Receipts-server pins are STALE vs the published image — self-healing by opening an auto-repin PR."
-
-          # Re-pin the tag already committed in zarf.yaml (a same-tag re-publish
-          # mints a new digest; the script resolves and pins it everywhere).
-          TAG="$(grep -oE 'szl-receipts-server:[^@[:space:]]+' zarf.yaml | head -n1 | cut -d: -f2)"
-          test -n "$TAG" || { echo "::error::could not infer receipts-server tag from zarf.yaml"; exit 1; }
-          echo "Re-pinning szl-receipts-server:${TAG} to its published digest"
-          scripts/pin-receipts-image-digest.sh --tag "${TAG}"
-
-          if git diff --quiet; then
-            echo "::warning::--check reported drift but the re-pin produced no change; not opening a PR."
-            exit 0
-          fi
-
-          # Stable per-tag branch so a repeat scheduled run UPDATES the same PR
-          # instead of spawning a new one.
-          BRANCH="auto/repin-receipts-drift-${TAG}"
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -B "${BRANCH}"
-          git add zarf.yaml packages/szl-receipts/zarf.yaml charts/szl-receipts/values.yaml
-          git commit -m "chore(receipts): [auto] repin ${TAG} to published digest (scheduled drift heal)"
-          git push --force-with-lease origin "${BRANCH}"
-
-          # Clearly-labelled so it can never be mistaken for a hand-edit. The
-          # label is created idempotently (it may not exist yet).
-          gh label create automated-repin \
-            --color ededed \
-            --description "Automated receipts digest re-pin — do not hand-edit" \
-            --force || true
-
-          # Open the PR if one is not already open for this branch; otherwise the
-          # force-pushed commit updates the existing PR. NOTE: the org enforces
-          # actions/permissions/workflow.can_approve_pull_request_reviews=false,
-          # so the bot's `gh pr create` may be refused ("GitHub Actions is not
-          # permitted to create or approve pull requests"); the branch is pushed
-          # regardless, and an org owner opens/merges from it. We do NOT mask a
-          # genuine failure as success beyond that known-org-policy case.
-          if gh pr view "${BRANCH}" --json number >/dev/null 2>&1; then
-            echo "::notice::PR already open for ${BRANCH}; updated it with the fresh re-pin."
-          else
-            gh pr create \
-              --base main --head "${BRANCH}" \
-              --title "chore(receipts): [auto] repin ${TAG} image digest (scheduled drift heal)" \
-              --label automated-repin \
-              --body "Automated re-pin opened by **Receipts Pin Drift Guard** on a \`${{ github.event_name }}\` run. The committed \`szl-receipts-server:${TAG}\` digest pins (zarf.yaml, packages/szl-receipts/zarf.yaml, charts/szl-receipts/values.yaml) had drifted from the published image; this PR runs \`scripts/pin-receipts-image-digest.sh --tag ${TAG}\` and commits the corrected digests so the bundle build stays green. **Do not hand-edit** — this branch is force-updated by the guard. Generated by \`.github/workflows/receipts-pin-drift-guard.yml\`." \
-              || echo "::notice::gh pr create was refused (likely org policy blocking Actions from opening PRs); the auto-repin branch ${BRANCH} is pushed — an org owner can open/merge the PR from it."
-          fi
