@@ -353,6 +353,36 @@ jobs:
       - name: Run the receipts memory guard (20k-receipt store)
         run: python3 scripts/receipts_memory_guard.py
 
+  # ── Sharding + archival chain-validity guard (real signed server — no cluster) ─
+  receipts-sharding-guard:
+    name: Receipts Sharding Guard (shard + verify-store + archive)
+    runs-on: ubuntu-24.04
+    # Guards the index-SHARDING write path, the bounded `verify-store` audit, and
+    # the verify-gated `archive-shards` cold-storage rollup (validated once by a
+    # throwaway sandbox script in Task #512, never committed). Boots the REAL
+    # server with a real Ed25519 key and a small SZL_RECEIPT_SHARD_SIZE, POSTs N
+    # genuinely-signed receipts spanning several buckets, then proves:
+    #   * receipts shard into the expected buckets;
+    #   * `verify-store` reports total==valid==N and chain_ok=true;
+    #   * `archive-shards --delete` seals ONLY the buckets below the tail (tail
+    #     preserved) with a tarball+manifest+ledger per sealed bucket, and a
+    #     post-archive `verify-store` over what remains still passes;
+    #   * a single flipped byte flips chain_ok to false (the audit isn't a hollow
+    #     always-pass);
+    #   * `archive-shards` REFUSES to seal a bucket that fails verification —
+    #     skipping it, never archiving or deleting it (no loss, no laundering),
+    #     while clean sealed buckets still archive.
+    # A regression in bucket math, the sealed-vs-tail boundary, or the verify gate
+    # passes the unit test but fails loudly here.
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install cryptography (server signer + offline audit)
+        run: pip install cryptography
+
+      - name: Run the receipts sharding + archival guard
+        run: python3 scripts/receipts_sharding_guard.py
+
   # ── Full install test (requires cluster — manual dispatch or scheduled) ────
   test-install:
     name: Test Install
