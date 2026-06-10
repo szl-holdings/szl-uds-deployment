@@ -411,15 +411,21 @@ jobs:
     #   * receipts shard into the expected buckets;
     #   * `verify-store` reports total==valid==N and chain_ok=true;
     #   * `archive-shards --delete` seals ONLY the buckets below the tail (tail
-    #     preserved) with a tarball+manifest+ledger per sealed bucket, and a
-    #     post-archive `verify-store` over what remains still passes;
+    #     preserved) with a tarball+manifest+ledger per sealed bucket, the manifest
+    #     CONTENT (count, first_prev_hash/last_hash) actually stitches bucket→
+    #     bucket→live-tail back to GENESIS, and a post-archive `verify-store` over
+    #     what remains still passes;
     #   * a single flipped byte flips chain_ok to false (the audit isn't a hollow
     #     always-pass);
     #   * `archive-shards` REFUSES to seal a bucket that fails verification —
     #     skipping it, never archiving or deleting it (no loss, no laundering),
-    #     while clean sealed buckets still archive.
-    # A regression in bucket math, the sealed-vs-tail boundary, or the verify gate
-    # passes the unit test but fails loudly here.
+    #     while clean sealed buckets still archive;
+    #   * legacy flat-root receipts (pre-sharding files in the store root) are
+    #     STILL read and verified after an archival --delete run — guarding the
+    #     additive read path so the oldest receipts never go dark.
+    # A regression in bucket math, the sealed-vs-tail boundary, the manifest
+    # boundary hashes, the legacy-root read path, or the verify gate passes the
+    # unit test but fails loudly here.
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 

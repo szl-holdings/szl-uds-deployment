@@ -32,7 +32,13 @@
 #     3. `archive-shards --delete` seals ONLY the buckets below the tail, leaves
 #        the tail bucket on the live store, and writes a tarball + manifest +
 #        ledger for each sealed bucket into cold storage;
-#     4. post-archive `verify-store` over what remains live still passes.
+#     4. the manifest CONTENT is real and verifiable, not just present: each
+#        sealed bucket's count == SHARD_SIZE, first_prev_hash/last_hash are real
+#        chain hashes, the lowest sealed bucket links back to GENESIS, consecutive
+#        buckets stitch (last_hash == next first_prev_hash), and the last cold
+#        bucket stitches into the LIVE tail's first receipt — so an auditor can
+#        re-attach cold storage to the live chain;
+#     5. post-archive `verify-store` over what remains live still passes.
 #
 #   PHASE B — verify-store actually catches tampering
 #     A single flipped byte in one stored receipt flips chain_ok to false and
@@ -43,6 +49,15 @@
 #     --delete` lists that bucket under skipped_failed_verify, does NOT archive
 #     it, and does NOT delete it from the live store (no laundering / no loss),
 #     while the other clean sealed buckets still archive.
+#
+#   PHASE D — legacy flat-root additive read survives archival
+#     Pre-sharding stores wrote receipts as flat files in the store ROOT. The
+#     store iterator reads those legacy files IN ADDITION to the shard buckets.
+#     With the oldest chunk moved into the flat root (as legacy files) and the
+#     rest left sharded, the legacy root + shards verify as one continuous chain,
+#     and after an `archive-shards --delete` run the legacy flat files are left
+#     untouched AND are STILL enumerated/verified by `verify-store` — a refactor
+#     that only ever walked shards/ would silently stop auditing them and fail.
 #
 # No cluster required. Run: python3 scripts/receipts_sharding_guard.py
 #
@@ -174,6 +189,29 @@ def _first_receipt_in(store, bucket):
     raise SystemExit(f"::error::no receipt file in bucket {bucket}")
 
 
+# mirrors server.py GENESIS — the sentinel prev_hash at the root of the chain.
+GENESIS = "GENESIS"
+
+
+def _read_json(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+def _is_hex64(s):
+    """A real SHA-256 chain hash is 64 lowercase hex chars (not GENESIS, not '')."""
+    return isinstance(s, str) and len(s) == 64 and all(
+        c in "0123456789abcdef" for c in s)
+
+
+def _receipts_in_bucket(store, bucket):
+    """Every receipt record in a LIVE shard bucket, sorted by chain_index."""
+    recs = [_read_json(e.path) for e in os.scandir(_bucket_dir(store, bucket))
+            if e.is_file() and e.name.endswith(".json")]
+    recs.sort(key=lambda r: r.get("chain", {}).get("chain_index", 0))
+    return recs
+
+
 # ── build a real, signed, multi-bucket store via the running server ───────────────
 def _seed_signed_store(store, key, shard_size, n, port=8138):
     env = dict(os.environ)
@@ -261,8 +299,10 @@ def main():
         store_a = store
         store_b = os.path.join(work, "store_b")
         store_c = os.path.join(work, "store_c")
+        store_d = os.path.join(work, "store_d")
         shutil.copytree(store, store_b)
         shutil.copytree(store, store_c)
+        shutil.copytree(store, store_d)
 
         # ── PHASE A: sharding layout + verify-store + archive-shards ─────────────
         print("\n== PHASE A: sharding write path + verify-store + archive-shards ==")
@@ -314,6 +354,43 @@ def main():
                 f"cold manifest present for sealed bucket {b}")
         fails += _assert(os.path.exists(os.path.join(cold, "archived.json")),
                          "cold archived.json ledger written")
+
+        # manifest CONTENT, not just presence: the boundary hashes a manifest
+        # records (first_prev_hash / last_hash) are the ONLY thing that lets an
+        # auditor re-stitch a cold-archived bucket back into the live chain. Prove
+        # they are real hashes and that they actually link bucket→bucket→live-tail.
+        manifests = {b: _read_json(os.path.join(cold, f"{b}.manifest.json"))
+                     for b in sealed_expected}
+        for b in sealed_expected:
+            mf = manifests[b]
+            fails += _assert(mf.get("count") == shard_size,
+                             f"manifest[{b}] count == shard_size "
+                             f"({mf.get('count')} == {shard_size})")
+            fails += _assert(_is_hex64(mf.get("last_hash")),
+                             f"manifest[{b}] last_hash is a real 64-hex chain hash "
+                             f"({mf.get('last_hash')!r})")
+            fp = mf.get("first_prev_hash")
+            fails += _assert(_is_hex64(fp) or fp == GENESIS,
+                             f"manifest[{b}] first_prev_hash is a real link "
+                             f"({fp!r})")
+        # the LOWEST sealed bucket links back to GENESIS (chain root)…
+        fails += _assert(manifests[sealed_expected[0]].get("first_prev_hash") == GENESIS,
+                         "lowest sealed bucket's manifest first_prev_hash == GENESIS")
+        # …consecutive sealed buckets stitch (this bucket's last_hash is the next
+        #   bucket's first_prev_hash)…
+        for i in range(len(sealed_expected) - 1):
+            cur, nxt = sealed_expected[i], sealed_expected[i + 1]
+            fails += _assert(
+                manifests[cur].get("last_hash") == manifests[nxt].get("first_prev_hash"),
+                f"manifest chain stitches: {cur}.last_hash == {nxt}.first_prev_hash")
+        # …and the LAST cold bucket stitches into the LIVE tail bucket's first
+        #   receipt, so cold storage can be re-attached to what's still on disk.
+        tail_first_prev = (_receipts_in_bucket(store_a, tail_bucket)[0]
+                           .get("chain", {}).get("prev_hash"))
+        fails += _assert(
+            manifests[sealed_expected[-1]].get("last_hash") == tail_first_prev,
+            "last cold bucket's last_hash == live tail's first prev_hash "
+            "(cold↔live chain continuity preserved)")
 
         # post-archive verify-store over what remains live still passes.
         rc, rep = _cli(store_a, key, shard_size, ["verify-store"])
@@ -372,6 +449,79 @@ def main():
         fails += _assert(sorted(rep.get("archived", [])) == good_buckets,
                          f"clean sealed buckets still archived "
                          f"({sorted(rep.get('archived', []))} == {good_buckets})")
+
+        # ── PHASE D: legacy flat-root receipts are STILL READ after archival ─────
+        # Pre-sharding stores wrote every receipt as a flat file in the store ROOT.
+        # The store iterator reads those legacy flat files IN ADDITION to the shard
+        # buckets; a refactor that only ever walked shards/ would silently stop
+        # auditing the oldest receipts. Simulate the migration case: move the
+        # OLDEST sealed bucket's receipts up into the flat root (as legacy files),
+        # leave the rest sharded, and prove the additive read survives an archival
+        # --delete run that sweeps the still-sharded sealed buckets to cold storage.
+        print("\n== PHASE D: legacy flat-root additive read survives archival ==")
+        legacy_bucket = sealed_expected[0]
+        legacy_dir = _bucket_dir(store_d, legacy_bucket)
+        legacy_files = [e.path for e in os.scandir(legacy_dir)
+                        if e.is_file() and e.name.endswith(".json")]
+        for p in legacy_files:
+            shutil.move(p, os.path.join(store_d, os.path.basename(p)))
+        os.rmdir(legacy_dir)
+        legacy_count = len(legacy_files)
+        # the legacy bucket is no longer a shard; the rest stay sealed below the tail.
+        still_sealed = sealed_expected[1:]
+
+        # additive read with shards present: legacy flat root + shard buckets verify
+        # as ONE continuous chain.
+        rc, rep = _cli(store_d, key, shard_size, ["verify-store"])
+        print(f"  pre-archive verify-store (legacy root + shards): "
+              f"total={rep['total']} valid={rep['valid']} chain_ok={rep['chain_ok']} "
+              f"groups={rep['groups']}")
+        fails += _assert(rc == 0 and rep["chain_ok"] is True,
+                         "legacy flat-root + shards verify as one continuous chain")
+        fails += _assert(rep["total"] == n and rep["valid"] == n,
+                         f"all {n} receipts read across legacy root + shards "
+                         f"(total={rep['total']} valid={rep['valid']})")
+
+        cold_d = os.path.join(work, "cold_d")
+        rc, rep = _cli(store_d, key, shard_size,
+                       ["archive-shards", "--delete"], cold_dir=cold_d)
+        print(f"  archive-shards: archived={rep.get('archived')} "
+              f"skipped={rep.get('skipped_failed_verify')}")
+        fails += _assert(sorted(rep.get("archived", [])) == still_sealed,
+                         f"archival sealed only the shard buckets, not the flat root "
+                         f"({sorted(rep.get('archived', []))} == {still_sealed})")
+        fails += _assert(legacy_bucket not in rep.get("archived", []),
+                         "legacy flat root was NOT swept into cold storage")
+
+        # the legacy flat files are untouched on the live store after --delete…
+        live_legacy = [e.name for e in os.scandir(store_d)
+                       if e.is_file() and e.name.endswith(".json")]
+        fails += _assert(len(live_legacy) == legacy_count,
+                         f"legacy flat-root files survive archival --delete "
+                         f"({len(live_legacy)} == {legacy_count})")
+        # …and the store iterator STILL enumerates them: verify-store reads the
+        #   flat-root receipts after archival. A regression that dropped legacy-root
+        #   reads would report total == the tail count alone (the legacy chunk gone
+        #   dark) and this fails loudly.
+        rc, rep = _cli(store_d, key, shard_size, ["verify-store"])
+        tail_only = n - len(sealed_expected) * shard_size
+        print(f"  post-archive verify-store: total={rep['total']} valid={rep['valid']} "
+              f"bad_sig={rep['bad_sig']} bad_hash={rep['bad_hash']} "
+              f"bad_link={rep['bad_link']} chain_ok={rep['chain_ok']}")
+        fails += _assert(rep["total"] == legacy_count + tail_only,
+                         f"legacy flat-root receipts STILL read after archival "
+                         f"(total {rep['total']} == {legacy_count} legacy + "
+                         f"{tail_only} tail)")
+        fails += _assert(rep["bad_sig"] == 0 and rep["bad_hash"] == 0,
+                         "no surviving receipt corrupted/dropped by archival "
+                         "(every read receipt's signature + hash still verify)")
+        # Archiving the MIDDLE sealed buckets leaves a deliberate gap between the
+        # legacy chunk and the tail, so exactly ONE cross-bucket link is dangling.
+        # That single bad_link is expected and is NOT a read regression — the legacy
+        # files themselves all still read and verify above.
+        fails += _assert(rep["bad_link"] == 1,
+                         f"only the one expected legacy↔tail boundary link dangles "
+                         f"after archiving the middle buckets ({rep['bad_link']} == 1)")
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
