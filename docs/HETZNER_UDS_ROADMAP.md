@@ -355,7 +355,7 @@ kubectl apply -f szl-fleet-overlay/uds-packages/
 **Honesty reminders for the demo (do NOT overclaim):**
 - **SLSA L1+L2 only** — images attested (`cosign verify-attestation` PASS); **bundle-level attestation NOT earned** (cosign signature is the bundle provenance). **No L3, no Iron Bank claim.**
 - **Cross-organ in-cluster mTLS mesh / 3-of-4 quorum over the network = v0.5.0 roadmap.** The 5 organs deploy as **separate workloads**; say so.
-- **Λ = Conjecture 1**, never a theorem. **Proved formulas = exactly 5** (F1, F11, F12, F18, F19). Doctrine v11 LOCKED 749/14/163 @ c7c0ba17.
+- **Λ = Conjecture 1**, never a theorem. **Proved formulas = exactly 8** (F1, F4, F7, F11, F12, F18, F19, F22). Doctrine v11 LOCKED 749/14/163 @ c7c0ba17.
 - Receipts are **real DSSE** when the key is present, **honest UNSIGNED** otherwise — never fabricated green.
 
 ---
