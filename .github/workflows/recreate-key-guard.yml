@@ -1,0 +1,85 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# recreate-key-guard.yml — Guard the `uds run recreate-full` Vault signing-key
+# preservation from being silently removed.
+#
+# recreate-full tears the k3d cluster down (dropping the Vault PV that holds the
+# Ed25519 Transit signing key) and rebuilds it. To stop the key from ROTATING —
+# which would make every previously-issued receipt signature stop verifying — the
+# task now snapshots the Vault file-store + unseal shares BEFORE teardown
+# (scripts/vault-keystore-backup.sh, gated on PRESERVE_SIGNING_KEY), restores
+# them AFTER the persistent Vault is re-applied (scripts/vault-keystore-
+# restore.sh, reproducing the identical key), and reports the outcome from the
+# /tmp/szl-vault-restore.ok sentinel the restore writes.
+#
+# tasks.yaml is a large, frequently-edited shared file. A sibling refactor could
+# quietly drop the PRESERVE_SIGNING_KEY var, delete the backup or restore step,
+# reorder the backup AFTER teardown, or drop the sentinel-aware status step —
+# silently reintroducing the key-rotation bug with NO error. This guard fails
+# such a PR.
+#
+# The check logic lives in scripts/recreate-key-guard-checks.sh (pure text/lint,
+# no cluster). It was extracted from this workflow so it can be UNIT TESTED:
+# scripts/recreate-key-guard-checks.test.sh feeds each check a deliberately-
+# BROKEN fixture and asserts the check FAILS, plus asserts the pristine repo
+# PASSES. That self-test runs as the `self-test` job below, so a future edit that
+# neuters a check (passing vacuously — green while guarding nothing) is caught
+# here.
+#
+# The asserted invariants:
+#   chk1  PRESERVE_SIGNING_KEY + VAULT_KEYSTORE_BACKUP_DIR vars exist AND
+#         recreate-full references PRESERVE_SIGNING_KEY
+#   chk2  scripts/vault-keystore-{backup,restore}.sh exist and parse (bash -n)
+#   chk3  within recreate-full: backup runs BEFORE 'k3d cluster delete', and
+#         restore runs AFTER the 'Re-apply the persistent Vault' step
+#   chk4  a sentinel-aware status step reads '[ -f /tmp/szl-vault-restore.ok ]'
+#         after the restore step
+
+name: Recreate-full Signing-Key Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves each check
+  # still FAILS on bad input (i.e. is not silently passing). The guard job
+  # depends on it so a broken check blocks the build before it can wave a
+  # regression through.
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/recreate-key-guard-checks.test.sh
+
+  guard:
+    name: Assert recreate-full signing-key preservation is intact
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check 1 — PRESERVE_SIGNING_KEY / VAULT_KEYSTORE_BACKUP_DIR present + wired
+        run: bash scripts/recreate-key-guard-checks.sh chk1 .
+
+      - name: Check 2 — keystore backup/restore scripts exist + parse
+        run: bash scripts/recreate-key-guard-checks.sh chk2 .
+
+      - name: Check 3 — backup before teardown, restore after re-applying Vault
+        run: bash scripts/recreate-key-guard-checks.sh chk3 .
+
+      - name: Check 4 — sentinel-aware status step intact
+        run: bash scripts/recreate-key-guard-checks.sh chk4 .
+
+      - name: Signing-key preservation guard is intact
+        run: echo "The uds run recreate-full Vault signing-key preservation guard is intact."
