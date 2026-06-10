@@ -1,0 +1,82 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# receipt-flood-guard.yml — Guard the szl-receipts receipt-flood fix.
+#
+# The pepr `pepr-szl` MutatingWebhook (pepr/policies/szl-receipt-on-deploy.ts)
+# mints a DSSE/Ed25519 governance receipt on every Deployment and Job admission
+# — CREATE *and* UPDATE. Without a guard, two failure modes turn that into a
+# runaway flood that overloads szl-receipts-server and balloons the chain
+# (observed ~2-13 POSTs/sec, the chain grew to 205919 before a reset):
+#   1. Status / server-side-apply churn re-fires UPDATE admission for objects
+#      whose `.spec` is unchanged.
+#   2. Reconcile / delete-recreate hot-loops re-fire UPDATE many times per second
+#      with a *changing* spec for the same subject.
+#
+# The two-layer fix is a single gate, shouldEmitReceipt(subject, specHash),
+# called by BOTH handlers. Nothing else stops a future edit (or a sibling on the
+# shared box working tree) from silently deleting it and reopening the flood.
+#
+# The actual check logic lives in scripts/receipt-flood-checks.sh (pure grep/awk,
+# no cluster needed). It was extracted from this workflow so it can be UNIT
+# TESTED: scripts/receipt-flood-checks.test.sh feeds each check a deliberately
+# BROKEN copy of the policy and asserts the check FAILS, plus asserts the
+# pristine copy PASSES. That self-test runs as the `self-test` job below, so a
+# future edit that neuters a check (making it pass vacuously — green while
+# guarding nothing) is caught here, not in production.
+#
+# The invariants:
+#   1. The Deployment handler gates on shouldEmitReceipt() and early-returns.
+#   2. The Job handler ALSO gates on shouldEmitReceipt() and early-returns.
+#   3. shouldEmitReceipt() keeps the spec-change dedup (Layer 1): skip when the
+#      spec is unchanged AND record the minted spec hash.
+#   4. shouldEmitReceipt() keeps the per-subject rate limit (Layer 2): the
+#      SZL_MIN_RECEIPT_INTERVAL_MS knob drives a (now - last) throttle.
+
+name: Receipt Flood Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves each
+  # check still fails on bad input (i.e. is not silently passing). The guard job
+  # depends on it so a broken check blocks the build before it can wave a
+  # regression through.
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/receipt-flood-checks.test.sh
+
+  guard:
+    name: Assert receipt-flood invariants
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Invariant 1 — Deployment handler gates on shouldEmitReceipt()
+        run: bash scripts/receipt-flood-checks.sh inv1 .
+
+      - name: Invariant 2 — Job handler gates on shouldEmitReceipt()
+        run: bash scripts/receipt-flood-checks.sh inv2 .
+
+      - name: Invariant 3 — spec-change dedup (Layer 1) is intact
+        run: bash scripts/receipt-flood-checks.sh inv3 .
+
+      - name: Invariant 4 — per-subject rate limit (Layer 2) is intact
+        run: bash scripts/receipt-flood-checks.sh inv4 .
+
+      - name: All receipt-flood invariants hold
+        run: echo "All four szl-receipts receipt-flood invariants are intact."
