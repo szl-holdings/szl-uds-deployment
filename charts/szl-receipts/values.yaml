@@ -45,6 +45,13 @@ server:
   # raise it for richer /receipts responses — no image rebuild required.
   maxInMemoryReceipts: 2000
 
+  # Max receipts written into a single shard folder before rolling to the next
+  # bucket (<store>/shards/<bucket>/), which keeps directory listings fast as the
+  # chain grows. Maps to SZL_RECEIPT_SHARD_SIZE (server.py default 10000). Lower
+  # it on tiny nodes, or set 0 to disable sharding (flat legacy layout) — no image
+  # rebuild required.
+  receiptShardSize: 10000
+
   resources:
     requests:
       cpu: "50m"
