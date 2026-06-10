@@ -60,7 +60,7 @@ spec:
         remoteNamespace: szl-a11oy
         remoteSelector:
           app: a11oy
-        port: 8080
+        port: 7860
         description: "amaru responds to a11oy memory queries"
       # amaru -> szl-receipts : ALLOW (memory-write receipt emission)
       - direction: Egress

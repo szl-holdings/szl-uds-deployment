@@ -91,7 +91,7 @@ spec:
         remoteNamespace: szl-a11oy
         remoteSelector:
           app: a11oy
-        port: 8080
+        port: 7860
         description: "rosie commands a11oy (operator -> policy substrate)"
       # rosie -> szl-receipts : ALLOW (human-confirmation receipt emission)
       - direction: Egress

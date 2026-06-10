@@ -81,7 +81,7 @@ spec:
         remoteNamespace: szl-a11oy
         remoteSelector:
           app: a11oy
-        port: 8080
+        port: 7860
         description: "vessels reports deployment status up to a11oy"
       # vessels -> szl-receipts : ALLOW (deployment-event receipt emission)
       - direction: Egress

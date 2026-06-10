@@ -62,7 +62,7 @@ spec:
         remoteNamespace: szl-a11oy
         remoteSelector:
           app: a11oy
-        port: 8080
+        port: 7860
         description: "sentra inspects / returns verdicts to a11oy"
       - direction: Egress
         selector:
