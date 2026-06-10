@@ -44,14 +44,27 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
+      # Install Grype directly and refresh its vulnerability DB before scanning.
+      # The pinned scan-action embeds a vendored DB that can exceed grype's
+      # max-allowed-age (5 days) in CI and fail closed with a stale-DB error
+      # rather than a real finding. Downloading a fresh DB makes the gate honest.
+      - name: Install Grype
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh \
+            | sh -s -- -b /usr/local/bin v0.92.2
+          grype version
+
+      - name: Refresh Grype vulnerability DB
+        run: grype db update
+
       - name: Scan with Grype (fail build on HIGH/CRITICAL)
         id: grype-scan
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
-        with:
-          path: "."
-          fail-build: true
-          severity-cutoff: high
-          output-format: sarif
+        run: |
+          grype dir:. \
+            --fail-on high \
+            --output sarif \
+            --file results.sarif
+          echo "sarif=results.sarif" >> "$GITHUB_OUTPUT"
 
       - name: Upload Grype SARIF
         uses: github/codeql-action/upload-sarif@v4
