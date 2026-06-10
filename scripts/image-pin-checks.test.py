@@ -54,13 +54,27 @@ def case(label, expect_pass, rc):
 DIGEST = "@sha256:" + "b" * 64
 
 
-def zarf(images):
+def zarf(images, chart_localpath=None):
     comps = ""
     for i, img in enumerate(images):
         comps += "  - name: c%d\n    images:\n      - %s\n" % (i, img)
+        if chart_localpath:
+            comps += (
+                "    charts:\n      - name: ch\n        localPath: %s\n"
+                % chart_localpath
+            )
     if not images:
         comps = "  - name: empty\n"
     return "kind: ZarfPackageConfig\nmetadata:\n  name: t\ncomponents:\n" + comps
+
+
+def chart_values(repo, tag="v1", digest=""):
+    return (
+        "image:\n"
+        "  repository: %s\n"
+        "  tag: \"%s\"\n"
+        "  digest: \"%s\"\n" % (repo, tag, digest)
+    )
 
 
 # ── collect-pins ────────────────────────────────────────────────────────────────
@@ -78,6 +92,23 @@ with tempfile.TemporaryDirectory() as root:
     write(root, "zarf.yaml", zarf(["ghcr.io/szl-holdings/app:v1"]))  # no @sha256
     rc, _ = run("collect-pins", "--root", root)
     case("collect-pins: no @sha256 pins fails", False, rc)
+
+# A chart-only digest (no zarf @sha256 pin) is still collected for crane to
+# classify — the regression this task closes (a chart index digest slipping by).
+with tempfile.TemporaryDirectory() as root:
+    write(root, "zarf.yaml", zarf(["ghcr.io/szl-holdings/app:v1"]))  # tag-only
+    write(
+        root,
+        "charts/a11oy/values.yaml",
+        chart_values("ghcr.io/szl-holdings/a11oy", "uds-v0.3.0", "sha256:" + "c" * 64),
+    )
+    rc, out = run("collect-pins", "--root", root)
+    chart_ref = "ghcr.io/szl-holdings/a11oy@sha256:" + "c" * 64
+    case(
+        "collect-pins: chart image.digest is collected",
+        True,
+        0 if (rc == 0 and chart_ref in out) else 1,
+    )
 
 
 # ── classify-manifest ────────────────────────────────────────────────────────────
@@ -181,6 +212,98 @@ with tempfile.TemporaryDirectory() as root:
     )
     rc, _ = run("start-routes-bundle", "--root", root)
     case("start-routes-bundle: start that skips bundle fails", False, rc)
+
+
+# ── chart-zarf-digest-match ──────────────────────────────────────────────────────
+GOOD_DIGEST = "sha256:" + "a" * 64
+OTHER_DIGEST = "sha256:" + "f" * 64
+
+# PASS: chart image.digest byte-matches the wrapping zarf images: digest.
+with tempfile.TemporaryDirectory() as root:
+    write(
+        root,
+        "charts/a11oy/values.yaml",
+        chart_values("ghcr.io/szl-holdings/a11oy", "uds-v0.3.0", GOOD_DIGEST),
+    )
+    write(
+        root,
+        "packages/a11oy/zarf.yaml",
+        zarf(
+            ["ghcr.io/szl-holdings/a11oy:uds-v0.3.0@" + GOOD_DIGEST],
+            chart_localpath="../../charts/a11oy",
+        ),
+    )
+    rc, _ = run("chart-zarf-digest-match", "--root", root)
+    case("chart-zarf-digest-match: matching digests pass", True, rc)
+
+# FAIL: chart pins one digest, zarf pins a different digest (drift).
+with tempfile.TemporaryDirectory() as root:
+    write(
+        root,
+        "charts/a11oy/values.yaml",
+        chart_values("ghcr.io/szl-holdings/a11oy", "uds-v0.3.0", GOOD_DIGEST),
+    )
+    write(
+        root,
+        "packages/a11oy/zarf.yaml",
+        zarf(
+            ["ghcr.io/szl-holdings/a11oy:uds-v0.3.0@" + OTHER_DIGEST],
+            chart_localpath="../../charts/a11oy",
+        ),
+    )
+    rc, _ = run("chart-zarf-digest-match", "--root", root)
+    case("chart-zarf-digest-match: drifted digests fail", False, rc)
+
+# FAIL: chart pins a digest but the zarf images: entry is tag-only.
+with tempfile.TemporaryDirectory() as root:
+    write(
+        root,
+        "charts/a11oy/values.yaml",
+        chart_values("ghcr.io/szl-holdings/a11oy", "uds-v0.3.0", GOOD_DIGEST),
+    )
+    write(
+        root,
+        "packages/a11oy/zarf.yaml",
+        zarf(
+            ["ghcr.io/szl-holdings/a11oy:uds-v0.3.0"],
+            chart_localpath="../../charts/a11oy",
+        ),
+    )
+    rc, _ = run("chart-zarf-digest-match", "--root", root)
+    case("chart-zarf-digest-match: chart digest vs tag-only zarf fails", False, rc)
+
+# PASS (vacuous): no chart pins an image.digest -> nothing to reconcile.
+with tempfile.TemporaryDirectory() as root:
+    write(
+        root,
+        "charts/a11oy/values.yaml",
+        chart_values("ghcr.io/szl-holdings/a11oy", "uds-v0.3.0", ""),
+    )
+    write(
+        root,
+        "packages/a11oy/zarf.yaml",
+        zarf(
+            ["ghcr.io/szl-holdings/a11oy:uds-v0.3.0"],
+            chart_localpath="../../charts/a11oy",
+        ),
+    )
+    rc, _ = run("chart-zarf-digest-match", "--root", root)
+    case("chart-zarf-digest-match: no chart digest passes vacuously", True, rc)
+
+# PASS (conservative): chart pins a digest but no wrapping zarf bakes that repo.
+with tempfile.TemporaryDirectory() as root:
+    write(
+        root,
+        "charts/a11oy/values.yaml",
+        chart_values("ghcr.io/szl-holdings/a11oy", "uds-v0.3.0", GOOD_DIGEST),
+    )
+    write(root, "zarf.yaml", zarf(["docker.io/library/alpine:3.21"]))
+    rc, _ = run("chart-zarf-digest-match", "--root", root)
+    case(
+        "chart-zarf-digest-match: unwrapped chart digest skipped (no false fail)",
+        True,
+        rc,
+    )
 
 
 print("\n%d passed, %d failed" % (PASS, FAILED))

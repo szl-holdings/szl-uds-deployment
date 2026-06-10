@@ -17,13 +17,19 @@
 #
 # What it asserts (no cluster, no docker daemon required)
 # -------------------------------------------------------
-#   1. For EVERY `@sha256:` image pin in zarf.yaml and
-#      packages/szl-receipts/zarf.yaml, the digest resolves to a SINGLE-PLATFORM
-#      manifest — NOT an OCI index / Docker manifest list. (crane manifest +
-#      a `.manifests != null` / index-mediaType check.)
+#   1. For EVERY `@sha256:` image pin in zarf.yaml, packages/**/zarf.yaml AND
+#      every chart `image.digest` in charts/**/values.yaml, the digest resolves
+#      to a SINGLE-PLATFORM manifest — NOT an OCI index / Docker manifest list.
+#      (crane manifest + a `.manifests != null` / index-mediaType check.) This
+#      now covers a11oy: a chart-side digest (charts/a11oy/values.yaml) was never
+#      resolved before, so a multi-arch INDEX pinned only in the chart could slip
+#      past CI and break airgap pulls.
 #   2. The `bundle` task exists (`uds run --list`) and the `start` task ROUTES
 #      to it (`- task: bundle`), so `uds run start` and `uds run bundle` keep
 #      building from one clean-checkout code path.
+#   3. When a chart pins `image.digest`, the zarf package that wraps that chart
+#      pins the BYTE-IDENTICAL digest in its `images:` list, so the deploy-time
+#      Zarf agent image rewrite cannot drift (chart-zarf-digest-match).
 #
 # It complements chart-guard.yml (chart render/lint) and clean-deploy-guard.yml
 # (grep invariants); this one guards the zarf image pins + the bundle task wiring.
@@ -35,6 +41,7 @@ on:
     paths:
       - "zarf.yaml"
       - "packages/**/zarf.yaml"
+      - "charts/**/values.yaml"
       - "tasks.yaml"
       - "scripts/image-pin-checks.py"
       - "scripts/image-pin-checks.test.py"
@@ -44,6 +51,7 @@ on:
     paths:
       - "zarf.yaml"
       - "packages/**/zarf.yaml"
+      - "charts/**/values.yaml"
       - "tasks.yaml"
       - "scripts/image-pin-checks.py"
       - "scripts/image-pin-checks.test.py"
@@ -211,6 +219,17 @@ jobs:
             exit 1
           fi
           echo "All @sha256: image pins are single-platform — zarf can package them."
+
+      # ── 1b. chart image.digest must match the wrapping zarf images: digest ─────
+      # A chart can pin image.digest independently of the zarf images: list. If
+      # they drift (chart pins X, zarf pins Y or tag-only), the deploy-time Zarf
+      # agent rewrite deploys the wrong image / breaks airgap. chart-zarf-digest-
+      # match lives in scripts/image-pin-checks.py so the self-test can feed it
+      # drifted fixtures and assert it FAILS.
+      - name: "Assert chart image.digest byte-matches the zarf images digest"
+        run: |
+          set -euo pipefail
+          python3 scripts/image-pin-checks.py chart-zarf-digest-match --root .
 
       # ── 2. bundle task exists + start routes to it ────────────────────────────
       - name: Install uds-cli
