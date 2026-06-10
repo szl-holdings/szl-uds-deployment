@@ -29,6 +29,19 @@ variables:
   - name: VERSION
     default: "0.4.0"
 
+  # ── Upgrade-test baseline (Task #484) ───────────────────────────────
+  # `test-upgrade` must deploy a REAL, published prior release first, then
+  # upgrade the SAME helm release to the current branch build — proving the
+  # upgrade code path rather than silently doing a fresh install. This is a
+  # genuinely-published, anon-pullable OCI package (confirmed present in
+  # GHCR). It is the only published szl-receipts release today (the
+  # `packages/szl-receipts` path is empty and there is no older 0.3.x tag),
+  # so it serves as both "latest published" and "the baseline to upgrade
+  # from". When a newer current release is cut, point this at the prior tag
+  # (e.g. --set UPGRADE_BASELINE_REF=oci://ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream).
+  - name: UPGRADE_BASELINE_REF
+    default: "oci://ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream"
+
   # ── Build-flavor selection (Gap 3 fix) ────────────────────────────────────
   # Zarf flavor grammar X.Y.Z-upstream|registry1|unicorn (per uds-core
   # build-your-bundle docs). `upstream` pins the VERIFIED public images and is
@@ -379,7 +392,7 @@ tasks:
         task: test:all
 
   - name: test-upgrade
-    description: "CI: deploy previous release, then upgrade to current branch"
+    description: "CI: deploy a published prior release, then upgrade to current branch and PROVE it was an upgrade"
     actions:
       - description: "Create k3d upgrade-test cluster"
         cmd: |
@@ -387,14 +400,45 @@ tasks:
       - description: "Zarf init"
         cmd: |
           zarf init --confirm
-      - description: "Deploy published baseline release (v0.4.0-upstream) from OCI"
+      - description: "Deploy the published baseline release from OCI (MUST succeed — no silent skip)"
         cmd: |
-          zarf package deploy oci://ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream --confirm 2>/dev/null || \
-          echo "WARN: Previous OCI release not found — skipping baseline deploy (FA-001 staged)"
-      - description: "Build and deploy current branch package"
+          # Task #484: this step used to fall back to `|| echo WARN ... skipping`
+          # whenever the OCI tag was absent, so on most runs it deployed NOTHING and
+          # the next step became a fresh install, not an upgrade — a hollow test.
+          # The baseline is now FATAL: if the published release cannot be deployed
+          # the whole task fails loudly. UPGRADE_BASELINE_REF is a genuinely
+          # published, anon-pullable package (confirmed in GHCR).
+          echo "Deploying published baseline: ${UPGRADE_BASELINE_REF}"
+          zarf package deploy "${UPGRADE_BASELINE_REF}" --confirm
+      - description: "Confirm the baseline is actually installed (so the next deploy is an UPGRADE, not a fresh install)"
+        cmd: |
+          set -euo pipefail
+          BASELINE_REVS=$(zarf tools kubectl get secret -n szl-receipts \
+            -l owner=helm,name=szl-receipts -o name 2>/dev/null | grep -c . || true)
+          echo "Baseline helm release revisions present: ${BASELINE_REVS}"
+          if [ "${BASELINE_REVS}" -lt 1 ]; then
+            echo "::error::baseline deploy did not create a szl-receipts helm release — cannot test an upgrade"
+            exit 1
+          fi
+      - description: "Build and deploy the current branch package (upgrades the baseline release in place)"
         cmd: |
           zarf package create . --confirm && \
           zarf package deploy zarf-package-szl-receipts-amd64-${VERSION}.tar.zst --confirm
+      - description: "Prove the current build UPGRADED the baseline (helm revision advanced), not a fresh install"
+        cmd: |
+          set -euo pipefail
+          # Helm records each release revision as a Secret
+          # sh.helm.release.v1.szl-receipts.v<N>. Baseline deploy => 1, a genuine
+          # upgrade by the current build => >=2. A count of 1 means the baseline was
+          # skipped/failed and this was a fresh install (the old hollow behaviour).
+          REVS=$(zarf tools kubectl get secret -n szl-receipts \
+            -l owner=helm,name=szl-receipts -o name 2>/dev/null | grep -c . || true)
+          echo "szl-receipts helm release revisions after current-branch deploy: ${REVS}"
+          if [ "${REVS}" -lt 2 ]; then
+            echo "::error::szl-receipts has only ${REVS} helm revision(s) — the current build was a FRESH INSTALL, not an upgrade (baseline missing/skipped)."
+            exit 1
+          fi
+          echo "Confirmed: current branch upgraded an existing release (>=2 helm revisions)."
       - description: "Run Playwright journey tests post-upgrade"
         task: test:all
 
