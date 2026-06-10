@@ -198,15 +198,30 @@ jobs:
           echo "$LOGS"
           echo "-------------------------------"
           # Exact success line emitted by VaultTransitSigner._init() in server.py:
-          #   "[vault] Transit signer ready; addr=... key=... keyid=... ..."
-          if ! printf '%s' "$LOGS" | grep -qiE '\[vault\] Transit signer ready'; then
-            echo "::error::No '[vault] Transit signer ready' line in server logs"
+          #   "[vault] Transit signer ready; addr=... key=... keyid=... auth=... pub=..."
+          # We require auth=kubernetes so the gate proves ServiceAccount (k8s) auth
+          # specifically — not a static token Secret that would defeat Tier-2 custody.
+          # (server.py: self.auth_method defaults to "kubernetes"; values-vault.yaml
+          # pins signing.vault.auth.method=kubernetes.)
+          if ! printf '%s' "$LOGS" | grep -qiE '\[vault\] Transit signer ready;.*auth=kubernetes'; then
+            echo "::error::No '[vault] Transit signer ready; ... auth=kubernetes' line in server logs"
+            echo "::error::Server did not engage Vault Transit via Kubernetes ServiceAccount auth"
             exit 1
           fi
           # Negative control: the server logs "...running unsigned..." whenever it
           # falls back (VAULT_ADDR unset, init failed, key not Ed25519, etc.).
-          if printf '%s' "$LOGS" | grep -qiE 'running unsigned'; then
-            echo "::error::Server logged an UNSIGNED fallback — Vault signing did not engage"
+          # The server is designed to self-heal (recheck loop re-runs _init), so a
+          # transient unsigned line at boot followed by recovery is NOT a failure.
+          # Judge the MOST RECENT signer-state line: it must be "ready", not unsigned.
+          SIGNER_STATE="$(printf '%s' "$LOGS" \
+            | grep -iE '\[vault\] Transit signer ready|running unsigned' | tail -n1 || true)"
+          if [ -z "$SIGNER_STATE" ]; then
+            echo "::error::No Vault signer-state line found in server logs at all"
+            exit 1
+          fi
+          if printf '%s' "$SIGNER_STATE" | grep -qi 'running unsigned'; then
+            echo "::error::Server's most recent signer state is UNSIGNED — Vault signing did not engage / did not recover"
+            echo "last signer-state line: $SIGNER_STATE"
             exit 1
           fi
 
