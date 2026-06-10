@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # receipts-pin-drift-guard.yml — Catch a STALE receipts-server digest pin before
-# it sits on main.
+# it sits on main, AND self-heal it on the scheduled run.
 #
 # Why this exists
 # ---------------
@@ -14,12 +14,24 @@
 #   * receipts-image-digest-guard.yml — the reference is digest-pinned at all
 #                                    (i.e. not reverted to a movable tag-only ref).
 # Neither asserts the pinned digest STILL MATCHES the digest the published tag
-# resolves to today. The auto-repin step opens a PR after a rebuild, but a stale
-# pin can still land if that PR is ignored, or be introduced by a hand-edit.
+# resolves to today. The post-rebuild auto-repin step (receipts-server-image.yml)
+# opens a PR after a rebuild, but a stale pin can still land if that PR is
+# ignored, or be introduced by a hand-edit, or appear when the SAME tag is
+# re-published out-of-band.
 #
-# This workflow runs `scripts/pin-receipts-image-digest.sh --check`, which
-# resolves the published szl-receipts-server tag and exits non-zero (printing the
-# one-line fix command) when the committed pins differ from what's published.
+# What it does, by trigger
+# ------------------------
+#   * pull_request  — FAIL LOUD. Runs `pin-receipts-image-digest.sh --check`
+#                     and fails the PR (printing the one-line fix command) when
+#                     the committed pins differ from the published image. A
+#                     contributor PR is NEVER auto-rewritten.
+#   * schedule /     SELF-HEAL. The daily/manual run catches a freshly
+#     workflow_dispatch  re-published tag whose new digest main hasn't picked up
+#                     (no PR touches the pinned files in that case). When drift
+#                     is detected it runs the re-pin script and opens (or
+#                     updates) a clearly-labelled auto-repin PR, mirroring the
+#                     post-rebuild auto-repin flow — so a re-published tag never
+#                     sits stale waiting for someone to notice.
 #
 # Pure registry inspection (docker buildx imagetools + jq) — no cluster, no
 # kubectl, airgap-friendly (it only talks to the image registry, exactly like the
@@ -41,9 +53,14 @@ on:
     - cron: "23 7 * * *"
   workflow_dispatch:
 
+# contents: write + pull-requests: write are needed by the schedule/dispatch
+# self-heal path to push the auto-repin branch and open the PR. The PR-triggered
+# path never writes (it only runs --check), so a contributor PR cannot trigger
+# an auto-rewrite regardless of these permissions.
 permissions:
-  contents: read
+  contents: write
   packages: read
+  pull-requests: write
 
 jobs:
   pin-drift-guard:
@@ -69,7 +86,9 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" \
             | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
+      # ---- PR PATH: fail loud, never auto-rewrite a contributor branch -------
       - name: Assert committed pins match the published receipts-server image
+        if: ${{ github.event_name == 'pull_request' }}
         run: |
           set -euo pipefail
           if ! scripts/pin-receipts-image-digest.sh --check; then
@@ -77,3 +96,69 @@ jobs:
             exit 1
           fi
           echo "OK: committed receipts-server pins match the published image."
+
+      # ---- SCHEDULE / DISPATCH PATH: self-heal by opening an auto-repin PR ----
+      # When the daily run finds drift (no PR is touching the pinned files), close
+      # the loop automatically: re-pin to the published digest and open (or
+      # update) a clearly-labelled PR. main is protected, so we open a PR rather
+      # than pushing to main (mirrors receipts-server-image.yml's auto-repin).
+      - name: Detect drift and open an auto-repin PR (scheduled / manual only)
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if scripts/pin-receipts-image-digest.sh --check; then
+            echo "OK: committed receipts-server pins match the published image; nothing to heal."
+            exit 0
+          fi
+
+          echo "::warning::Receipts-server pins are STALE vs the published image — self-healing by opening an auto-repin PR."
+
+          # Re-pin the tag already committed in zarf.yaml (a same-tag re-publish
+          # mints a new digest; the script resolves and pins it everywhere).
+          TAG="$(grep -oE 'szl-receipts-server:[^@[:space:]]+' zarf.yaml | head -n1 | cut -d: -f2)"
+          test -n "$TAG" || { echo "::error::could not infer receipts-server tag from zarf.yaml"; exit 1; }
+          echo "Re-pinning szl-receipts-server:${TAG} to its published digest"
+          scripts/pin-receipts-image-digest.sh --tag "${TAG}"
+
+          if git diff --quiet; then
+            echo "::warning::--check reported drift but the re-pin produced no change; not opening a PR."
+            exit 0
+          fi
+
+          # Stable per-tag branch so a repeat scheduled run UPDATES the same PR
+          # instead of spawning a new one.
+          BRANCH="auto/repin-receipts-drift-${TAG}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "${BRANCH}"
+          git add zarf.yaml packages/szl-receipts/zarf.yaml charts/szl-receipts/values.yaml
+          git commit -m "chore(receipts): [auto] repin ${TAG} to published digest (scheduled drift heal)"
+          git push --force-with-lease origin "${BRANCH}"
+
+          # Clearly-labelled so it can never be mistaken for a hand-edit. The
+          # label is created idempotently (it may not exist yet).
+          gh label create automated-repin \
+            --color ededed \
+            --description "Automated receipts digest re-pin — do not hand-edit" \
+            --force || true
+
+          # Open the PR if one is not already open for this branch; otherwise the
+          # force-pushed commit updates the existing PR. NOTE: the org enforces
+          # actions/permissions/workflow.can_approve_pull_request_reviews=false,
+          # so the bot's `gh pr create` may be refused ("GitHub Actions is not
+          # permitted to create or approve pull requests"); the branch is pushed
+          # regardless, and an org owner opens/merges from it. We do NOT mask a
+          # genuine failure as success beyond that known-org-policy case.
+          if gh pr view "${BRANCH}" --json number >/dev/null 2>&1; then
+            echo "::notice::PR already open for ${BRANCH}; updated it with the fresh re-pin."
+          else
+            gh pr create \
+              --base main --head "${BRANCH}" \
+              --title "chore(receipts): [auto] repin ${TAG} image digest (scheduled drift heal)" \
+              --label automated-repin \
+              --body "Automated re-pin opened by **Receipts Pin Drift Guard** on a \`${{ github.event_name }}\` run. The committed \`szl-receipts-server:${TAG}\` digest pins (zarf.yaml, packages/szl-receipts/zarf.yaml, charts/szl-receipts/values.yaml) had drifted from the published image; this PR runs \`scripts/pin-receipts-image-digest.sh --tag ${TAG}\` and commits the corrected digests so the bundle build stays green. **Do not hand-edit** — this branch is force-updated by the guard. Generated by \`.github/workflows/receipts-pin-drift-guard.yml\`." \
+              || echo "::notice::gh pr create was refused (likely org policy blocking Actions from opening PRs); the auto-repin branch ${BRANCH} is pushed — an org owner can open/merge the PR from it."
+          fi
