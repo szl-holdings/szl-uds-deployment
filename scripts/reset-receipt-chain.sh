@@ -12,11 +12,19 @@
 # boots fast and fits its normal 512Mi limit.
 #
 # HOW (safe, repeatable):
-#   1. Empty the store dir + head pointer ON the running pod.
+#   1. Empty the store dir + head pointer ON the running pod. This clears BOTH the
+#      legacy flat-root receipts (<store>/*.json) AND the sharded layout
+#      (<store>/shards/<bucket>/*.json) the server uses once the chain grows past
+#      SZL_RECEIPT_SHARD_SIZE (default 10000) — a large/bloated chain (exactly the
+#      case that needs a reset) is almost always sharded, so wiping only the flat
+#      root would silently leave the bulk of the chain behind.
 #   2. DELETE the pod (NOT `rollout restart`): the deployment uses RollingUpdate
 #      maxSurge>0, which on a single-node RWO PVC would try to schedule a second
-#      pod that can never attach the volume -> deadlock. Deleting the one pod lets
-#      the controller recreate it cleanly once the volume is free.
+#      pod that can never attach the volume -> deadlock. On a MULTI-NODE cluster
+#      (e.g. the tower) the surge pod can also land on a different node that
+#      cannot attach the RWO volume — same deadlock. Deleting the one pod is
+#      node-agnostic and lets the controller recreate it cleanly once the volume
+#      is free.
 #   3. The new pod boots from an empty store -> chain_index=0, head=GENESIS.
 #   4. Seed N receipts THROUGH the server's POST /receipt so every receipt is
 #      really Ed25519-signed and properly chained (the server is the signer).
@@ -29,6 +37,11 @@
 #   scripts/reset-receipt-chain.sh --yes            # reset to default SEED receipts
 #   SEED=5 scripts/reset-receipt-chain.sh --yes     # custom baseline size
 #   scripts/reset-receipt-chain.sh                  # dry-run (prints plan, no change)
+#
+# Target a non-default cluster (e.g. the tower) without switching your current
+# kube-context by exporting KCONTEXT:
+#   KCONTEXT=tower-context scripts/reset-receipt-chain.sh           # dry-run on tower
+#   KCONTEXT=tower-context scripts/reset-receipt-chain.sh --yes     # reset on tower
 set -euo pipefail
 
 NS="${NS:-szl-receipts}"
@@ -39,52 +52,62 @@ STORE="${STORE:-/data/receipts}"
 PORT="${PORT:-8080}"
 SEED="${SEED:-3}"
 TIMEOUT="${TIMEOUT:-120s}"
+KCONTEXT="${KCONTEXT:-}"
+
+# All kubectl calls go through KC so an optional --context applies everywhere
+# (informational reads, exec/wipe, pod delete, rollout/wait).
+KC=(kubectl)
+[ -n "$KCONTEXT" ] && KC=(kubectl --context "$KCONTEXT")
 
 CONFIRM="no"
 [ "${1:-}" = "--yes" ] && CONFIRM="yes"
 
 log() { printf '[reset-receipt-chain] %s\n' "$*"; }
 
-pod() { kubectl get pod -n "$NS" -l "$SELECTOR" \
+pod() { "${KC[@]}" get pod -n "$NS" -l "$SELECTOR" \
           -o jsonpath='{.items[0].metadata.name}' 2>/dev/null; }
 
+# Count receipts across BOTH the legacy flat root and the sharded buckets so the
+# "current chain" figure is honest on a large (sharded) chain too.
 count_on_disk() {
-  kubectl exec -n "$NS" "$1" -c "$CONTAINER" -- \
-    sh -c "ls $STORE/*.json 2>/dev/null | wc -l" 2>/dev/null | tr -d '[:space:]'
+  "${KC[@]}" exec -n "$NS" "$1" -c "$CONTAINER" -- \
+    sh -c "find $STORE -type f -name '*.json' 2>/dev/null | wc -l" 2>/dev/null | tr -d '[:space:]'
 }
+
+log "target context: ${KCONTEXT:-<current kube-context>}  ns: $NS  deploy: $DEPLOY"
 
 P="$(pod)"
 [ -n "$P" ] || { log "ERROR: no $SELECTOR pod found in ns $NS"; exit 1; }
 
 BEFORE="$(count_on_disk "$P")"
-BYTES="$(kubectl exec -n "$NS" "$P" -c "$CONTAINER" -- du -sh "$STORE" 2>/dev/null | awk '{print $1}')"
+BYTES="$(${KC[@]} exec -n "$NS" "$P" -c "$CONTAINER" -- du -sh "$STORE" 2>/dev/null | awk '{print $1}')"
 log "current chain: ${BEFORE:-?} receipts (${BYTES:-?}) on pod $P"
-log "plan: wipe store -> delete pod -> reboot to genesis -> seed $SEED signed receipts"
+log "plan: wipe store (flat + shards) -> delete pod -> reboot to genesis -> seed $SEED signed receipts"
 
 if [ "$CONFIRM" != "yes" ]; then
   log "DRY-RUN (no changes). Re-run with --yes to perform the reset."
   exit 0
 fi
 
-# 1. wipe persisted chain + head pointer on the live volume
-log "wiping $STORE on pod $P ..."
-kubectl exec -n "$NS" "$P" -c "$CONTAINER" -- \
-  sh -c "rm -f $STORE/*.json $STORE/.chain_head; ls -A $STORE | wc -l"
+# 1. wipe persisted chain + head pointer on the live volume (flat root AND shards)
+log "wiping $STORE on pod $P (flat *.json + .chain_head + shards/) ..."
+"${KC[@]}" exec -n "$NS" "$P" -c "$CONTAINER" -- \
+  sh -c "rm -f $STORE/*.json $STORE/.chain_head; rm -rf $STORE/shards; find $STORE -type f | wc -l"
 
 # 2. delete the pod (no surge) so the new one boots from the empty store
 log "deleting pod $P (avoids RollingUpdate RWO-PVC surge deadlock) ..."
-kubectl delete pod -n "$NS" "$P" --wait=true
+"${KC[@]}" delete pod -n "$NS" "$P" --wait=true
 
 # 3. wait for the fresh pod to be Ready (2/2)
 log "waiting for a new Ready pod ..."
-kubectl rollout status deploy/"$DEPLOY" -n "$NS" --timeout="$TIMEOUT"
-kubectl wait --for=condition=ready pod -n "$NS" -l "$SELECTOR" --timeout="$TIMEOUT"
+"${KC[@]}" rollout status deploy/"$DEPLOY" -n "$NS" --timeout="$TIMEOUT"
+"${KC[@]}" wait --for=condition=ready pod -n "$NS" -l "$SELECTOR" --timeout="$TIMEOUT"
 P="$(pod)"
 log "new pod: $P"
 
 # 4. seed a handful of receipts through the server (real Ed25519 signatures)
 log "seeding $SEED baseline receipts via POST /receipt ..."
-kubectl exec -i -n "$NS" "$P" -c "$CONTAINER" -- python3 - "$SEED" "$PORT" <<'PY'
+"${KC[@]}" exec -i -n "$NS" "$P" -c "$CONTAINER" -- python3 - "$SEED" "$PORT" <<'PY'
 import json, sys, time, urllib.request
 n = int(sys.argv[1]); port = sys.argv[2]
 url = f"http://127.0.0.1:{port}/receipt"
@@ -110,7 +133,7 @@ PY
 
 # 5. verify the new baseline
 log "verifying baseline ..."
-kubectl exec -i -n "$NS" "$P" -c "$CONTAINER" -- python3 - "$PORT" "$SEED" <<'PY'
+"${KC[@]}" exec -i -n "$NS" "$P" -c "$CONTAINER" -- python3 - "$PORT" "$SEED" <<'PY'
 import json, sys, urllib.request
 port = sys.argv[1]; seed = int(sys.argv[2])
 def get(path):

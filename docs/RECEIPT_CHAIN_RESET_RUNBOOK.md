@@ -5,7 +5,7 @@ baseline so the receipts server boots to `2/2` fast and stays well under its
 512Mi memory limit. Use this when the on-PVC chain has grown large enough to
 slow boot/rehydration or threaten the memory budget.
 
-- **Cluster:** `uds-szl-demo` (k3d)
+- **Cluster:** `uds-szl-demo` (k3d) — and the on-site **tower** (see below)
 - **Namespace:** `szl-receipts`
 - **Deployment:** `szl-receipts-server` (container `receipts-server`, port 8080)
 - **Store (PVC):** `szl-receipts-server-store` (RWO, mounted at `/data/receipts`)
@@ -13,8 +13,10 @@ slow boot/rehydration or threaten the memory budget.
 
 ## What it does
 
-1. Reads the current chain size from the live pod (informational).
-2. Wipes `*.json` and `.chain_head` from `/data/receipts` on the PVC.
+1. Reads the current chain size from the live pod (informational). Counts both
+   the legacy flat-root receipts and the sharded layout (see "Sharding" below).
+2. Wipes `*.json`, `.chain_head`, **and** the `shards/` tree from
+   `/data/receipts` on the PVC.
 3. **Deletes the pod** (does NOT `kubectl rollout restart`). The deployment is
    `RollingUpdate` on an RWO PVC, so a surge update deadlocks — the new pod
    cannot mount the volume still held by the old one. A plain pod delete lets
@@ -42,8 +44,21 @@ SEED=5 bash scripts/reset-receipt-chain.sh --yes
 ```
 
 Tunable env vars: `NS`, `DEPLOY`, `CONTAINER`, `SELECTOR`, `STORE`, `PORT`,
-`SEED`, `TIMEOUT`. Defaults match the live demo cluster
-(`SELECTOR=app.kubernetes.io/name=szl-receipts-server`).
+`SEED`, `TIMEOUT`, `KCONTEXT`. Defaults match the live demo cluster
+(`SELECTOR=app.kubernetes.io/name=szl-receipts-server`). Set `KCONTEXT` to drive
+a non-current cluster without `kubectl config use-context`.
+
+## Sharding (why the wipe clears `shards/` too)
+
+The receipts server writes new receipts under `<store>/shards/<bucket>/` once the
+chain grows past `SZL_RECEIPT_SHARD_SIZE` (default `10000`); below that, or with
+an image that predates sharding, receipts sit flat at the store root. A *bloated*
+chain — the exact reason you'd run a reset — is therefore almost always sharded.
+The script counts (`find … -name '*.json'`) and wipes (`rm -rf $STORE/shards`)
+both layouts, so it lands the same empty store regardless of size. An older copy
+of the script only touched `$STORE/*.json` and would silently leave the sharded
+bulk of the chain behind — re-pull `scripts/reset-receipt-chain.sh` if yours
+predates this note.
 
 ## Verify durability (recommended)
 
@@ -72,7 +87,9 @@ kubectl logs -n szl-receipts "$P2" -c receipts-server | grep -iE 'rehydr|boot co
   *vacuously*. The script uses `kubectl exec -i ...` for both. If you adapt it,
   keep the `-i`.
 - **Delete the pod; do not rollout-restart.** RWO PVC + RollingUpdate surge =
-  the new pod stays `Pending` (volume in use) and the old one never drains.
+  the new pod stays `Pending` (volume in use) and the old one never drains. On a
+  multi-node cluster the surge pod can also land on a node that cannot attach the
+  RWO volume — same deadlock. Deleting the single pod is node-agnostic.
 - **The server is the signer.** Always seed via `POST /receipt`, never by
   writing JSON files directly — direct files would be unsigned and break the
   chain on the next verify. (Do NOT use `operator/scripts/seed-receipts.py`;
@@ -83,6 +100,47 @@ kubectl logs -n szl-receipts "$P2" -c receipts-server | grep -iE 'rehydr|boot co
 
 ## Repeat on the tower
 
-Same procedure. Confirm the selector/namespace match the tower's deployment
-(adjust via the env vars above), then run the dry run, then `--yes`, then the
-durability check.
+The **tower** is the on-site Warhacker event machine (multi-core, RTX-class). It
+is NOT remotely reachable from the demo box or the build environment — its
+cluster only exists when the operator brings it up on site, so the live tower run
+is a hands-on step. The procedure itself is identical; before running, confirm
+the tower's names match the defaults and target the tower's kube-context.
+
+1. Point at the tower's cluster (either switch context or pass `KCONTEXT`):
+
+   ```bash
+   kubectl config get-contexts                 # find the tower context name
+   export KCONTEXT=<tower-context>             # script appends --context to all calls
+   ```
+
+2. Confirm the tower's deployment name, namespace, container, and selector
+   (adjust the `NS`/`DEPLOY`/`CONTAINER`/`SELECTOR` env vars if any differ):
+
+   ```bash
+   kubectl --context "$KCONTEXT" -n szl-receipts get deploy
+   kubectl --context "$KCONTEXT" -n szl-receipts get pods --show-labels
+   kubectl --context "$KCONTEXT" -n szl-receipts get deploy szl-receipts-server \
+     -o jsonpath='{.spec.template.spec.containers[*].name}{"\n"}'
+   ```
+
+3. Dry-run, then perform the reset, then run the durability check:
+
+   ```bash
+   KCONTEXT="$KCONTEXT" bash scripts/reset-receipt-chain.sh          # dry-run
+   KCONTEXT="$KCONTEXT" bash scripts/reset-receipt-chain.sh --yes    # reset
+   # durability: delete pod, confirm rehydration logs (commands above, add --context)
+   ```
+
+If the tower runs a sharding-enabled image with a large chain, the wipe clears
+`$STORE/shards/` as well (see "Sharding"). On a multi-node tower the pod-delete
+step is what keeps the RWO PVC from deadlocking the rollout.
+
+### Status
+
+- **Proven on `uds-szl-demo`** (k3d, the demo box): dry-run + `--yes` + durability
+  check, including a planted `shards/` bucket to confirm the shard-aware wipe
+  clears both layouts.
+- **Tower:** pending on-site execution — the tower cluster is not reachable
+  remotely, so steps 1–3 above are an operator task to run at the event machine.
+  The script is parameterized (`KCONTEXT` + the `NS`/`DEPLOY`/… vars) and
+  shard-correct so it carries over without code changes.
