@@ -31,6 +31,14 @@
 #      or a tree committed before the ignore rule existed would still land a stale
 #      snapshot that Helm then treats as the source of truth. This is the hard
 #      guard .gitignore can't be.
+#   6. Runs the in-cluster deploy-receipt stall alarm's own test suite
+#      (charts/szl-receipts/tests/alerts/run-alert-tests.sh) in a dedicated
+#      `alert-rules` job: it re-renders templates/prometheusrule.yaml and fails if
+#      its `.spec.groups` drifts from tests/alerts/rules.rendered.yaml, then runs
+#      `promtool test rules` to prove each alert fires under its failure condition
+#      and stays silent while the sink is healthy. Previously that script only ran
+#      by hand on the box, so an edit to the rule expressions, chart values, or
+#      metric names could silently break the alarm; now any such PR fails here.
 #
 # Umbrella charts (e.g. szl-full-stack) declare subcharts that are STAGED — their
 # OCI charts are not published yet — and Helm refuses to render a chart while any
@@ -216,3 +224,39 @@ jobs:
 
       - name: All chart guards passed
         run: echo "Receipt-deploy charts render, the keygen script is sound, and requireKey holds."
+
+  # ── 6. Deploy-receipt stall alarm: drift guard + promtool unit tests ────────
+  # The in-cluster PrometheusRule that pages when the signed deploy-receipt sink
+  # stalls ships with its own test suite (charts/szl-receipts/tests/alerts/), but
+  # it previously only ran by hand on the box. This job runs it on every PR/push
+  # so an edit to the rule expressions, chart values, or metric names that breaks
+  # the alarm fails CI before merge. run-alert-tests.sh re-renders the chart's
+  # prometheusrule.yaml and diffs its `.spec.groups` against the rendered fixture
+  # (drift guard), then runs `promtool test rules` (each alert fires on failure,
+  # nothing fires while healthy). Needs helm (render) + promtool (Prometheus).
+  alert-rules:
+    name: Deploy-receipt stall alarm — drift guard + promtool tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: v3.14.0
+
+      - name: Install promtool (Prometheus) + PyYAML
+        run: |
+          set -euo pipefail
+          PROM_VERSION=2.54.1
+          tarball="prometheus-${PROM_VERSION}.linux-amd64.tar.gz"
+          url="https://github.com/prometheus/prometheus/releases/download/v${PROM_VERSION}/${tarball}"
+          curl -fsSL "$url" -o "/tmp/${tarball}"
+          tar -xzf "/tmp/${tarball}" -C /tmp
+          sudo install -m 0755 "/tmp/prometheus-${PROM_VERSION}.linux-amd64/promtool" /usr/local/bin/promtool
+          promtool --version
+          python3 -m pip install --quiet pyyaml
+
+      - name: Run deploy-receipt stall alarm tests
+        run: bash charts/szl-receipts/tests/alerts/run-alert-tests.sh
