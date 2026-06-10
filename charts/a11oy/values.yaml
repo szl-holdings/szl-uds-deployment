@@ -26,7 +26,15 @@ image:
   # tag-only (default). When this chart is wrapped in a Zarf package, this value
   # MUST byte-match the digest in the zarf images: list, or the Zarf agent image
   # rewrite breaks (airgap ImagePullBackOff).
-  digest: ""
+  #
+  # PINNED by default (Task #629): the linux/amd64 child manifest of uds-v0.3.0.
+  # This is the cosign-signed digest already used by the mesh-ready path
+  # (packages/a11oy/zarf-mesh-ready.yaml) and is the exact image the live prod
+  # pod runs — so every a11oy deploy path is reproducible on one image and a
+  # re-pushed/mutated uds-v0.3.0 tag cannot change what runs. The single-node
+  # k3d box still overrides this to "" alongside the local image:
+  #   --set image.repository=a11oy --set image.tag=local --set image.digest=""
+  digest: "sha256:0b03632f416fd6539766a5e73a12a18639ade75e66a06a11660a57c73457e170"
   pullPolicy: IfNotPresent
 
 # a11oy (FastAPI + React SPA) listens on 7860 (HF Space app port).

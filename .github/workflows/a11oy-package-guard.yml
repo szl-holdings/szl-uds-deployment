@@ -208,15 +208,20 @@ jobs:
                       f"rewrite / airgap pull breaks.")
               else:
                   print(f"OK: chart image == zarf image ({ri})")
-              # Both must stay tag-only: the chart has no digest support, so a digest
-              # added to only the zarf side would silently break the rewrite.
+              # Both must stay DIGEST-PINNED: the chart pins image.digest (the
+              # linux/amd64 child) by default (Task #629), so a tag-only ref on
+              # either side would mean a re-pushed/mutated tag could change what
+              # runs and break the deploy-time agent rewrite. (image-pin-guard
+              # separately proves the digest resolves to a single-platform
+              # manifest, not an OCI index.)
               for label, ref in (("chart", ri), ("zarf", zi)):
-                  if "@sha256:" in ref:
-                      err(f"{label} a11oy image '{ref}' is digest-pinned. The a11oy "
-                          f"chart renders tag-only (no digest support); keep both "
-                          f"tag-only, or add digest support to the chart first.")
-              if "@sha256:" not in ri and "@sha256:" not in zi:
-                  print("OK: a11oy image is tag-only on both sides")
+                  if "@sha256:" not in ref:
+                      err(f"{label} a11oy image '{ref}' is TAG-ONLY. The a11oy chart "
+                          f"pins image.digest by default (supply-chain tamper-proofing); "
+                          f"both the chart render and the zarf images: ref must be "
+                          f"digest-pinned (...@sha256:...).")
+              if "@sha256:" in ri and "@sha256:" in zi:
+                  print("OK: a11oy image is digest-pinned on both sides")
 
           if errors:
               print(f"\n{len(errors)} a11oy packaging check(s) FAILED")

@@ -72,6 +72,16 @@ variables:
     description: "Docker image tag for a11oy policy substrate"
     default: "latest"
 
+  - name: A11OY_IMAGE_DIGEST
+    description: >-
+      Optional exact image digest (linux/amd64 child) for a11oy. Empty = tag-only
+      for THIS aspirational mesh-demo path, so the chart render keeps matching the
+      tag-only images: ref above. The canonical chart-based deploy
+      (packages/a11oy) pins the digest by default via charts/a11oy/values.yaml;
+      this override keeps that shared chart default from silently digest-pinning
+      this path's render while its baked image stays tag-only.
+    default: ""
+
   - name: VESSELS_REPLICAS
     description: "Number of vessels-web replicas"
     default: "1"
@@ -187,6 +197,13 @@ components:
         namespace: szl-a11oy
         version: "0.1.0"
         localPath: charts/a11oy
+        variables:
+          # Map the package var to the chart's image.digest so this mesh-demo path
+          # stays tag-only (default "") instead of inheriting the chart's pinned
+          # default digest, which would mismatch the tag-only images: ref above.
+          - name: A11OY_IMAGE_DIGEST
+            description: "Override chart image.digest (empty = tag-only for this path)"
+            path: image.digest
     actions:
       onDeploy:
         after:

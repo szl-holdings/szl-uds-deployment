@@ -71,9 +71,13 @@ components:
             description: "Cluster domain (UDS Core DOMAIN)"
             path: global.domain
     images:
-      # Canonical, cosign-signed image. Baked into the tarball at build time and
-      # rewritten to the in-cluster registry by the Zarf agent at deploy time.
-      - ghcr.io/szl-holdings/a11oy:uds-v0.3.0
+      # Canonical, cosign-signed image, DIGEST-PINNED to the linux/amd64 child
+      # manifest so a re-pushed/mutated tag cannot change what runs. Byte-matches
+      # charts/a11oy values image.digest (a11oy-package-guard + image-pin-guard
+      # enforce both the match and that it is a single-platform manifest, not an
+      # OCI index). Baked into the tarball at build time and rewritten to the
+      # in-cluster registry by the Zarf agent at deploy time.
+      - ghcr.io/szl-holdings/a11oy:uds-v0.3.0@sha256:0b03632f416fd6539766a5e73a12a18639ade75e66a06a11660a57c73457e170
     actions:
       onDeploy:
         after:
