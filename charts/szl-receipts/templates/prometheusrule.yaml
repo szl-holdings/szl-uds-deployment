@@ -150,4 +150,38 @@ spec:
               per-subject throttle, and the receipt producers. This in-cluster rule
               complements the host guard receipt-flood-watch.
             runbook_url: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/README.md#receipt-flood-watch"
+
+        - alert: SZLReceiptsIngestThrottling
+          # The server is SHEDDING traffic: POST /receipt requests are being
+          # rejected with HTTP 429 by the ingest rate limiter, so the counter
+          # szl_receipts_throttled_total is climbing (rate() > threshold). This is
+          # the PROTECTIVE path firing — the throttle is doing its job, no receipts
+          # are lost in a way that breaks the chain — but a SUSTAINED rise means a
+          # runaway emitter is hammering the chain authority again (the failure mode
+          # behind the ~205,919-entry OOM incident). Honest SOFT severity (warning):
+          # it is the early-warning twin of SZLReceiptsChainFlooding (which watches
+          # the chain that gets through), caught one layer earlier at the door.
+          # rate() handles the counter reset on a server restart, so a restart never
+          # false-fires. Default threshold 0 => any sustained throttling alerts.
+          expr: max by (namespace) (rate(szl_receipts_throttled_total{namespace="{{ $ns }}"}[{{ .Values.prometheusRule.throttleRateWindow | default "5m" }}])) > {{ .Values.prometheusRule.throttlePerSecThreshold | default 0 }}
+          for: {{ .Values.prometheusRule.throttleFor | default "10m" }}
+          labels:
+            severity: warning
+            component: szl-receipts
+            szl_alarm: receipt-ingest-throttling
+          annotations:
+            summary: "SZL receipts server is SHEDDING traffic (ingest throttle active)"
+            description: >-
+              The szl-receipts server in namespace {{ $ns }} has been shedding
+              POST /receipt requests with HTTP 429 (szl_receipts_throttled_total
+              rising) for {{ .Values.prometheusRule.throttleFor | default "10m" }}.
+              The ingest rate limiter is protecting the chain authority, so this is
+              a WARNING not an outage — but a sustained rise means something is
+              hammering it (the runaway-emitter failure mode behind the ~205,919
+              OOM incident). Find the runaway producer: check the pepr-szl
+              MutatingWebhook for a subject re-applying in a loop, any client
+              POSTing to /receipt in a tight loop, and the ingest tunables
+              (SZL_INGEST_RATE_LIMIT / SZL_INGEST_BURST). This is the early-warning
+              twin of SZLReceiptsChainFlooding, caught at the ingest door.
+            runbook_url: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/README.md#receipt-flood-watch"
 {{- end }}

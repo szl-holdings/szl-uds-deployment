@@ -793,3 +793,20 @@ adds **`SZLReceiptsChainFlooding`** —
 / `floodFor`). Covered by the promtool unit tests in
 `charts/szl-receipts/tests/alerts/` (a flood-fires case + a healthy-silent case),
 run via `tests/alerts/run-alert-tests.sh`.
+
+The same chart also adds **`SZLReceiptsIngestThrottling`** — the early-warning
+twin of the flood alarm, watching the protective HTTP-429 shed path one layer
+earlier (at the ingest door rather than the chain it ends up writing). It fires
+when `rate(szl_receipts_throttled_total[5m]) > throttlePerSecThreshold` sustained
+for `throttleFor` (defaults: threshold `0` so any sustained throttling alerts,
+5m window, sustained 10m; tune via `prometheusRule.throttlePerSecThreshold` /
+`throttleRateWindow` / `throttleFor`). It carries an **honest soft severity
+(`warning`)** because the throttle is doing its job — receipts are being shed
+deliberately, not lost in a way that breaks the chain — but a sustained rise
+means a runaway emitter is hammering the chain authority again (the failure mode
+behind the ~205,919-entry OOM incident). When it fires, hunt the runaway
+producer: a pepr-szl-mutated subject re-applying in a loop, a client POSTing to
+`/receipt` in a tight loop, or an over-tight `SZL_INGEST_RATE_LIMIT` /
+`SZL_INGEST_BURST`. It routes to the same a11oy-uptime channel as its siblings
+(`component: szl-receipts`). The promtool unit tests cover a throttling-fires
+case and the healthy-silent case alongside the flood cases.

@@ -141,7 +141,51 @@ tests:
                 complements the host guard receipt-flood-watch.
               runbook_url: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/README.md#receipt-flood-watch"
 
-  # ── 5. HEALTHY: sink up, chain advancing slowly, valid=1 -> NO alerts fire ─
+  # ── 5. THROTTLING: server shedding 429s -> SZLReceiptsIngestThrottling fires ─
+  - interval: 1m
+    input_series:
+      # Sink up + valid + chain flat so ONLY the throttling alert can fire.
+      - series: 'up{namespace="szl-receipts", job="szl-receipts-server"}'
+        values: '1+0x20'
+      - series: 'szl_chain_valid{namespace="szl-receipts", job="szl-receipts-server"}'
+        values: '1+0x20'
+      - series: 'szl_chain_length{namespace="szl-receipts", job="szl-receipts-server"}'
+        values: '1000+0x20'      # chain flat -> flood/absent must not fire
+      # 429 counter climbing 5/min -> rate over 5m > 0, sustained.
+      - series: 'szl_receipts_throttled_total{namespace="szl-receipts", job="szl-receipts-server"}'
+        values: '0+5x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SZLReceiptsIngestThrottling
+        exp_alerts: []           # rate>0 from 5m, but within `for: 10m`
+      - eval_time: 16m
+        alertname: SZLReceiptsIngestThrottling
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: szl-receipts
+              szl_alarm: receipt-ingest-throttling
+              namespace: szl-receipts
+            exp_annotations:
+              summary: "SZL receipts server is SHEDDING traffic (ingest throttle active)"
+              description: >-
+                The szl-receipts server in namespace szl-receipts has been shedding
+                POST /receipt requests with HTTP 429 (szl_receipts_throttled_total
+                rising) for 10m. The ingest rate limiter is protecting the chain
+                authority, so this is a WARNING not an outage — but a sustained rise
+                means something is hammering it (the runaway-emitter failure mode
+                behind the ~205,919 OOM incident). Find the runaway producer: check
+                the pepr-szl MutatingWebhook for a subject re-applying in a loop, any
+                client POSTing to /receipt in a tight loop, and the ingest tunables
+                (SZL_INGEST_RATE_LIMIT / SZL_INGEST_BURST). This is the early-warning
+                twin of SZLReceiptsChainFlooding, caught at the ingest door.
+              runbook_url: "https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/README.md#receipt-flood-watch"
+      # The flood alert watches the chain (flat here) so it must stay silent.
+      - eval_time: 16m
+        alertname: SZLReceiptsChainFlooding
+        exp_alerts: []
+
+  # ── 6. HEALTHY: sink up, chain advancing slowly, valid=1, no 429s -> SILENT ─
   - interval: 1m
     input_series:
       - series: 'up{namespace="szl-receipts", job="szl-receipts-server"}'
@@ -150,6 +194,8 @@ tests:
         values: '40+1x15'        # chain advancing ~1/min (well under flood)
       - series: 'szl_chain_valid{namespace="szl-receipts", job="szl-receipts-server"}'
         values: '1+0x15'
+      - series: 'szl_receipts_throttled_total{namespace="szl-receipts", job="szl-receipts-server"}'
+        values: '7+0x15'         # counter flat -> nothing being shed -> rate 0
     alert_rule_test:
       - eval_time: 15m
         alertname: SZLReceiptsSinkDown
@@ -162,4 +208,7 @@ tests:
         exp_alerts: []
       - eval_time: 15m
         alertname: SZLReceiptsChainFlooding
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: SZLReceiptsIngestThrottling
         exp_alerts: []

@@ -329,3 +329,15 @@ prometheusRule:
   floodPerMin: 120
   floodRateWindow: "5m"
   floodFor: "5m"
+  # Ingest-throttling alarm (SZLReceiptsIngestThrottling) — the early-warning twin
+  # of the flood alarm, watching the protective HTTP-429 shed path at the ingest
+  # door. Fires (honest SOFT severity: warning) when the server is shedding
+  # POST /receipt traffic — rate(szl_receipts_throttled_total) over
+  # throttleRateWindow stays above throttlePerSecThreshold (req/s) sustained for
+  # throttleFor. Default threshold 0 => ANY sustained throttling alerts; raise it
+  # to tolerate a steady protective trickle. throttleFor is deliberately longer
+  # than a single rate window so a one-off legitimate deploy burst self-clears
+  # without paging.
+  throttlePerSecThreshold: 0
+  throttleRateWindow: "5m"
+  throttleFor: "10m"
