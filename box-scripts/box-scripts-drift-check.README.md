@@ -72,10 +72,36 @@ records the outcome in `status.json` (`self_heal.last_result`) +
 `/var/lib/box-scripts-drift/heal-last.txt`. The drift edge alert still fires
 (it reads "auto-repairing now…") so the human still sees the event.
 
+### Turning it on — the one-flip switch
+
+Re-run `install.sh` with `SELF_HEAL=1`; optionally **scope** it to a tight set
+of files whose committed copy is the unambiguous source of truth via
+`WATCH_SBIN` / `WATCH_UNITS` (space-separated basenames):
+
+```bash
+SELF_HEAL=1 sudo box-scripts/install.sh                       # heal everything watched
+SELF_HEAL=1 WATCH_SBIN="dns-drift-check" \
+  WATCH_UNITS="dns-drift-check.service" sudo box-scripts/install.sh   # heal only these
+SELF_HEAL=0 sudo box-scripts/install.sh                       # turn it back off
+```
+
+The flag rides a **systemd drop-in**
+(`/etc/systemd/system/box-scripts-drift-check.service.d/10-self-heal.conf`),
+*not* an edit to the watched unit. That matters: editing
+`box-scripts-drift-check.service` on the host would make it drift from its own
+committed copy and the watcher would alert on **itself**. The drop-in sidesteps
+that. `install.sh` reconciles the drop-in **idempotently** — `SELF_HEAL=1`
+writes/refreshes it, `SELF_HEAL=0` removes it, and a plain re-install with
+`SELF_HEAL` unset leaves the current state untouched (so a routine fleet
+re-install never silently flips the switch either way). The same on/off lines
+are mirrored as commented `Environment=` entries in
+`box-scripts/systemd/box-scripts-drift-check.service` for operators who prefer
+to enable it **fleet-wide from the repo** (uncomment + commit + re-install every
+box). After the flip, `status.json` reports `self_heal.enabled: true`.
+
 - It is **OFF by default** because a host edit may be a deliberate hot-fix that
   should be **back-ported to the repo**, not clobbered. Turn it on only when the
-  committed copy is the unambiguous source of truth (e.g. add `Environment=SELF_HEAL=1`
-  to `box-scripts/systemd/box-scripts-drift-check.service`).
+  committed copy is the unambiguous source of truth.
 - A drift whose committed source is **gone** (`REPO-MISSING` / `BOTH-MISSING`)
   cannot be restored and is reported as **un-healable** — the host file is left
   untouched.

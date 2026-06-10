@@ -19,4 +19,27 @@ Environment=NOTIFY_TITLE=box-scripts drift
 # fail-soft: with no channel configured it just exits and the alert is still
 # logged, so wiring this is harmless before the env file is filled in.
 Environment=NOTIFY_CMD=/usr/local/sbin/a11oy-uptime-notify
+# --- Self-heal opt-in (one-flip switch; OFF by default) ---------------------
+# Self-heal lets this watcher RESTORE a drifted host file from its committed
+# box-scripts/ copy on the drift edge instead of only alerting. It is OFF by
+# default because a host edit may be a deliberate hot-fix to back-port to the
+# repo, not clobber — turn it on only for files whose committed copy is the
+# unambiguous source of truth.
+#
+# FLIP IT ON for THIS box (preferred — does NOT edit this unit, so the watcher
+# never drifts from its own committed copy and alert on itself):
+#     SELF_HEAL=1 sudo box-scripts/install.sh
+# optionally scope it to a tight set of files:
+#     SELF_HEAL=1 WATCH_SBIN="dns-drift-check" \
+#       WATCH_UNITS="dns-drift-check.service" sudo box-scripts/install.sh
+# That writes a systemd drop-in
+# (/etc/systemd/system/box-scripts-drift-check.service.d/10-self-heal.conf);
+# `SELF_HEAL=0 sudo box-scripts/install.sh` removes it again.
+#
+# To enable it FLEET-WIDE from the repo instead, uncomment the lines below and
+# commit (this edits the committed unit, so re-install every box):
+#Environment=SELF_HEAL=1
+# and, to scope which files self-heal (leave unset to cover the full derived set):
+#Environment=WATCH_SBIN=dns-drift-check
+#Environment=WATCH_UNITS=dns-drift-check.service
 ExecStart=/usr/local/sbin/box-scripts-drift-check

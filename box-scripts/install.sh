@@ -200,6 +200,62 @@ for c in "${receipt_extra_clusters[@]}"; do
   fi
 done
 
+# --- box-scripts-drift self-heal opt-in (one-flip switch) -------------------
+# Self-heal is OFF by default: a drifted host file may be a deliberate hot-fix
+# to back-port to the repo, not clobber. Flip it on for THIS box by re-running
+# with SELF_HEAL=1; optionally scope it to a tight set of files whose committed
+# copy is the unambiguous source of truth via WATCH_SBIN / WATCH_UNITS:
+#     SELF_HEAL=1 sudo ./install.sh
+#     SELF_HEAL=1 WATCH_SBIN="dns-drift-check" \
+#       WATCH_UNITS="dns-drift-check.service" sudo ./install.sh
+#     SELF_HEAL=0 sudo ./install.sh      # turn it back off (removes the drop-in)
+# The flag rides a systemd drop-in so the watched unit file itself is never
+# edited on the host (editing it would make box-scripts-drift-check.service
+# drift from its own committed copy and the watcher would alert on itself).
+# A plain re-install with SELF_HEAL unset leaves the current state untouched.
+selfheal_dropin_dir="/etc/systemd/system/box-scripts-drift-check.service.d"
+selfheal_dropin="$selfheal_dropin_dir/10-self-heal.conf"
+case "${SELF_HEAL:-}" in
+  1|true|yes|on)
+    install -d -m 0755 "$selfheal_dropin_dir"
+    selfheal_tmp="$(mktemp)"
+    {
+      echo "# Managed by box-scripts/install.sh (SELF_HEAL=1). Do not edit by hand."
+      echo "# Remove with: SELF_HEAL=0 sudo box-scripts/install.sh"
+      echo "[Service]"
+      echo "Environment=SELF_HEAL=1"
+      [ -n "${WATCH_SBIN+set}" ]  && echo "Environment=WATCH_SBIN=${WATCH_SBIN}"
+      [ -n "${WATCH_UNITS+set}" ] && echo "Environment=WATCH_UNITS=${WATCH_UNITS}"
+    } > "$selfheal_tmp"
+    if cmp -s "$selfheal_tmp" "$selfheal_dropin" 2>/dev/null; then
+      echo "[install] box-scripts-drift self-heal already ENABLED (drop-in unchanged)"
+    else
+      install -m 0644 "$selfheal_tmp" "$selfheal_dropin"
+      echo "[install] box-scripts-drift self-heal ENABLED -> $selfheal_dropin"
+    fi
+    rm -f "$selfheal_tmp"
+    ;;
+  0|false|no|off)
+    if [ -f "$selfheal_dropin" ]; then
+      rm -f "$selfheal_dropin"
+      rmdir "$selfheal_dropin_dir" 2>/dev/null || true
+      echo "[install] box-scripts-drift self-heal DISABLED (removed drop-in)"
+    else
+      echo "[install] box-scripts-drift self-heal already OFF (no drop-in)"
+    fi
+    ;;
+  "")
+    if [ -f "$selfheal_dropin" ]; then
+      echo "[install] box-scripts-drift self-heal: ON (existing drop-in left untouched; SELF_HEAL=0 to disable)"
+    else
+      echo "[install] box-scripts-drift self-heal: OFF (default; SELF_HEAL=1 to enable)"
+    fi
+    ;;
+  *)
+    echo "[install] WARN ignoring unrecognized SELF_HEAL='${SELF_HEAL}' (use 1/0); leaving drop-in untouched" >&2
+    ;;
+esac
+
 echo "[install] reloading systemd + enabling units ..."
 systemctl daemon-reload
 systemctl enable --now a11oy-coexist.service
