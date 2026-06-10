@@ -393,6 +393,9 @@ jobs:
       - name: Install cryptography (server signer — used by the append path)
         run: pip install cryptography
 
+      - name: Self-test the chart-derived RSS ceiling (fail-loud logic)
+        run: python3 scripts/receipts_memory_guard.test.py
+
       - name: Run the receipts memory guard (20k-receipt store)
         run: python3 scripts/receipts_memory_guard.py
 

@@ -21,7 +21,7 @@
 #
 #   1. the in-memory receipt window is bounded   (len(_receipts) <= MAX_IN_MEMORY)
 #   2. the chain index / persisted count are correct (no data loss)
-#   3. peak RSS stays WELL under the 512Mi chart limit
+#   3. peak RSS stays WELL under the chart's declared memory limit
 #
 # It exercises:
 #   * the SLOW path  — legacy store with no head pointer → constant-memory
@@ -36,11 +36,19 @@
 # regardless of the runner's memory. Peak RSS is the supporting "flat ceiling"
 # proof.
 #
+# The RSS ceiling is NOT a hardcoded constant: it is derived at runtime from the
+# chart's declared receipts-server memory limit (server.resources.limits.memory
+# in charts/szl-receipts/values.yaml) times GUARD_RSS_SAFETY_FRACTION. If the
+# chart limit is lowered, the ceiling tightens automatically — the guard can
+# never keep passing against a stale number. If the chart value can't be read the
+# guard FAILS LOUD rather than silently falling back to a default.
+#
 # Tunables (env):
-#   GUARD_RECEIPTS          synthetic store size            (default 20000)
-#   GUARD_MAX_IN_MEMORY     SZL_MAX_IN_MEMORY_RECEIPTS      (default 2000)
-#   GUARD_APPEND            receipts POSTed in append test  (default 500)
-#   GUARD_RSS_CEILING_MIB   peak-RSS ceiling, MiB           (default 256)
+#   GUARD_RECEIPTS            synthetic store size              (default 20000)
+#   GUARD_MAX_IN_MEMORY       SZL_MAX_IN_MEMORY_RECEIPTS        (default 2000)
+#   GUARD_APPEND              receipts POSTed in append test    (default 500)
+#   GUARD_RSS_SAFETY_FRACTION ceiling = chart limit * fraction  (default 0.5)
+#   GUARD_RSS_CEILING_MIB     explicit MiB override (skips the derived default)
 #
 # No cluster required. Run: python3 scripts/receipts_memory_guard.py
 
@@ -48,6 +56,7 @@ import base64
 import importlib.util
 import json
 import os
+import re
 import resource
 import shutil
 import subprocess
@@ -61,9 +70,107 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 SERVER_PATH = os.path.join(REPO, "services", "szl-receipts-server", "server.py")
 
-# 512Mi is the chart's resources.limits.memory for the receipts container; the
-# guard proves boot RSS stays a long way under it.
-CHART_LIMIT_MIB = 512
+# The chart whose resources.limits.memory is the production ceiling the guard
+# proves boot/append RSS stays under. Parsed at runtime (see _read_chart_limit_mib).
+CHART_VALUES = os.path.join(REPO, "charts", "szl-receipts", "values.yaml")
+
+# ceiling = CHART_LIMIT_MIB * SAFETY_FRACTION (a margin below the hard limit, since
+# the kubelet OOM-kills AT the limit; we want to catch creep well before that).
+SAFETY_FRACTION = float(os.environ.get("GUARD_RSS_SAFETY_FRACTION", "0.5"))
+
+# The chart's resources.limits.memory for the receipts container, in MiB. Read
+# from the chart at runtime in main() (NOT at import — the seed/rehydrate child
+# subprocesses don't need it, and a read failure must fail loud only in main).
+CHART_LIMIT_MIB = None
+
+
+def _die(msg):
+    """Print a GitHub-annotated error and exit non-zero. Used for fail-loud
+    conditions that must never degrade into a silent default."""
+    print(f"::error::{msg}")
+    raise SystemExit(1)
+
+
+def _parse_mem_to_mib(value):
+    """Convert a Kubernetes memory quantity (e.g. '512Mi', '1Gi', '536870912')
+    to MiB as a float. Raises ValueError on anything unparseable."""
+    s = str(value).strip().strip('"').strip("'")
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([EPTGMK]i?)?", s)
+    if not m:
+        raise ValueError(f"unparseable memory quantity {value!r}")
+    num = float(m.group(1))
+    unit = m.group(2) or ""
+    factors = {
+        "": 1.0 / (1024 * 1024),                      # bytes → MiB
+        "Ki": 1.0 / 1024, "Mi": 1.0, "Gi": 1024.0,
+        "Ti": 1024.0 ** 2, "Pi": 1024.0 ** 3, "Ei": 1024.0 ** 4,
+        "K": 1000.0 / (1024 ** 2), "M": 1000.0 ** 2 / (1024 ** 2),
+        "G": 1000.0 ** 3 / (1024 ** 2), "T": 1000.0 ** 4 / (1024 ** 2),
+        "P": 1000.0 ** 5 / (1024 ** 2), "E": 1000.0 ** 6 / (1024 ** 2),
+    }
+    return num * factors[unit]
+
+
+def _strip_inline(rest):
+    """Return the scalar value from the right-hand side of a `key: value` line,
+    honoring quotes and dropping an unquoted inline `# comment`."""
+    rest = rest.strip()
+    if not rest:
+        return ""
+    if rest[0] in "\"'":
+        q = rest[0]
+        end = rest.find(q, 1)
+        return rest[1:end] if end != -1 else rest[1:]
+    return rest.split("#", 1)[0].strip()
+
+
+def _yaml_scalar_at(path, target_keys):
+    """Return the scalar string at a nested key path in a simple YAML file using
+    an indentation stack. Returns None if the path is absent. Stdlib-only — the
+    memory-guard CI job installs no PyYAML, and the values we need (a single
+    nested scalar) don't warrant the dependency."""
+    key_re = re.compile(r"^(\s*)([A-Za-z0-9_.\-]+):\s*(.*)$")
+    stack = []  # list of (indent, key)
+    with open(path) as f:
+        for raw in f:
+            line = raw.rstrip("\n")
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            m = key_re.match(line)
+            if not m:
+                continue  # list items / continuations — never on our scalar path
+            indent, key, rest = len(m.group(1)), m.group(2), m.group(3)
+            while stack and stack[-1][0] >= indent:
+                stack.pop()
+            stack.append((indent, key))
+            if [k for _, k in stack] == target_keys:
+                value = _strip_inline(rest)
+                return value if value != "" else None
+    return None
+
+
+def _read_chart_limit_mib():
+    """Derive the production memory ceiling from the chart's declared
+    receipts-server memory limit (server.resources.limits.memory). FAILS LOUD on
+    any problem — missing file, missing key, or unparseable quantity — and never
+    returns a silent default, so the guard can't keep passing against a stale
+    number if the chart limit is lowered or the chart moves."""
+    if not os.path.exists(CHART_VALUES):
+        _die(f"chart values not found at {CHART_VALUES}; cannot derive the RSS "
+             f"ceiling from the receipts-server memory limit")
+    raw = _yaml_scalar_at(CHART_VALUES,
+                          ["server", "resources", "limits", "memory"])
+    if raw is None:
+        _die(f"could not find server.resources.limits.memory in {CHART_VALUES}; "
+             f"refusing to fall back to a hardcoded ceiling")
+    try:
+        mib = _parse_mem_to_mib(raw)
+    except ValueError as exc:
+        _die(f"chart memory limit unreadable ({exc}) in {CHART_VALUES}")
+    if mib <= 0:
+        _die(f"chart memory limit parsed to {mib} MiB in {CHART_VALUES}")
+    return mib
 
 
 def _load_server():
@@ -200,7 +307,7 @@ def _check_boot(label, m, n, max_in_mem, ceiling, expect_empty_window):
         fails += 1
     if not _assert(m["peak_rss_mib"] <= ceiling,
                    f"peak RSS {m['peak_rss_mib']} MiB <= {ceiling} MiB ceiling "
-                   f"(well under the {CHART_LIMIT_MIB}Mi chart limit)"):
+                   f"(well under the {CHART_LIMIT_MIB:g}Mi chart limit)"):
         fails += 1
     return fails
 
@@ -314,7 +421,7 @@ def _check_append(store, n, append_n, max_in_mem, ceiling):
         if hwm is not None and not _assert(
                 hwm <= ceiling,
                 f"server peak RSS {hwm} MiB <= {ceiling} MiB ceiling "
-                f"(well under the {CHART_LIMIT_MIB}Mi chart limit)"):
+                f"(well under the {CHART_LIMIT_MIB:g}Mi chart limit)"):
             fails += 1
     finally:
         proc.terminate()
@@ -328,22 +435,41 @@ def _check_append(store, n, append_n, max_in_mem, ceiling):
 
 
 def main():
+    global CHART_LIMIT_MIB
+    # Derive the production ceiling from the chart (fails loud on any problem) so
+    # the guard tracks the real limit instead of a stale hardcoded number.
+    CHART_LIMIT_MIB = round(_read_chart_limit_mib(), 1)
+
     n = int(os.environ.get("GUARD_RECEIPTS", "20000"))
     max_in_mem = int(os.environ.get("GUARD_MAX_IN_MEMORY", "2000"))
     append_n = int(os.environ.get("GUARD_APPEND", "500"))
-    ceiling = float(os.environ.get("GUARD_RSS_CEILING_MIB", "256"))
+
+    # Default ceiling = chart limit * safety fraction; an explicit override is
+    # still honored for ad-hoc runs but is never the silent default.
+    override = os.environ.get("GUARD_RSS_CEILING_MIB")
+    if override not in (None, ""):
+        ceiling = float(override)
+        ceiling_src = "GUARD_RSS_CEILING_MIB override"
+    else:
+        ceiling = round(CHART_LIMIT_MIB * SAFETY_FRACTION, 1)
+        ceiling_src = (f"chart limit {CHART_LIMIT_MIB:g}Mi x "
+                       f"{SAFETY_FRACTION:g} safety fraction")
 
     if max_in_mem >= n:
         print(f"::error::test misconfigured: GUARD_MAX_IN_MEMORY ({max_in_mem}) "
               f"must be < GUARD_RECEIPTS ({n}) for the bound to mean anything")
         return 1
+    if ceiling <= 0:
+        print(f"::error::derived RSS ceiling {ceiling} MiB is not positive")
+        return 1
     if ceiling >= CHART_LIMIT_MIB:
         print(f"::error::ceiling {ceiling} MiB is not 'well under' the "
-              f"{CHART_LIMIT_MIB}Mi chart limit")
+              f"{CHART_LIMIT_MIB:g}Mi chart limit")
         return 1
 
     print(f"Receipts memory guard: store={n} receipts, MAX_IN_MEMORY={max_in_mem}, "
-          f"append={append_n}, RSS ceiling={ceiling} MiB (chart limit {CHART_LIMIT_MIB}Mi)")
+          f"append={append_n}, RSS ceiling={ceiling} MiB ({ceiling_src}; "
+          f"chart limit {CHART_LIMIT_MIB:g}Mi from {os.path.relpath(CHART_VALUES, REPO)})")
 
     store = tempfile.mkdtemp(prefix="szl-mem-guard-")
     env_max = {"SZL_MAX_IN_MEMORY_RECEIPTS": str(max_in_mem)}
