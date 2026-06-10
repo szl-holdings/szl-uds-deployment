@@ -1,0 +1,106 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# ns-scratch-stale-watch-guard.yml — Guard the `szl-ns-scratch-stale-watch` box
+# alarm (the EXPIRED labeled scratch-namespace alarm on the uds-szl-demo cluster)
+# from silently regressing.
+#
+# szl-ns-scratch-stale-watch (box-scripts/sbin/szl-ns-scratch-stale-watch) wraps
+# `szl-ns-scratch list-stale` every ~30 min and pages the team when a LABELED
+# scratch namespace has outlived its declared `szl.io/ttl-days` expiry — the
+# quiet failure its sibling (szl-ns-scratch-watch, the UNLABELED alarm) does not
+# catch. Such expired namespaces silently accumulate and eat the 2-vCPU box's
+# headroom. Its value rests on a few fragile behaviours that produce NO visible
+# symptom when broken until a real expired namespace goes un-alerted:
+#   * an EXPIRED namespace pages EXACTLY once (OK->ALERT edge);
+#   * while still expired it DE-DUPEs (never re-pages — no alert storm);
+#   * once cleaned up it pages RECOVERED once, then stays quiet;
+#   * cluster absent / unreachable / the scratch tool's "nothing to do" sentinel
+#     are each a true NO-OP (exit 0, no page) and never a FALSE recovered;
+#   * it NEVER auto-deletes a namespace (cleanup confirms with the owner);
+#   * it stays WIRED into install.sh (copied + timer enabled) and documented in
+#     README.md, or a box rebuild silently ships without the alarm.
+# A sibling refactor of the script, install.sh, or README could quietly drop any
+# of these, re-opening the exact "an expired scratch goes un-alerted" hole this
+# alarm closed.
+#
+# This guard mirrors ns-scratch-watch-guard.yml but goes further: instead of a
+# pure text/lint check, scripts/ns-scratch-stale-watch-guard-checks.sh EXERCISES
+# the real script — it builds a hermetic sandbox (stub k3d/kubectl, a fake
+# `szl-ns-scratch list-stale`, a capturing notifier) and actually RUNS the alarm
+# against fixture scenarios (expired present, none present, cluster absent/
+# unreachable, scratch no-op), asserting the observed behaviour. The logic was
+# extracted from this workflow so it can be UNIT TESTED:
+# scripts/ns-scratch-stale-watch-guard-checks.test.sh feeds each check a
+# deliberately-BROKEN copy of the script and asserts the check FAILS, plus that
+# the pristine repo PASSES. That self-test runs as the `self-test` job below, so a
+# future edit that neuters a check (passing vacuously — green while guarding
+# nothing) is caught here.
+#
+# The asserted invariants:
+#   chk1  szl-ns-scratch-stale-watch exists and parses clean (bash -n)
+#   chk2  it shells out to `$SCRATCH_BIN list-stale` (the audit tool)
+#   chk3  edge lifecycle: expired->ALERT(1), still-expired de-dupe(0),
+#         recovered(1), steady-OK(0)
+#   chk4  cluster absent / unreachable / scratch no-op each exit 0, never page,
+#         never false-recover
+#   chk5  never auto-deletes (no `kubectl delete` in source or at runtime)
+#   chk6  wired into install.sh (script + units copied, timer enabled)
+#   chk7  documented in README.md (expired scratch-namespace alarm section)
+
+name: NS Scratch Stale Watch Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves each check
+  # still FAILS on bad input (i.e. is not silently passing). The guard job
+  # depends on it so a broken check blocks the build before it can wave a
+  # regression through.
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/ns-scratch-stale-watch-guard-checks.test.sh
+
+  guard:
+    name: Assert the expired-scratch-namespace alarm is intact
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check 1 — szl-ns-scratch-stale-watch exists and parses clean
+        run: bash scripts/ns-scratch-stale-watch-guard-checks.sh chk1 .
+
+      - name: Check 2 — shells out to szl-ns-scratch list-stale
+        run: bash scripts/ns-scratch-stale-watch-guard-checks.sh chk2 .
+
+      - name: Check 3 — edge lifecycle (alert / de-dupe / recovered / steady)
+        run: bash scripts/ns-scratch-stale-watch-guard-checks.sh chk3 .
+
+      - name: Check 4 — cluster-absent / unreachable / scratch no-op
+        run: bash scripts/ns-scratch-stale-watch-guard-checks.sh chk4 .
+
+      - name: Check 5 — never auto-deletes
+        run: bash scripts/ns-scratch-stale-watch-guard-checks.sh chk5 .
+
+      - name: Check 6 — wired into install.sh (script + timer enabled)
+        run: bash scripts/ns-scratch-stale-watch-guard-checks.sh chk6 .
+
+      - name: Check 7 — documented in README.md
+        run: bash scripts/ns-scratch-stale-watch-guard-checks.sh chk7 .
+
+      - name: Expired-scratch-namespace alarm is intact
+        run: echo "The szl-ns-scratch-stale-watch expired-scratch-namespace alarm is intact."
