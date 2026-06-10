@@ -539,3 +539,148 @@ jobs:
 
       - name: Run test-upgrade
         run: uds run test-upgrade
+
+  # ── Teardown busy-cluster proof (real cluster — manual dispatch only) ──────
+  teardown-busy-proof:
+    name: Teardown Busy-Cluster Proof
+    runs-on: ubuntu-24.04
+    # The text-level teardown-guard.yml only proves the `uds run teardown` task
+    # still REFERENCES the idle-check gate + FORCE override and that
+    # scripts/idle-check.sh parses. It cannot prove the gate actually refuses a
+    # teardown while a deploy is in flight: a regression in idle-check.sh's
+    # rollout-state logic (e.g. always reporting "idle") would sail through the
+    # text guard yet silently re-open the original hazard — one agent's blind
+    # teardown destroying a sibling's in-flight deploy on the shared k3d cluster.
+    #
+    # This job closes that gap on a REAL throwaway k3d cluster: it puts an
+    # in-flight (never-Ready) deploy on the cluster, then asserts the three
+    # behaviours that matter:
+    #   1. `uds run idle-check` reports BUSY (exit non-zero),
+    #   2. `uds run teardown` (no FORCE) REFUSES and leaves the cluster intact,
+    #   3. `uds run teardown --set FORCE=true` succeeds and deletes the cluster.
+    # If a regression lets a busy cluster be torn down, step 1 or 2 fails loud.
+    #
+    # workflow_dispatch only (mirrors test-install) to avoid burning runner
+    # minutes / spinning a cluster on every PR.
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install UDS CLI
+        uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1 (v1.0.1)
+        with:
+          version: v0.31.0
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+      - name: Install kubectl
+        run: |
+          curl -sLO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+
+      - name: Create a throwaway k3d cluster
+        run: |
+          # Use the default CLUSTER_NAME the idle-check / teardown tasks target.
+          k3d cluster create uds-szl-demo --timeout 180s
+          kubectl cluster-info
+          k3d cluster list
+
+      - name: Put an in-flight (never-Ready) deploy on the cluster
+        run: |
+          # A Deployment whose single pod can never schedule (an impossible CPU
+          # request) stays Pending forever. That is an unambiguous in-flight
+          # signal the rollout-state logic must catch: the pod is not
+          # Running-and-Ready, the Deployment never reaches Available, and its
+          # ReplicaSet is freshly created. We do NOT rely on an image pull, so
+          # the busy state is deterministic and immediate.
+          kubectl apply -f - << 'YAML'
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: inflight-deploy
+            namespace: default
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: inflight-deploy
+            template:
+              metadata:
+                labels:
+                  app: inflight-deploy
+              spec:
+                containers:
+                  - name: pause
+                    image: registry.k8s.io/pause:3.9
+                    resources:
+                      requests:
+                        cpu: "1000"
+          YAML
+          # Wait for the API server to create the ReplicaSet + Pod objects so
+          # idle-check observes the in-flight state (the pod stays Pending).
+          phase=""
+          for _ in $(seq 1 30); do
+            phase=$(kubectl get pods -l app=inflight-deploy \
+              -o jsonpath='{.items[0].status.phase}' 2>/dev/null || true)
+            [ -n "$phase" ] && break
+            sleep 1
+          done
+          echo "inflight-deploy pod phase: ${phase:-<none>}"
+          kubectl get deploy,rs,pods -l app=inflight-deploy
+
+      - name: idle-check MUST report BUSY
+        run: |
+          set +e
+          OUT=$(uds run idle-check 2>&1); RC=$?
+          set -e
+          echo "$OUT"
+          if [ "$RC" -eq 0 ]; then
+            echo "::error::idle-check reported IDLE while an in-flight deploy is on the cluster — the rollout-state gate is broken (always-idle regression?)"
+            exit 1
+          fi
+          if ! echo "$OUT" | grep -q "BUSY"; then
+            echo "::error::idle-check exited non-zero but never printed BUSY — unexpected failure, not the gate"
+            exit 1
+          fi
+          if ! echo "$OUT" | grep -q "inflight-deploy"; then
+            echo "::error::idle-check reported BUSY but did not name the in-flight workload — it may be tripping on something other than the deploy it must catch"
+            exit 1
+          fi
+          echo "OK: idle-check correctly reports BUSY and names the in-flight deploy."
+
+      - name: teardown WITHOUT FORCE must REFUSE and leave the cluster intact
+        run: |
+          set +e
+          OUT=$(uds run teardown 2>&1); RC=$?
+          set -e
+          echo "$OUT"
+          if [ "$RC" -eq 0 ]; then
+            echo "::error::teardown SUCCEEDED on a busy cluster without FORCE — the safety gate failed to block a destructive teardown"
+            exit 1
+          fi
+          if ! echo "$OUT" | grep -q "Refusing to destroy"; then
+            echo "::error::teardown exited non-zero but never printed the refusal message — it failed for some other reason, not the gate"
+            exit 1
+          fi
+          # The decisive proof: the cluster must STILL EXIST. A non-zero exit
+          # alone is not enough — the gate must have actually prevented the delete.
+          if ! k3d cluster list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "uds-szl-demo"; then
+            echo "::error::cluster 'uds-szl-demo' was deleted despite the refusal — teardown destroyed work it claimed to refuse"
+            exit 1
+          fi
+          echo "OK: teardown refused and the cluster is intact."
+
+      - name: teardown --set FORCE=true must succeed and delete the cluster
+        run: |
+          uds run teardown --set FORCE=true
+          # The override must actually destroy the cluster.
+          if k3d cluster list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "uds-szl-demo"; then
+            echo "::error::FORCE=true teardown did not delete cluster 'uds-szl-demo'"
+            exit 1
+          fi
+          echo "OK: FORCE=true override tore the cluster down."
+
+      - name: Clean up the cluster (always)
+        if: always()
+        run: k3d cluster delete uds-szl-demo 2>/dev/null || true
