@@ -253,6 +253,15 @@ def _check_append(store, n, append_n, max_in_mem, ceiling):
         "SZL_ED25519_KEY_PATH": keypath,
         "SZL_PORT": str(port),
         "SZL_MAX_IN_MEMORY_RECEIPTS": str(max_in_mem),
+        # This guard measures the BOUNDED-MEMORY property under an append burst,
+        # not the production anti-flood ingest limiter. The server's default
+        # token bucket (SZL_INGEST_RATE_LIMIT=1.0/sec, burst 60) would shed this
+        # synthetic full-speed burst with HTTP 429 well before append_n POSTs
+        # land, which is correct production behavior but orthogonal to (and would
+        # mask) the memory bound under test. Disable the limiter for THIS test
+        # server only so every POST is accepted and the live window / chain
+        # growth can be asserted; the production default is unchanged.
+        "SZL_INGEST_RATE_LIMIT": "0",
     })
     logf = open(os.path.join(keydir, "server.log"), "w")
     proc = subprocess.Popen([sys.executable, SERVER_PATH], env=env,
