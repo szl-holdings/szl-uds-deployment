@@ -59,9 +59,9 @@ components:
               fi
 
               VERSION=$(jq -r '.version' "$MANIFEST")
-              THEOREMS=$(jq -r '.theorem_count' "$MANIFEST")
+              THEOREMS=$(jq -r '.declaration_count' "$MANIFEST")
               AXIOMS=$(jq -r '.axiom_count' "$MANIFEST")
-              DEFS=$(jq -r '.definition_count' "$MANIFEST")
+              DEFS=$(jq -r '.sorry_count' "$MANIFEST")
               KERNEL=$(jq -r '.kernel_commit' "$MANIFEST")
               LAMBDA=$(jq -r '.lambda_status' "$MANIFEST")
 
