@@ -101,7 +101,7 @@ inv3() {
 
 # ── Invariant 4 ───────────────────────────────────────────────────────────────
 # packages/szl-receipts/zarf.yaml -> szl-key-init-exemption is ordered BEFORE
-# szl-key-init AND the server image tag is uds-v0.4.0
+# szl-key-init AND the server image tag is uds-v0.4.1
 inv4() {
   local root="${1:-.}"
   local F="$root/packages/szl-receipts/zarf.yaml"
@@ -139,14 +139,14 @@ inv4() {
     err "$F" "If the Exemption is not admitted first, the root keygen pod is DENIED -> UNSIGNED server."
     return 1
   fi
-  # The server image tag must be uds-v0.4.0 (chart tag & zarf images: list
+  # The server image tag must be uds-v0.4.1 (chart tag & zarf images: list
   # must stay in lockstep, else ErrImagePull after a registry cold-restart).
-  if ! grep -Eq 'ghcr\.io/szl-holdings/szl-receipts-server:uds-v0\.4\.0' "$F"; then
-    err "$F" "REGRESSION — server image tag is not uds-v0.4.0."
+  if ! grep -Eq 'ghcr\.io/szl-holdings/szl-receipts-server:uds-v0\.4\.1' "$F"; then
+    err "$F" "REGRESSION — server image tag is not uds-v0.4.1."
     grep -nE 'szl-receipts-server:' "$F" || echo "(no szl-receipts-server image line)"
     return 1
   fi
-  echo "OK: $F orders szl-key-init-exemption (pos $EX_POS) before szl-key-init (pos $KI_POS) and pins uds-v0.4.0"
+  echo "OK: $F orders szl-key-init-exemption (pos $EX_POS) before szl-key-init (pos $KI_POS) and pins uds-v0.4.1"
 }
 
 # ── Invariant 5 ───────────────────────────────────────────────────────────────
