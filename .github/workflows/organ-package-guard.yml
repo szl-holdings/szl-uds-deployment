@@ -1,0 +1,82 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# organ-package-guard.yml — Catch packaging regressions for the OTHER four organs
+# before they ship, the way a11oy-package-guard.yml protects a11oy.
+#
+# The full-organ UDS bundle bundles/szl-uds-bundle/uds-bundle.yaml ships five
+# organs. a11oy was upgraded to a CHART-based Zarf package (packages/a11oy ->
+# charts/a11oy, tag-only uds-v0.3.0) and is protected by a11oy-package-guard.yml.
+# The other four — sentra, amaru, killinchu, rosie — are still MANIFESTS-based and
+# @sha256: digest-pinned at uds-v0.2.0 (packages/<organ>/zarf.yaml -> manifests/
+# *.yaml). NOTHING guards their packaging shape:
+#   * image-pin-guard.yml only scans the root zarf.yaml + packages/szl-receipts.
+#   * chart-guard.yml lint/templates the charts but never checks how
+#     packages/<organ>/zarf.yaml is wrapped, nor bundle membership, nor that the
+#     zarf-baked image matches the workload manifest that actually deploys.
+#
+# A sibling could silently flip an organ to chart-based, drop szl-<organ> from the
+# bundle, drop the digest pin, or let the metadata.image / images: / deployment
+# image refs drift apart — and nothing would fail until a live `uds deploy` (image
+# rewrite / airgap pull) broke minutes-to-hours later. This workflow turns each of
+# those into a seconds-long, cluster-free CI failure, one matrix leg per organ.
+#
+# It asserts per organ (see .github/scripts/organ_package_check.py):
+#   1. packages/<organ>/zarf.yaml is manifests-based (no silent flip to chart-based
+#      via charts[].localPath ../../charts/<organ>).
+#   2. ghcr.io/szl-holdings/<organ> is byte-identical across metadata.image, the
+#      component images: entry and every workload manifest image, and stays
+#      @sha256: digest-pinned.
+#   3. bundles/szl-uds-bundle/uds-bundle.yaml still registers szl-<organ> ->
+#      packages/<organ>.
+#
+# Converting an organ to chart-based is a deliberate upgrade: when it happens, give
+# that organ a chart-based guard (like a11oy's) and update this one.
+
+name: Organ Package Guard
+
+on:
+  pull_request:
+    paths:
+      - "packages/sentra/**"
+      - "packages/amaru/**"
+      - "packages/killinchu/**"
+      - "packages/rosie/**"
+      - "bundles/szl-uds-bundle/uds-bundle.yaml"
+      - ".github/scripts/organ_package_check.py"
+      - ".github/workflows/organ-package-guard.yml"
+  push:
+    branches: [main]
+    paths:
+      - "packages/sentra/**"
+      - "packages/amaru/**"
+      - "packages/killinchu/**"
+      - "packages/rosie/**"
+      - "bundles/szl-uds-bundle/uds-bundle.yaml"
+      - ".github/scripts/organ_package_check.py"
+      - ".github/workflows/organ-package-guard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  organ-package-guard:
+    name: ${{ matrix.organ }} packaging shape (manifests-based + bundle member + image parity)
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        organ: [sentra, amaru, killinchu, rosie]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Check ${{ matrix.organ }} packaging shape
+        run: python3 .github/scripts/organ_package_check.py "${{ matrix.organ }}"
+
+      - name: ${{ matrix.organ }} package guard passed
+        run: echo "${{ matrix.organ }} is manifests-based, a bundle member, and its image is consistent + digest-pinned."
