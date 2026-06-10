@@ -1,0 +1,17 @@
+[Unit]
+Description=szl-receipts retention — verify-store + archive sealed shards to cold storage and free the live PVC on uds-szl-demo
+Documentation=file:///usr/local/sbin/szl-receipts-retention
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Real push notifications use the SAME notifier + credentials file as the
+# a11oy-uptime / dns-drift / receipt-chain-watch monitors (ntfy / Telegram /
+# Slack-Discord webhook). The leading "-" makes the env file optional, so the
+# job still runs (logging only) before any channel is configured.
+EnvironmentFile=-/etc/a11oy-uptime.env
+# Distinct ntfy title so retention alerts read differently from the others.
+Environment=NOTIFY_TITLE=szl-receipts retention
+Environment=NOTIFY_CMD=/usr/local/sbin/a11oy-uptime-notify
+ExecStart=/usr/local/sbin/szl-receipts-retention

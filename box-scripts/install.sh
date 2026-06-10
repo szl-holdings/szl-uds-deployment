@@ -9,6 +9,9 @@
 #        receipt-chain-watch  — alarm when signed deploy receipts stop recording
 #                               (primary uds-szl-demo + templated
 #                               receipt-chain-watch@<cluster> for extra clusters)
+#        szl-receipts-retention — daily verify-store + archive sealed shards off
+#                               the live PVC (keeps the receipt store bounded;
+#                               alerts on chain_ok=false / skipped buckets)
 #   3. the a11oy.net public-site alerting watchers:
 #        a11oy-uptime-check   — probe a11oy.net uptime, alert on the outage edge
 #        a11oy-uptime-notify  — shared push notifier (ntfy/Telegram/webhook)
@@ -35,6 +38,7 @@ install -m 0755 "$here/sbin/a11oy-port-guard"          /usr/local/sbin/a11oy-por
 install -m 0755 "$here/sbin/szl-core-rightsize"        /usr/local/sbin/szl-core-rightsize
 install -m 0755 "$here/sbin/istiod-fit-strategy"       /usr/local/sbin/istiod-fit-strategy
 install -m 0755 "$here/sbin/receipt-chain-watch"       /usr/local/sbin/receipt-chain-watch
+install -m 0755 "$here/sbin/szl-receipts-retention"    /usr/local/sbin/szl-receipts-retention
 install -m 0755 "$here/sbin/szl-ns-scratch"            /usr/local/sbin/szl-ns-scratch
 install -m 0755 "$here/sbin/szl-ns-scratch-watch"      /usr/local/sbin/szl-ns-scratch-watch
 install -m 0755 "$here/sbin/szl-ns-scratch-stale-watch" /usr/local/sbin/szl-ns-scratch-stale-watch
@@ -56,6 +60,8 @@ install -m 0644 "$here/systemd/receipt-chain-watch.service" /etc/systemd/system/
 install -m 0644 "$here/systemd/receipt-chain-watch.timer"   /etc/systemd/system/receipt-chain-watch.timer
 install -m 0644 "$here/systemd/receipt-chain-watch@.service" /etc/systemd/system/receipt-chain-watch@.service
 install -m 0644 "$here/systemd/receipt-chain-watch@.timer"   /etc/systemd/system/receipt-chain-watch@.timer
+install -m 0644 "$here/systemd/szl-receipts-retention.service" /etc/systemd/system/szl-receipts-retention.service
+install -m 0644 "$here/systemd/szl-receipts-retention.timer"   /etc/systemd/system/szl-receipts-retention.timer
 install -m 0644 "$here/systemd/szl-ns-scratch-watch.service" /etc/systemd/system/szl-ns-scratch-watch.service
 install -m 0644 "$here/systemd/szl-ns-scratch-watch.timer"   /etc/systemd/system/szl-ns-scratch-watch.timer
 install -m 0644 "$here/systemd/szl-ns-scratch-stale-watch.service" /etc/systemd/system/szl-ns-scratch-stale-watch.service
@@ -185,6 +191,7 @@ for c in "${receipt_extra_clusters[@]}"; do
   [ -n "$c" ] || continue
   systemctl enable --now "receipt-chain-watch@${c}.timer"
 done
+systemctl enable --now szl-receipts-retention.timer
 systemctl enable --now szl-ns-scratch-watch.timer
 systemctl enable --now szl-ns-scratch-stale-watch.timer
 systemctl enable --now a11oy-uptime-check.timer
@@ -201,6 +208,9 @@ for c in "${receipt_extra_clusters[@]}"; do
   [ -n "$c" ] || continue
   systemctl start "receipt-chain-watch@${c}.service" || true
 done
+# Run retention once now (idempotent no-op if the cluster is down or nothing is
+# sealed to archive).
+[ -x /usr/local/sbin/szl-receipts-retention ] && /usr/local/sbin/szl-receipts-retention || true
 [ -x /usr/local/sbin/szl-ns-scratch-watch ] && /usr/local/sbin/szl-ns-scratch-watch  || true
 [ -x /usr/local/sbin/szl-ns-scratch-stale-watch ] && /usr/local/sbin/szl-ns-scratch-stale-watch || true
 

@@ -1,0 +1,19 @@
+[Unit]
+Description=Periodically run szl-receipts retention (verify-store + archive sealed shards off the live PVC) on uds-szl-demo
+
+[Timer]
+# Daily cadence: matches the retention target (keep the live store bounded to
+# the hot working set; sealed buckets roll off to cold storage each day). The
+# job itself is a no-op when the cluster is down or there is nothing sealed to
+# archive, so a daily run is cheap. Adjust OnUnitActiveSec for a tighter or
+# looser retention horizon.
+OnBootSec=10min
+OnUnitActiveSec=1d
+AccuracySec=1h
+# Spread the run so it does not collide with other daily jobs.
+RandomizedDelaySec=30min
+Persistent=true
+Unit=szl-receipts-retention.service
+
+[Install]
+WantedBy=timers.target

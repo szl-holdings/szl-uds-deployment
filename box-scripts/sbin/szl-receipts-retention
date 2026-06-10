@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+#
+# szl-receipts-retention — keep the szl-receipts on-disk store self-maintaining
+# by running the archival + integrity CLI on a schedule (box 167.233.50.75).
+#
+# WHY THIS EXISTS
+# The receipts-server already SUPPORTS sharding + cold-storage archival
+# (`server.py archive-shards --delete`) and a bounded full-store integrity audit
+# (`server.py verify-store`) — but nothing ran them automatically, so the live
+# PVC kept growing until an operator ran the command by hand (see
+# docs/operations/RECEIPT_STORE_RETENTION_RUNBOOK.md). This guard wires the
+# manual procedure to a systemd timer so the live store stays bounded on its own
+# and a broken chain / un-archivable bucket reaches a human instead of waiting
+# for a manual run.
+#
+# WHAT IT DOES (only when the cluster is up — k3d nodes are --restart no, so on a
+# box where the cluster is intentionally down this is a no-op exit 0, NOT an
+# alert; mirrors receipt-chain-watch / szl-signing-health-check):
+#   1. Finds a Ready receipts-server pod in ns szl-receipts.
+#   2. kubectl-exec `python3 /app/server.py verify-store` — the bounded
+#      (memory ∝ one shard bucket) full-store audit. chain_ok=false ⇒ ALERT.
+#   3. kubectl-exec `python3 /app/server.py archive-shards --cold-dir <pod-cold>
+#      --delete` — tar.gz + manifest each SEALED shard bucket into the pod's cold
+#      dir, then delete the live copies (the unbounded growth source). The tool
+#      is per-bucket VERIFY-GATED: a bucket that fails verification is SKIPPED
+#      (never archived, never deleted). Any skip / error ⇒ ALERT.
+#   4. OFFLOADS each freshly-archived cold tarball+manifest OFF the live PVC onto
+#      the box host disk (HOST_COLD_DIR — a volume sized for full history),
+#      binary-safe via `kubectl exec -- cat` (the slim image has no `tar`, which
+#      `kubectl cp` needs). Each offload is sha256-verified against the bucket
+#      manifest before the in-pod copy is pruned, so the live PVC is truly bounded
+#      while a full-history archive accumulates on the box.
+#
+# verify-store runs FIRST so the chain-health signal is independent of archival,
+# but archival ALWAYS runs afterward (it is itself per-bucket verify-gated, so a
+# single tampered legacy bucket can never halt retention of the healthy ones — it
+# is reported via skipped_failed_verify and paged separately).
+#
+# EDGE-TRIGGERED + DE-DUPED via a state file: fires the notifier only on the
+# healthy->problem edge and once on RECOVERED, never every cycle (honours the
+# "recurring alerts = one ping" policy). Every run still appends to the log +
+# status file, so a broken notifier can never hide a problem.
+#
+# NOTIFY: pipes the alert text on STDIN to NOTIFY_CMD (default the box's working
+# push channel /usr/local/sbin/a11oy-uptime-notify -> ntfy/Telegram/webhook,
+# channel in /etc/a11oy-uptime.env). SMS/email is intentionally NOT used here
+# (no Gmail/nodemailer transport; outbound TCP 465 firewalled).
+#
+# MULTI-CLUSTER: every cluster-specific input is an env override, not a baked-in
+# constant. State/log/status files are namespaced by $CLUSTER so multiple
+# instances never clobber each other's de-dup state.
+#
+# Driven by szl-receipts-retention.timer (daily). Installed at
+# /usr/local/sbin/szl-receipts-retention. Versioned in repo box-scripts/.
+set -uo pipefail
+
+# ---- config (overridable via env for testing) -------------------------------
+CLUSTER="${CLUSTER:-uds-szl-demo}"
+# Explicit kubeconfig override. When empty, resolve from the local k3d cluster
+# named $CLUSTER; when set, use it verbatim (for a non-local-k3d cluster).
+KUBECONFIG_FILE="${KUBECONFIG_FILE:-}"
+RNS="${RNS:-szl-receipts}"
+RX_SELECTOR="${RX_SELECTOR:-app.kubernetes.io/name=szl-receipts-server}"
+RX_CONTAINER="${RX_CONTAINER:-receipts-server}"
+
+# In-pod cold dir (on the receipts PVC). Matches the runbook default.
+POD_COLD_DIR="${POD_COLD_DIR:-/data/receipts/cold}"
+# Box host dir that holds the full-history cold archive (offsite / large disk).
+# This is the "volume sized for full history" the retention runbook calls for.
+HOST_COLD_DIR="${HOST_COLD_DIR:-/var/lib/szl-receipts-cold}"
+# After a tarball is offloaded to HOST_COLD_DIR and its sha256 verified against
+# the bucket manifest, remove the in-pod copy so the live PVC stays bounded.
+# Set to 0 to keep both copies (cold also accumulates on the PVC).
+PRUNE_AFTER_OFFLOAD="${PRUNE_AFTER_OFFLOAD:-1}"
+# Path to server.py inside the container (image WORKDIR /app, ENTRYPOINT
+# python3 /app/server.py).
+SERVER_PY="${SERVER_PY:-/app/server.py}"
+
+KREQ_TIMEOUT="${KREQ_TIMEOUT:-20s}"   # kubectl --request-timeout for quick ops
+# verify-store / archive-shards walk the whole store; give them room.
+EXEC_TIMEOUT="${EXEC_TIMEOUT:-1800s}"
+
+STATE_DIR="${STATE_DIR:-/var/lib/szl-receipts-retention}"
+LOG_DIR="${LOG_DIR:-/var/log/szl-receipts-retention}"
+LAST_FILE="${LAST_FILE:-$STATE_DIR/$CLUSTER.last_status}"
+STATUS="${STATUS:-$STATE_DIR/$CLUSTER.status.json}"
+LOG="${LOG:-$LOG_DIR/$CLUSTER.log}"
+
+NOTIFY_CMD="${NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
+ALERT_PREFIX="${ALERT_PREFIX:-}"
+
+# Python for JSON parsing on the BOX (not the pod). Falls back to python.
+PY="${PY:-python3}"; command -v "$PY" >/dev/null 2>&1 || PY=python
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" "$HOST_COLD_DIR" 2>/dev/null
+
+now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+log() { printf '%s %s\n' "$(now_iso)" "$1" >>"$LOG" 2>/dev/null; }
+
+notify() {
+  # $1 = message. Fail-soft: log a warning if the notifier is missing/fails.
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed (alert was logged only)"
+}
+
+write_status() {
+  # $1 = overall (OK|ALERT|UNKNOWN)  $2 = reason
+  printf '{"overall":"%s","reason":"%s","checked_at":"%s","cluster":"%s"}\n' \
+    "$1" "$(printf '%s' "$2" | sed 's/"/\\"/g')" "$(now_iso)" "$CLUSTER" \
+    >"$STATUS" 2>/dev/null
+}
+
+# json_get FILE EXPR — print a value from JSON on stdin file via python.
+# EXPR is python indexing on the parsed object named d, e.g. d["chain_ok"].
+json_get() {
+  "$PY" -c 'import sys,json
+try: d=json.load(open(sys.argv[1]))
+except Exception: sys.exit(3)
+try: print(eval(sys.argv[2]))
+except Exception: sys.exit(4)' "$1" "$2" 2>/dev/null
+}
+
+# ---- Resolve cluster; no-op if it is down (intentionally stopped) -----------
+if [ -n "$KUBECONFIG_FILE" ]; then
+  if [ ! -r "$KUBECONFIG_FILE" ]; then
+    log "INFO KUBECONFIG_FILE '$KUBECONFIG_FILE' unreadable — skip"; write_status UNKNOWN "kubeconfig unreadable"; exit 0
+  fi
+  export KUBECONFIG="$KUBECONFIG_FILE"
+else
+  KC="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" || { log "INFO cluster '$CLUSTER' absent — skip"; write_status UNKNOWN "cluster absent"; exit 0; }
+  export KUBECONFIG="$KC"
+fi
+kubectl --request-timeout="$KREQ_TIMEOUT" get --raw='/readyz' >/dev/null 2>&1 \
+  || { log "INFO cluster '$CLUSTER' not reachable — skip"; write_status UNKNOWN "cluster unreachable"; exit 0; }
+
+# Receipts module deployed at all? If not, there is nothing to maintain — no-op.
+kubectl --request-timeout="$KREQ_TIMEOUT" -n "$RNS" get deploy szl-receipts-server >/dev/null 2>&1 \
+  || { log "INFO $RNS/szl-receipts-server absent — receipts module not deployed, skip"; write_status UNKNOWN "receipts module absent"; exit 0; }
+
+# ---- Find a Ready receipts-server pod ---------------------------------------
+pods_json="$(kubectl --request-timeout="$KREQ_TIMEOUT" -n "$RNS" get pods -l "$RX_SELECTOR" -o json 2>/dev/null)"
+pod="$(printf '%s' "$pods_json" | RX_CONTAINER="$RX_CONTAINER" "$PY" -c '
+import sys,json,os
+c=os.environ["RX_CONTAINER"]
+try: d=json.load(sys.stdin)
+except Exception: print(""); sys.exit()
+for p in d.get("items",[]):
+    for cs in (p.get("status",{}).get("containerStatuses") or []):
+        if cs.get("name")==c and cs.get("ready"):
+            print(p["metadata"]["name"]); sys.exit()
+print("")' 2>/dev/null)"
+
+if [ -z "$pod" ]; then
+  # No Ready pod = we cannot run retention this cycle. The receipts-server sink
+  # being down is already covered by receipt-chain-watch / szl-signing-health
+  # alerts, so here we just no-op (don't double-page).
+  log "INFO no Ready '$RX_CONTAINER' pod in ns/$RNS — cannot run retention this cycle, skip"
+  write_status UNKNOWN "no ready receipts-server pod"
+  exit 0
+fi
+log "INFO using pod $pod (ns/$RNS)"
+
+kx() {  # kubectl exec into the chosen pod/container; args = command
+  kubectl --request-timeout="$EXEC_TIMEOUT" -n "$RNS" exec "$pod" -c "$RX_CONTAINER" -- "$@"
+}
+
+reasons=""
+add_reason() { reasons="${reasons:+$reasons; }$1"; }
+
+# ---- 1. Bounded full-store integrity audit ----------------------------------
+vfile="$STATE_DIR/$CLUSTER.verify.json"
+if kx "$PY" "$SERVER_PY" verify-store >"$vfile" 2>>"$LOG"; then
+  vrc=0
+else
+  vrc=$?
+fi
+chain_ok="$(json_get "$vfile" 'str(d.get("chain_ok")).lower()')"
+vtotal="$(json_get "$vfile" 'd.get("total")')"
+if [ "$chain_ok" = "true" ]; then
+  log "STATE verify-store chain_ok=true total=${vtotal:-?}"
+elif [ "$chain_ok" = "false" ]; then
+  bs="$(json_get "$vfile" 'd.get("bad_sig")')"; bh="$(json_get "$vfile" 'd.get("bad_hash")')"; bl="$(json_get "$vfile" 'd.get("bad_link")')"
+  samp="$(json_get "$vfile" '",".join(d.get("tampered_sample",[])[:5])')"
+  add_reason "verify-store FAILED: chain_ok=false (bad_sig=${bs:-?} bad_hash=${bh:-?} bad_link=${bl:-?}; sample: ${samp:-none})"
+  log "STATE verify-store chain_ok=FALSE rc=$vrc"
+else
+  # Could not parse a report (exec error / unexpected output). Treat as unknown
+  # for this check; the offload/archive step below still runs and may surface it.
+  log "WARN verify-store produced no parseable report (rc=$vrc) — see log above"
+fi
+
+# ---- 2. Archive sealed shards to cold storage + delete live copies ----------
+afile="$STATE_DIR/$CLUSTER.archive.json"
+if kx "$PY" "$SERVER_PY" archive-shards --cold-dir "$POD_COLD_DIR" --delete >"$afile" 2>>"$LOG"; then
+  arc=0
+else
+  arc=$?
+fi
+aerr="$(json_get "$afile" 'd.get("error") or ""')"
+archived_csv="$(json_get "$afile" '",".join(d.get("archived",[]))')"
+skipped_csv="$(json_get "$afile" '",".join(d.get("skipped_failed_verify",[]))')"
+
+if [ -n "$aerr" ]; then
+  # archive-shards returns {"error": ...} for benign cases too (sharding
+  # disabled / no head pointer on an empty store) — log, don't page on those.
+  case "$aerr" in
+    *"sharding disabled"*|*"no head pointer"*)
+      log "STATE archive-shards no-op: $aerr" ;;
+    *)
+      add_reason "archive-shards error: $aerr"
+      log "STATE archive-shards ERROR: $aerr" ;;
+  esac
+elif [ -n "$skipped_csv" ]; then
+  add_reason "archive-shards SKIPPED bucket(s) that failed verification: $skipped_csv (never archived/deleted)"
+  log "STATE archive-shards skipped_failed_verify=$skipped_csv archived=${archived_csv:-none}"
+else
+  log "STATE archive-shards ok archived=${archived_csv:-none}"
+fi
+
+# ---- 3. Offload freshly-archived cold tarballs OFF the live PVC --------------
+# Binary-safe via `kubectl exec -- cat` (the slim image lacks `tar`, which
+# `kubectl cp` requires). sha256-verify against the manifest before pruning the
+# in-pod copy so the live PVC is bounded and a full-history archive lives on box.
+offload_warn=0
+if [ -n "$archived_csv" ]; then
+  IFS=',' read -r -a _buckets <<< "$archived_csv"
+  for b in "${_buckets[@]}"; do
+    [ -n "$b" ] || continue
+    htar="$HOST_COLD_DIR/$b.tar.gz"; hman="$HOST_COLD_DIR/$b.manifest.json"
+    if ! kx cat "$POD_COLD_DIR/$b.manifest.json" >"$hman" 2>>"$LOG"; then
+      log "WARN offload: could not read manifest for bucket $b — leaving in-pod copy"; offload_warn=1; continue
+    fi
+    if ! kx cat "$POD_COLD_DIR/$b.tar.gz" >"$htar" 2>>"$LOG"; then
+      log "WARN offload: could not read tarball for bucket $b — leaving in-pod copy"; offload_warn=1; continue
+    fi
+    want="$(json_get "$hman" 'd.get("tarball_sha256")')"
+    got="$(sha256sum "$htar" 2>/dev/null | awk '{print $1}')"
+    if [ -n "$want" ] && [ "$want" = "$got" ]; then
+      log "OFFLOAD bucket $b -> $htar (sha256 verified)"
+      if [ "$PRUNE_AFTER_OFFLOAD" = "1" ]; then
+        if kx rm -f "$POD_COLD_DIR/$b.tar.gz" "$POD_COLD_DIR/$b.manifest.json" >>"$LOG" 2>&1; then
+          log "PRUNE in-pod cold copy of bucket $b (now lives on box at $htar)"
+        else
+          log "WARN prune of in-pod bucket $b failed — host copy is good, will retry next run"; offload_warn=1
+        fi
+      fi
+    else
+      log "WARN offload: sha256 mismatch for bucket $b (want=${want:-?} got=${got:-?}) — leaving in-pod copy"; offload_warn=1
+    fi
+  done
+  # Mirror the append-only archival ledger to the box (best-effort).
+  kx cat "$POD_COLD_DIR/archived.json" >"$HOST_COLD_DIR/archived.json" 2>>"$LOG" \
+    || log "WARN offload: could not mirror archived.json ledger to box"
+fi
+[ "$offload_warn" = "1" ] && log "NOTE one or more cold offloads were incomplete (logged WARN above; NOT paged — chain integrity is unaffected)"
+
+# ---- Decide + edge-trigger --------------------------------------------------
+prev="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
+if [ -n "$reasons" ]; then
+  write_status ALERT "$reasons"
+  log "STATE ALERT :: $reasons"
+  if [ "$prev" != "ALERT" ]; then
+    notify "ALERT: szl-receipts retention problem on $CLUSTER. $reasons. (verify-store + archive-shards run by szl-receipts-retention; see /var/log/szl-receipts-retention/$CLUSTER.log)"
+    log "EDGE OK->ALERT notified"
+  else
+    log "DEDUP still ALERT — no re-notify"
+  fi
+  echo ALERT >"$LAST_FILE" 2>/dev/null
+else
+  write_status OK "verify-store chain_ok=true; archive-shards ok (archived=${archived_csv:-none})"
+  log "STATE OK"
+  if [ "$prev" = "ALERT" ]; then
+    notify "RECOVERED: szl-receipts retention is healthy again on $CLUSTER (verify-store chain_ok=true, no skipped buckets)."
+    log "EDGE ALERT->OK recovered, notified"
+  fi
+  echo OK >"$LAST_FILE" 2>/dev/null
+fi
+exit 0

@@ -163,6 +163,34 @@ the tarballs offsite is an operator/backup-job concern.
 4. **Verify after each archival**: `verify-store` over the remaining live store
    must still report `chain_ok: true`.
 
+### 4.1 The scheduled job (box systemd timer)
+
+On the `uds-szl-demo` box (`167.233.50.75`) this schedule is **already wired** as
+a systemd timer that follows the same pattern as the other szl guards
+(`receipt-chain-watch`, `szl-signing-health-check`):
+
+- **Source / install:** `box-scripts/sbin/szl-receipts-retention` +
+  `box-scripts/systemd/szl-receipts-retention.{service,timer}`, installed (and
+  re-installed after a box rebuild) by `sudo box-scripts/install.sh`. Full
+  details: [`box-scripts/szl-receipts-retention.README.md`](../../box-scripts/szl-receipts-retention.README.md).
+- **Cadence:** daily (`OnUnitActiveSec=1d`), first run 10 min after boot. It is a
+  no-op when the cluster is down or nothing is sealed to archive.
+- **What it runs each cycle:** `verify-store` (the bounded audit) then
+  `archive-shards --cold-dir /data/receipts/cold --delete`, both via
+  `kubectl exec` into the Ready `receipts-server` pod.
+- **Cold storage sized for full history:** freshly-archived tarballs are streamed
+  **off the live PVC** to the box host disk (`/var/lib/szl-receipts-cold`,
+  sha256-verified against each bucket manifest before the in-pod copy is pruned),
+  so the live PVC stays bounded while a full-history archive lives on the box.
+- **Alerting:** fires the shared `a11oy-uptime-notify` ntfy/Telegram/webhook
+  channel (edge-triggered, de-duped) if `verify-store` reports `chain_ok: false`,
+  `archive-shards` errors, or any bucket lands in `skipped_failed_verify`.
+
+> An in-cluster Kubernetes CronJob is the portable alternative for clusters
+> without a host-level systemd. It is not used on this box because the alert
+> channel (`a11oy-uptime-notify`) and the full-history cold volume both live on
+> the host, and exec-into-pod avoids ReadWriteOnce multi-attach on the store PVC.
+
 > **Do not** reset or bulk-delete the existing store as part of enabling
 > sharding — sealing/archival is the supported way to shrink the live store, and
 > a separate task owns any one-time history reset.
