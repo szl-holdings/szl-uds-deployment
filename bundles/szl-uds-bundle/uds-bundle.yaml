@@ -45,7 +45,11 @@ packages:
   # ── a11oy — policy + receipt substrate orchestrator ──────────────────────
   - name: szl-a11oy
     path: ../../packages/a11oy
-    ref: "0.2.0"
+    # a11oy's zarf metadata.version is hardcoded 0.3.0 (chart-based, canonical
+    # uds-v0.3.0), so its built tarball is zarf-package-szl-a11oy-amd64-0.3.0;
+    # the member ref must match that exact package version (the other 4 organs
+    # are templated to the 0.2.0 bundle version).
+    ref: "0.3.0"
 
   # ── sentra — cyber-resilience runtime (fail-closed Safety Gate) ──────────
   - name: szl-sentra
