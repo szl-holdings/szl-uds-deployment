@@ -5,7 +5,11 @@
 # bundle-build-guard.test.py — Self-test for scripts/bundle-build-guard.py.
 #
 # Feeds the guard synthetic PRISTINE fixtures (asserts it PASSES) and a battery
-# of deliberately BROKEN fixtures (asserts it FAILS, one per regression class).
+# of deliberately BROKEN fixtures (asserts it FAILS, one per regression class),
+# for BOTH supported build sources:
+#   • a tasks.yaml task (the receipts-only ROOT bundle); and
+#   • a `for organ in ...; do zarf package create` workflow loop (the FULL-ORGAN
+#     bundle, whose members live at ../../packages/<organ> relative to the bundle).
 # This is the safety net that catches a future edit which neuters a check —
 # making the guard pass vacuously (green while guarding nothing). Run by the
 # `self-test` job in .github/workflows/bundle-build-guard.yml.
@@ -31,17 +35,33 @@ def write(root, rel, text):
         fh.write(text)
 
 
-def run_guard(root):
+def run_guard(root, extra):
     proc = subprocess.run(
-        [sys.executable, GUARD, "--root", root],
+        [sys.executable, GUARD, "--root", root] + extra,
         capture_output=True,
         text=True,
     )
     return proc.returncode, proc.stdout + proc.stderr
 
 
-def make_fixture(root, bundle_members, creates, gated):
-    """Build a minimal fixture tree.
+def write_zarf(root, path, is_gated):
+    if is_gated:
+        comp = "  - name: server\n    required: true\n    only:\n      flavor: upstream\n"
+    else:
+        comp = "  - name: app\n    required: true\n"
+    write(
+        root,
+        os.path.join(path, "zarf.yaml"),
+        "kind: ZarfPackageConfig\nmetadata:\n  name: %s\ncomponents:\n%s"
+        % (os.path.basename(path), comp),
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Build source 1: a tasks.yaml task (the receipts-only ROOT bundle)
+# ════════════════════════════════════════════════════════════════════════════
+def make_task_fixture(root, bundle_members, creates, gated):
+    """tasks.yaml-task build fixture (root bundle).
 
     bundle_members: list of (name, path) for uds-bundle.yaml local members.
     creates:        list of (path, has_flavor) for the bundle task.
@@ -75,25 +95,83 @@ def make_fixture(root, bundle_members, creates, gated):
     )
 
     for path, is_gated in gated.items():
-        if is_gated:
-            comp = (
-                "  - name: server\n    required: true\n    only:\n      flavor: upstream\n"
-            )
-        else:
-            comp = "  - name: app\n    required: true\n"
-        write(
-            root,
-            os.path.join(path, "zarf.yaml"),
-            "kind: ZarfPackageConfig\nmetadata:\n  name: %s\ncomponents:\n%s"
-            % (os.path.basename(path), comp),
+        write_zarf(root, path, is_gated)
+
+
+def task_args():
+    return [
+        "--bundle", "uds-bundle.yaml",
+        "--build-kind", "task",
+        "--build-file", "tasks.yaml",
+        "--build-task", "bundle",
+    ]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Build source 2: a workflow `for organ in ...; do` loop (the FULL-ORGAN bundle)
+# ════════════════════════════════════════════════════════════════════════════
+BUNDLE_REL = "bundles/szl-uds-bundle/uds-bundle.yaml"
+WORKFLOW_REL = ".github/workflows/uds-bundle-publish.yml"
+
+
+def make_workflow_fixture(root, organs, loop_organs, loop_flavor, gated,
+                          extra_create=None):
+    """workflow-loop build fixture (full-organ bundle).
+
+    organs:      list of organ names → bundle members at ../../packages/<organ>.
+    loop_organs: list of organ names in the `for organ in ...; do` build loop.
+    loop_flavor: bool — whether the loop's `zarf package create` carries --flavor.
+    gated:       dict organ -> bool (whether packages/<organ>/zarf.yaml is gated).
+    extra_create: optional literal command line (e.g. an unresolvable ${ghost}).
+    """
+    pkgs = []
+    for organ in organs:
+        pkgs.append(
+            "  - name: szl-%s\n    path: ../../packages/%s\n    ref: \"0.2.0\"\n"
+            % (organ, organ)
         )
+    write(
+        root,
+        BUNDLE_REL,
+        "kind: UDSBundle\nmetadata:\n  name: szl-uds-bundle\n  version: \"0.2.0\"\n"
+        "packages:\n" + "".join(pkgs),
+    )
+
+    flavor = " --flavor upstream" if loop_flavor else ""
+    extra = ""
+    if extra_create:
+        extra = "          %s\n" % extra_create
+    write(
+        root,
+        WORKFLOW_REL,
+        "name: t\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: build organs\n        run: |\n"
+        "          for organ in %s; do\n"
+        "            zarf package create \"packages/${organ}\"%s \\\n"
+        "              --confirm \\\n"
+        "              --output-directory \"packages/${organ}\"\n"
+        "          done\n%s"
+        % (" ".join(loop_organs), flavor, extra),
+    )
+
+    for organ, is_gated in gated.items():
+        write_zarf(root, "packages/%s" % organ, is_gated)
 
 
-def case(label, expect_pass, build):
+def workflow_args():
+    return [
+        "--bundle", BUNDLE_REL,
+        "--build-kind", "workflow-loop",
+        "--build-file", WORKFLOW_REL,
+    ]
+
+
+# ════════════════════════════════════════════════════════════════════════════
+def case(label, expect_pass, build, args):
     global PASS, FAILED
     with tempfile.TemporaryDirectory() as root:
         build(root)
-        rc, out = run_guard(root)
+        rc, out = run_guard(root, args)
         ok = (rc == 0) if expect_pass else (rc != 0)
         if ok:
             PASS += 1
@@ -106,23 +184,23 @@ def case(label, expect_pass, build):
                 "         " + ln for ln in out.splitlines()))
 
 
-# ── PRISTINE: receipts (gated, with flavor) + a11oy (ungated, no flavor) ─────
+# ── tasks.yaml-task build source (receipts ROOT bundle) ──────────────────────
 case(
-    "pristine: gated member built with --flavor + ungated build without --flavor",
+    "task: gated member built with --flavor + ungated build without --flavor",
     True,
-    lambda root: make_fixture(
+    lambda root: make_task_fixture(
         root,
         bundle_members=[("szl-receipts", "packages/szl-receipts")],
         creates=[("packages/szl-receipts", True), ("packages/a11oy", False)],
         gated={"packages/szl-receipts": True, "packages/a11oy": False},
     ),
+    task_args(),
 )
 
-# ── BROKEN 1: member added to bundle but no pre-build step (break class 1) ────
 case(
-    "broken: bundle member with NO matching zarf package create step",
+    "task broken: bundle member with NO matching zarf package create step",
     False,
-    lambda root: make_fixture(
+    lambda root: make_task_fixture(
         root,
         bundle_members=[
             ("szl-receipts", "packages/szl-receipts"),
@@ -131,43 +209,124 @@ case(
         creates=[("packages/szl-receipts", True)],  # a11oy build step missing
         gated={"packages/szl-receipts": True, "packages/a11oy": False},
     ),
+    task_args(),
 )
 
-# ── BROKEN 2: ungated package built WITH --flavor (break class 2) ────────────
 case(
-    "broken: ungated package built WITH --flavor",
+    "task broken: ungated package built WITH --flavor",
     False,
-    lambda root: make_fixture(
+    lambda root: make_task_fixture(
         root,
         bundle_members=[("szl-receipts", "packages/szl-receipts")],
         creates=[("packages/szl-receipts", True), ("packages/a11oy", True)],
         gated={"packages/szl-receipts": True, "packages/a11oy": False},
     ),
+    task_args(),
 )
 
-# ── BROKEN 3: gated package built WITHOUT --flavor (symmetric break) ─────────
 case(
-    "broken: gated package built WITHOUT --flavor",
+    "task broken: gated package built WITHOUT --flavor",
     False,
-    lambda root: make_fixture(
+    lambda root: make_task_fixture(
         root,
         bundle_members=[("szl-receipts", "packages/szl-receipts")],
         creates=[("packages/szl-receipts", False)],
         gated={"packages/szl-receipts": True},
     ),
+    task_args(),
 )
 
-# ── BROKEN 4: build step references a package with no zarf.yaml ───────────────
-def _missing_zarf(root):
-    make_fixture(
+case(
+    "task broken: build step for a package with no zarf.yaml",
+    False,
+    lambda root: make_task_fixture(
         root,
         bundle_members=[("szl-receipts", "packages/szl-receipts")],
         creates=[("packages/szl-receipts", True), ("packages/ghost", False)],
         gated={"packages/szl-receipts": True},
-    )
+    ),
+    task_args(),
+)
 
+# ── workflow-loop build source (FULL-ORGAN bundle) ───────────────────────────
+case(
+    "workflow: ungated organs all built by the loop without --flavor",
+    True,
+    lambda root: make_workflow_fixture(
+        root,
+        organs=["a11oy", "sentra"],
+        loop_organs=["a11oy", "sentra"],
+        loop_flavor=False,
+        gated={"a11oy": False, "sentra": False},
+    ),
+    workflow_args(),
+)
 
-case("broken: build step for a package with no zarf.yaml", False, _missing_zarf)
+case(
+    "workflow broken: bundle member NOT in the build loop (no such file)",
+    False,
+    lambda root: make_workflow_fixture(
+        root,
+        organs=["a11oy", "sentra", "amaru"],  # amaru is a member
+        loop_organs=["a11oy", "sentra"],      # but not built by the loop
+        loop_flavor=False,
+        gated={"a11oy": False, "sentra": False, "amaru": False},
+    ),
+    workflow_args(),
+)
+
+case(
+    "workflow broken: ungated organs built WITH --flavor",
+    False,
+    lambda root: make_workflow_fixture(
+        root,
+        organs=["a11oy", "sentra"],
+        loop_organs=["a11oy", "sentra"],
+        loop_flavor=True,  # stray --flavor silently empties ungated packages
+        gated={"a11oy": False, "sentra": False},
+    ),
+    workflow_args(),
+)
+
+case(
+    "workflow broken: gated organ built WITHOUT --flavor",
+    False,
+    lambda root: make_workflow_fixture(
+        root,
+        organs=["a11oy", "sentra"],
+        loop_organs=["a11oy", "sentra"],
+        loop_flavor=False,
+        gated={"a11oy": False, "sentra": True},  # sentra gated, loop has no flavor
+    ),
+    workflow_args(),
+)
+
+case(
+    "workflow broken: loop builds an organ with no zarf.yaml",
+    False,
+    lambda root: make_workflow_fixture(
+        root,
+        organs=["a11oy"],
+        loop_organs=["a11oy", "ghost"],  # ghost has no packages/ghost/zarf.yaml
+        loop_flavor=False,
+        gated={"a11oy": False},
+    ),
+    workflow_args(),
+)
+
+case(
+    "workflow broken: build references an unresolvable loop variable",
+    False,
+    lambda root: make_workflow_fixture(
+        root,
+        organs=["a11oy"],
+        loop_organs=["a11oy"],
+        loop_flavor=False,
+        gated={"a11oy": False},
+        extra_create='zarf package create "packages/${ghostvar}" --confirm',
+    ),
+    workflow_args(),
+)
 
 print("\n%d passed, %d failed" % (PASS, FAILED))
 sys.exit(1 if FAILED else 0)

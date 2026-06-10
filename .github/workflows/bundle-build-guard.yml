@@ -15,11 +15,21 @@
 #      of scope for a text guard).
 #
 # This workflow guards regression classes (1) and (2) with a pure file scan on
-# every PR/push that touches the bundle definition or its packages — no cluster,
-# no zarf, no network. The check logic lives in scripts/bundle-build-guard.py so
-# it can be UNIT TESTED: scripts/bundle-build-guard.test.py feeds it deliberately
-# broken fixtures and asserts each one FAILS, so a future edit that neuters a
-# check (green while guarding nothing) is caught by the self-test job below.
+# every PR/push that touches a bundle definition or its packages — no cluster,
+# no zarf, no network. It validates BOTH shipped bundles against wherever each
+# one's member packages are actually built:
+#   • the receipts-only ROOT bundle (uds-bundle.yaml) — built by the `bundle`
+#     task in tasks.yaml; and
+#   • the FULL-ORGAN bundle (bundles/szl-uds-bundle/uds-bundle.yaml, which
+#     registers szl-a11oy + the other organs) — built by the `for organ in ...;
+#     do zarf package create "packages/$organ"` loop in uds-bundle-publish.yml.
+# A broken member/flavor in EITHER would otherwise still ship.
+#
+# The check logic lives in scripts/bundle-build-guard.py so it can be UNIT
+# TESTED: scripts/bundle-build-guard.test.py feeds it deliberately broken
+# fixtures (for both build sources) and asserts each one FAILS, so a future edit
+# that neuters a check (green while guarding nothing) is caught by the self-test
+# job below.
 #
 # A heavier, opt-in `workflow_dispatch` job runs `uds run bundle` end-to-end on a
 # runner with real disk and asserts the bundle tarball is produced — the only
@@ -36,6 +46,8 @@ on:
       - "uds-bundle.yaml"
       - "tasks.yaml"
       - "packages/**"
+      - "bundles/szl-uds-bundle/uds-bundle.yaml"
+      - ".github/workflows/uds-bundle-publish.yml"
       - "scripts/bundle-build-guard.py"
       - "scripts/bundle-build-guard.test.py"
       - ".github/workflows/bundle-build-guard.yml"
@@ -45,6 +57,8 @@ on:
       - "uds-bundle.yaml"
       - "tasks.yaml"
       - "packages/**"
+      - "bundles/szl-uds-bundle/uds-bundle.yaml"
+      - ".github/workflows/uds-bundle-publish.yml"
       - "scripts/bundle-build-guard.py"
       - "scripts/bundle-build-guard.test.py"
       - ".github/workflows/bundle-build-guard.yml"
