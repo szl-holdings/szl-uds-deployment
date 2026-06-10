@@ -221,12 +221,18 @@ jobs:
           done
 
       # ── Build the 5 member Zarf packages from the LIVE ghcr.io images ───────
-      # Each packages/<organ>/zarf.yaml references
-      # ghcr.io/szl-holdings/<organ>:###ZARF_PKG_TMPL_VERSION### which Zarf
-      # resolves to the live, cosign-signed tag passed via --set VERSION.
+      # Each packages/<organ>/zarf.yaml bakes its LIVE, cosign-signed image as a
+      # literal digest-pinned ref in the component images: list, so --set VERSION
+      # does NOT pick the image tag — it only fills metadata.version (and thus the
+      # built tarball name zarf-package-<name>-<arch>-<version>.tar.zst). uds
+      # create resolves each local-path member by the member `ref:` in
+      # bundles/szl-uds-bundle/uds-bundle.yaml (0.2.0 for the 4 templated organs;
+      # a11oy is hardcoded 0.3.0), so we MUST feed the STRIPPED bundle version
+      # (0.2.0), not the OCI tag (uds-v0.2.0) — otherwise the tarball is named
+      # ...-uds-v0.2.0.tar.zst and uds create fails "no such file".
       - name: Build member Zarf packages
         env:
-          PKG_VERSION: ${{ steps.version.outputs.tag }}
+          PKG_VERSION: ${{ steps.version.outputs.version }}
         shell: bash
         run: |
           # IMPORTANT: GitHub invokes run-steps as `bash -e`; that default -e was
@@ -235,8 +241,9 @@ jobs:
           # capture rc and surface the real per-organ error.
           set +e
           set -uo pipefail
-          # Member images are tagged uds-v0.2.0 on ghcr.io, so the image tag we
-          # feed Zarf is the full OCI tag (uds-v0.2.0), not the stripped version.
+          # Images are baked as literal digest-pinned refs in each package, so
+          # PKG_VERSION only names the built tarball — it must equal the member
+          # `ref:` in the bundle (stripped bundle version 0.2.0).
           mkdir -p dist
           # Build killinchu + rosie FIRST (the ones that failed last run) so their
           # error annotation lands inside GitHub's 10-annotation cap; only emit
