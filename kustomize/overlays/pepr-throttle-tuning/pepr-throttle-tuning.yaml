@@ -1,0 +1,44 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# Strategic merge patch: retune the receipt flood-guard throttle on the Pepr
+# ADMISSION controller (Deployment pepr-szl, container `server`) WITHOUT a code
+# change or a Pepr rebuild.
+#
+# The Mutate action that mints receipts runs in the ADMISSION controller
+# (pepr-szl), NOT the watcher — so this patch MUST target the pepr-szl
+# Deployment. The flood guard (pepr/policies/szl-receipt-on-deploy.ts) reads:
+#   SZL_MIN_RECEIPT_INTERVAL_MS  per-subject rate-limit window in ms (default 2000)
+#   SZL_DEDUP_MAX_ENTRIES        max tracked subjects before eviction (default 10000)
+#
+# EDIT the values below to the per-environment settings you want, then apply:
+#   kubectl -n pepr-system patch deployment pepr-szl \
+#     --type=strategic \
+#     --patch-file kustomize/overlays/pepr-throttle-tuning/pepr-throttle-tuning.yaml
+#
+# Verify the running controller picked up the change:
+#   kubectl -n pepr-system get deploy pepr-szl \
+#     -o jsonpath='{.spec.template.spec.containers[?(@.name=="server")].env}' ; echo
+#   # and watch the rate-limit decisions in the logs:
+#   kubectl -n pepr-system logs deploy/pepr-szl --tail=50 | grep -E 'Throttling|Skipping'
+#
+# strategy.type=Recreate avoids a rolling-update CPU deadlock on a single
+# 2-vCPU node (a surge pod cannot schedule and the rollout hangs), matching the
+# pepr-key-mount overlay.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pepr-szl
+  namespace: pepr-system
+spec:
+  strategy:
+    type: Recreate
+  template:
+    spec:
+      containers:
+        - name: server
+          env:
+            - name: SZL_MIN_RECEIPT_INTERVAL_MS
+              value: "2000"
+            - name: SZL_DEDUP_MAX_ENTRIES
+              value: "10000"

@@ -20,6 +20,10 @@
     "uuid": "szl",
     "onError": "ignore",
     "logLevel": "info",
+    "env": {
+      "SZL_MIN_RECEIPT_INTERVAL_MS": "2000",
+      "SZL_DEDUP_MAX_ENTRIES": "10000"
+    },
     "alwaysIgnore": {
       "namespaces": [
         "zarf",

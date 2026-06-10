@@ -201,6 +201,59 @@ The default deploy (all `required: true` components only) installs namespace + s
 ---
 
 
+## Tuning the receipt flood guard (no rebuild)
+
+The `pepr-szl` admission controller mints a receipt on every Deployment/Job
+apply. To stop status churn and reconcile hot-loops from flooding the signer, the
+policy (`pepr/policies/szl-receipt-on-deploy.ts`) throttles per subject. Two knobs
+control it:
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `SZL_MIN_RECEIPT_INTERVAL_MS` | `2000` | Per-subject rate-limit window (ms). At most one receipt per subject per window. Set `0` to disable the rate limit. |
+| `SZL_DEDUP_MAX_ENTRIES` | `10000` | Max subjects tracked before the oldest is evicted (bounds controller memory). |
+
+These defaults are baked into the deployed controller via the `pepr.env` block in
+[`pepr/package.json`](pepr/package.json), so they are emitted onto the generated
+`pepr-szl` Deployment and **survive a full `pepr deploy` / `uds deploy`
+regeneration**. To change the baseline permanently for every environment, edit
+those values and redeploy the module.
+
+### Retune a live cluster without a code change
+
+When one environment is noisier than the baseline, patch the running controller
+directly — no source edit, no Pepr rebuild:
+
+```bash
+# Quick runtime override (takes effect after the rollout):
+kubectl -n pepr-system set env deployment/pepr-szl \
+  SZL_MIN_RECEIPT_INTERVAL_MS=5000 SZL_DEDUP_MAX_ENTRIES=20000
+
+# Or apply the documented overlay (edit the values in it first):
+kubectl -n pepr-system patch deployment pepr-szl \
+  --type=strategic \
+  --patch-file kustomize/overlays/pepr-throttle-tuning/pepr-throttle-tuning.yaml
+```
+
+Confirm the running controller picked up the change:
+
+```bash
+# 1) the env is on the pod spec:
+kubectl -n pepr-system get deploy pepr-szl \
+  -o jsonpath='{.spec.template.spec.containers[?(@.name=="server")].env}'; echo
+
+# 2) the throttle decisions appear in the logs:
+kubectl -n pepr-system logs deploy/pepr-szl --tail=50 | grep -E 'Throttling|Skipping'
+```
+
+A runtime override is reset to the baked `pepr.env` defaults on the next full
+`pepr deploy` / `uds deploy`. To keep a non-default value durable across
+regenerations, re-apply the overlay after redeploy (same pattern as the
+`pepr-key-mount` self-heal) or promote the value to the `pepr.env` default.
+
+---
+
+
 ## Receipt Key
 
 On first `uds deploy`, a Helm pre-install hook (Job `szl-key-init`) auto-generates

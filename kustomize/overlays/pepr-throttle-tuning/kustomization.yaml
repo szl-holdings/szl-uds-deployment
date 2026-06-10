@@ -1,0 +1,55 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# Kustomize overlay to RETUNE the receipt flood-guard throttle on the live Pepr
+# ADMISSION controller (Deployment pepr-szl) WITHOUT editing source or rebuilding
+# the Pepr module.
+#
+# The flood guard in pepr/policies/szl-receipt-on-deploy.ts reads two knobs from
+# the environment, both with sane defaults baked into the deployed controller via
+# the `pepr.env` block in pepr/package.json (so they survive `pepr deploy` /
+# `uds deploy` regeneration):
+#   SZL_MIN_RECEIPT_INTERVAL_MS  (default 2000) — per-subject rate limit window.
+#   SZL_DEDUP_MAX_ENTRIES        (default 10000) — max tracked subjects (memory).
+#
+# Use this overlay when an environment needs DIFFERENT values than the baked
+# defaults — e.g. a noisier cluster that wants a longer throttle window. Edit the
+# values in pepr-throttle-tuning.yaml below, then apply to the live Deployment.
+#
+# Pepr generates the pepr-szl Deployment at runtime, so it is NOT a static base
+# resource here. The reliable way to apply the patch to the live Deployment is a
+# direct strategic-merge patch:
+#   kubectl -n pepr-system patch deployment pepr-szl \
+#     --type=strategic \
+#     --patch-file kustomize/overlays/pepr-throttle-tuning/pepr-throttle-tuning.yaml
+#
+# This kustomization records the correct patch + target selector for tooling that
+# renders the live Deployment into the overlay (e.g. `kubectl get deploy pepr-szl
+# -o yaml` piped through `kustomize build`). The live pepr-szl pod is labelled
+# app=pepr-szl, pepr.dev/uuid=szl, pepr.dev/controller=admission.
+#
+# NOTE: the per-environment override is a runtime patch. A subsequent full
+# `pepr deploy` / `uds deploy` regenerates the Deployment back to the baked
+# `pepr.env` defaults. To make a non-default value durable across regenerations
+# either (a) re-apply this overlay after each redeploy (see README — pairs with
+# the pepr-key-mount self-heal pattern) or (b) change the default in
+# pepr/package.json `pepr.env` if it should become the permanent baseline.
+#
+# Refs:
+#   Flood guard: pepr/policies/szl-receipt-on-deploy.ts
+#   Baked defaults: pepr/package.json (pepr.env)
+#   Companion overlay: kustomize/overlays/pepr-key-mount/
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: pepr-system
+
+resources: []
+
+patches:
+  - path: pepr-throttle-tuning.yaml
+    target:
+      kind: Deployment
+      namespace: pepr-system
+      name: pepr-szl
+      labelSelector: "pepr.dev/uuid=szl,pepr.dev/controller=admission"
