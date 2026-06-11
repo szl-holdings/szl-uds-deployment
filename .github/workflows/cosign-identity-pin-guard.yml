@@ -62,7 +62,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       # Lock in the linter's own behavior FIRST: if the guard has been refactored
       # into a false-negative/false-positive, fail fast before trusting it below.

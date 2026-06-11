@@ -57,7 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - name: Run negative-fixture self-test
         run: bash scripts/box-scripts-drift-check-guard.test.sh
 
@@ -67,7 +67,7 @@ jobs:
     needs: self-test
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Watcher parses clean (bash -n)
         run: bash -n box-scripts/sbin/box-scripts-drift-check

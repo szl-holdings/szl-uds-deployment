@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - name: Run negative-fixture self-test
         run: bash scripts/szl-alert-relay-watch-guard-checks.test.sh
 
@@ -62,7 +62,7 @@ jobs:
     needs: self-test
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Check 1 — szl-alert-relay-watch exists and parses clean
         run: bash scripts/szl-alert-relay-watch-guard-checks.sh chk1 .

@@ -68,10 +68,10 @@ jobs:
       BUNDLE: bundles/szl-uds-bundle/uds-bundle.yaml
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Install Helm
-        uses: azure/setup-helm@v5
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5
         with:
           version: v3.14.0
 

@@ -98,8 +98,8 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.x"
       - name: Install PyYAML
@@ -113,8 +113,8 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.x"
       - name: Install PyYAML
@@ -136,7 +136,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Free up disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android || true
@@ -202,7 +202,7 @@ jobs:
       # even before the ntfy relay secret is provisioned.
       - name: Open / refresh rolling incident issue on failure
         if: ${{ failure() && github.event_name == 'schedule' }}
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const marker = '<!-- e2e-bundle-incident -->';
@@ -232,7 +232,7 @@ jobs:
       # Close the rolling incident on the next green nightly run.
       - name: Close rolling incident issue on recovery
         if: ${{ success() && github.event_name == 'schedule' }}
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const marker = '<!-- e2e-bundle-incident -->';
