@@ -22,11 +22,18 @@
 #   4. The uds.dev/v1alpha1 Package must render only when udsPackage.enabled — it
 #      was rendered unconditionally.
 #
-# All of this is checked with `helm template` only (no cluster). The bespoke
-# assertion logic lives in scripts/a11oy-signing-key-checks.py so the self-test
-# job can feed it deliberately-broken fixtures and prove each check still FAILS
-# on a regression (green-while-guarding-nothing protection). Mirrors the
-# chart-guard.yml / package-build-guard.yml pattern.
+# a11oy ships through TWO deploy paths, each with its OWN key provisioner, so a
+# fix on one does not cover the other — BOTH are guarded here:
+#   * chart-based  : charts/a11oy (Helm), rendered with `helm template` defaults.
+#   * raw-manifest : packages/a11oy/manifests/{receipt-key-init,deployment}.yaml
+#                    (the bundle deploy path), which is plain YAML — no render.
+#
+# All of this is checked with `helm template` (chart) or plain YAML reads
+# (raw-manifest) only — no cluster. The bespoke assertion logic lives in
+# scripts/a11oy-signing-key-checks.py so the self-test job can feed it
+# deliberately-broken fixtures and prove each check still FAILS on a regression
+# (green-while-guarding-nothing protection). Mirrors the chart-guard.yml /
+# package-build-guard.yml pattern.
 
 name: a11oy Signing Key Guard
 
@@ -34,6 +41,7 @@ on:
   pull_request:
     paths:
       - "charts/a11oy/**"
+      - "packages/a11oy/manifests/**"
       - "scripts/a11oy-signing-key-checks.py"
       - "scripts/a11oy-signing-key-checks.test.py"
       - ".github/workflows/a11oy-signing-key-guard.yml"
@@ -41,6 +49,7 @@ on:
     branches: [main]
     paths:
       - "charts/a11oy/**"
+      - "packages/a11oy/manifests/**"
       - "scripts/a11oy-signing-key-checks.py"
       - "scripts/a11oy-signing-key-checks.test.py"
       - ".github/workflows/a11oy-signing-key-guard.yml"
@@ -108,6 +117,26 @@ jobs:
 
       - name: 4. uds.dev Package renders only when udsPackage.enabled
         run: python3 scripts/a11oy-signing-key-checks.py udspackage-gated /tmp/render-default.yaml /tmp/render-uds-off.yaml
+
+      # ── raw-manifest (bundle) deploy path ──────────────────────────────────
+      # The bundle path has no Helm hook; its key provisioner + workload are
+      # plain YAML (packages/a11oy/manifests/). The key-init Job is always
+      # present (no toggle), so it is enabled by default — the keyinit-ecdsa
+      # check below fails if the Job is removed or its curve/filenames regress.
+      # The same assertion logic as the chart path runs against the concatenated
+      # manifests (no helm render needed).
+      - name: Assemble raw-manifest deploy path (key-init + deployment)
+        run: |
+          set -euo pipefail
+          cat packages/a11oy/manifests/receipt-key-init.yaml \
+              packages/a11oy/manifests/deployment.yaml > /tmp/raw-manifest.yaml
+          echo "OK: assembled raw-manifest receipt-key-init + deployment"
+
+      - name: 5. raw-manifest key-init provisions an ECDSA P-256 Secret (not Ed25519/RSA)
+        run: python3 scripts/a11oy-signing-key-checks.py keyinit-ecdsa /tmp/raw-manifest.yaml
+
+      - name: 6. raw-manifest mounted Secret name matches the provisioned Secret name
+        run: python3 scripts/a11oy-signing-key-checks.py secret-name-match /tmp/raw-manifest.yaml
 
       - name: All signing-key chart guards passed
         run: echo "charts/a11oy provisions a persistent ECDSA P-256 signing key and mounts it."

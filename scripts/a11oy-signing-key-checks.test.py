@@ -117,6 +117,18 @@ def main():
         rc, out = run("keyinit-ecdsa", bad)
         case("keyinit-ecdsa FAILS when keygen reverts to Ed25519", False, rc, out)
 
+        # Drift to RSA (also a key the P-256-only loader cannot use).
+        rsa = GOOD_KEYGEN_SCRIPT.replace(
+            "from cryptography.hazmat.primitives.asymmetric import ec",
+            "from cryptography.hazmat.primitives.asymmetric import rsa",
+        ).replace(
+            "ec.generate_private_key(ec.SECP256R1())",
+            "rsa.generate_private_key(public_exponent=65537, key_size=2048)",
+        )
+        bad = write(d, "ki-rsa.yaml", keyinit_doc(rsa))
+        rc, out = run("keyinit-ecdsa", bad)
+        case("keyinit-ecdsa FAILS when keygen uses RSA", False, rc, out)
+
         # Wrong Secret data filenames (loader can't find the key).
         wrongfn = GOOD_KEYGEN_SCRIPT.replace("ecdsa-p256.key", "tls.key")
         bad = write(d, "ki-fn.yaml", keyinit_doc(wrongfn))

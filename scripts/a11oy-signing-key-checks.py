@@ -99,6 +99,29 @@ def keyinit_ecdsa(rendered):
     if not args or not isinstance(args[0], str) or not args[0].strip():
         return err("keygen container has no inline provisioner script in args[0]")
     script = args[0]
+    low = script.lower()
+
+    # ECDSA P-256 (secp256r1) is the ONLY curve a11oy's loader accepts. RSA,
+    # Ed25519 and Ed448 each produce a key the app cannot load -> it silently
+    # falls back to a throwaway in-process key that changes on every restart. The
+    # chart's previous Ed25519 hook did exactly this. Hard-fail if any non-P-256
+    # algorithm creeps back into the keygen (checked first so the error names the
+    # offending algorithm rather than just "not secp256r1").
+    forbidden = {
+        "Ed25519": ("ed25519",),
+        "Ed448": ("ed448",),
+        "RSA": ("rsa.generate_private_key", "generate_rsa",
+                "rsaprivatekey", "import rsa"),
+    }
+    for algo, tokens in forbidden.items():
+        for tok in tokens:
+            if tok in low:
+                return err(
+                    "keygen script references %s (token %r) — the receipt key "
+                    "MUST be ECDSA P-256 (secp256r1), not %s; a11oy fell back to "
+                    "an ephemeral key the last time the curve regressed"
+                    % (algo, tok, algo)
+                )
 
     # Must generate an ECDSA P-256 (secp256r1) keypair.
     if "SECP256R1" not in script:
@@ -118,19 +141,8 @@ def keyinit_ecdsa(rendered):
                 "(a11oy_signing_key.py loads this filename)" % fname
             )
 
-    # The old Ed25519 scheme produced a key a11oy could not load — hard-fail if it
-    # creeps back into the keygen.
-    low = script.lower()
-    for forbidden in ("ed25519", "ed448"):
-        if forbidden in low:
-            return err(
-                "keygen script references '%s' — the receipt key MUST be ECDSA "
-                "P-256, not %s (a11oy fell back to an ephemeral key the last time "
-                "this regressed)" % (forbidden, forbidden)
-            )
-
     print("OK: keyinit-ecdsa — keygen provisions ECDSA P-256 Secret "
-          "(ecdsa-p256.key + ecdsa-p256.pem, no Ed25519)")
+          "(ecdsa-p256.key + ecdsa-p256.pem; no RSA/Ed25519/Ed448)")
     return 0
 
 
