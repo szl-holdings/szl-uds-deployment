@@ -208,43 +208,26 @@ jobs:
               | grep -iE "szl-a11oy|waypoint" | tail -50 || true
           }
 
+          # ROOT CAUSE & FIX (Task 417): enabling authservice SSO makes uds-core
+          # create a per-namespace ambient waypoint (szl-a11oy-waypoint). Its
+          # istiod-generated pod is mesh infrastructure (istio-proxy) that does NOT
+          # set securityContext.seccompProfile=RuntimeDefault, so a `restricted`
+          # PodSecurity namespace rejects it at the ReplicaSet — the Gateway never
+          # programs, the operator times out on the waypoint, the Package goes
+          # Failed and unauth traffic 404s instead of redirecting to Keycloak.
+          # The chart now enforces `baseline` PodSecurity on szl-a11oy whenever SSO
+          # is enabled (charts/a11oy/templates/namespace.yaml), so the waypoint pod
+          # schedules on the first reconcile and the app pod stays restricted-
+          # compliant. (szl-receipts never hits this: machine-to-machine, never
+          # authservice-selected, so it never needs a waypoint.)
           echo "── Waiting for the UDS Package to reconcile (authservice + Keycloak client) ──"
-          if wait_ready 48; then
-            echo "UDS Package is Ready."
-          else
-            # ROOT CAUSE (see https://github.com/szl-holdings/szl-uds-deployment Task 417):
-            # enabling authservice SSO makes uds-core create a per-namespace ambient
-            # waypoint (szl-a11oy-waypoint). The istiod-generated waypoint pod is mesh
-            # infrastructure (istio-proxy) — under this namespace's `restricted`
-            # PodSecurity the ReplicaSet cannot create that pod at all, so the Gateway
-            # never programs, the operator times out waiting for the waypoint, the
-            # Package goes phase=Failed, the admin-gateway expose VirtualService is
-            # never created, and unauth traffic 404s instead of redirecting to Keycloak.
-            # (szl-receipts never hit this: it is machine-to-machine and is never
-            # authservice-selected, so it never needs a waypoint.)
-            echo "::warning::UDS Package not Ready — diagnosing the ambient SSO waypoint"
+          if ! wait_ready 96; then
+            echo "::error::a11oy UDS Package not Ready — the ambient SSO waypoint never programmed"
             dump_waypoint
-            echo "── Relaxing PodSecurity on szl-a11oy to baseline so the istiod waypoint"
-            echo "   pod can schedule (the a11oy app pod is unaffected), then forcing a"
-            echo "   fresh operator reconcile by recreating the Package. ─────────────────"
-            kubectl label ns szl-a11oy \
-              pod-security.kubernetes.io/enforce=baseline \
-              pod-security.kubernetes.io/enforce-version=latest \
-              pod-security.kubernetes.io/warn=baseline \
-              pod-security.kubernetes.io/audit=baseline --overwrite
-            # Recreating the Package resets generation so the operator re-runs the full
-            # reconcile from scratch; the waypoint pod now schedules under baseline PSA.
-            kubectl -n szl-a11oy delete package a11oy --ignore-not-found --wait=true || true
-            sleep 3
-            kubectl apply -f /tmp/a11oy-sso.yaml
-            if ! wait_ready 72; then
-              echo "::error::a11oy UDS Package still not Ready after relaxing PSA + re-reconcile"
-              dump_waypoint
-              kubectl -n szl-a11oy get package a11oy -o yaml || true
-              exit 1
-            fi
-            echo "UDS Package is Ready after waypoint self-heal."
+            kubectl -n szl-a11oy get package a11oy -o yaml || true
+            exit 1
           fi
+          echo "UDS Package is Ready."
           kubectl -n szl-a11oy get package a11oy -o yaml | grep -E "phase:|ssoClients|authservice" || true
 
       # ── Map the gateway hostnames to the live Istio gateway IPs ──────────────────

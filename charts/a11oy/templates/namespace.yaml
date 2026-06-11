@@ -11,7 +11,20 @@ metadata:
     # would add an istio-init container that violates restricted PodSecurity.
     istio.io/dataplane-mode: ambient
     szl.ai/doctrine-version: "v11"
+  {{- if .Values.udsPackage.sso.enabled }}
+    # SSO ON: enabling authservice makes UDS Core create a per-namespace ambient
+    # waypoint (istio-proxy). The istiod-generated waypoint pod does NOT set
+    # securityContext.seccompProfile=RuntimeDefault, so `restricted` PodSecurity
+    # rejects it at the ReplicaSet — the Gateway never programs, the operator
+    # times out on the waypoint, the Package goes Failed and no SSO redirect is
+    # ever wired. Enforce `baseline` (which does not require seccompProfile) so
+    # the waypoint schedules; keep audit/warn at `restricted` so the a11oy app
+    # pod's own compliance is still surfaced. The app pod remains restricted-
+    # compliant — only the mesh-infra waypoint needs the relaxation.
+    pod-security.kubernetes.io/enforce: baseline
+  {{- else }}
     pod-security.kubernetes.io/enforce: restricted
+  {{- end }}
     pod-security.kubernetes.io/enforce-version: latest
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/audit-version: latest
