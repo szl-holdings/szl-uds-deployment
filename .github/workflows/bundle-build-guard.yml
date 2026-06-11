@@ -142,10 +142,20 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android || true
           df -h /
       - name: Install uds + zarf CLIs
+        env:
+          ZARF_VERSION: v0.77.0
+          UDS_VERSION: v0.32.0
         run: |
-          curl -sL https://github.com/zarf-dev/zarf/releases/latest/download/zarf_linux_amd64 \
+          set -euo pipefail
+          # Release assets embed the version and use a capital "Linux"
+          # (zarf_<ver>_Linux_amd64). The old unversioned lowercase name
+          # (zarf_linux_amd64) 404s at releases/latest/download; `-f` makes curl
+          # fail loudly on that 404 instead of writing GitHub's HTML error page
+          # into the binary path (which later runs as `Not: command not found`,
+          # exit 127).
+          curl -fsSL "https://github.com/zarf-dev/zarf/releases/download/${ZARF_VERSION}/zarf_${ZARF_VERSION}_Linux_amd64" \
             -o /usr/local/bin/zarf && sudo chmod +x /usr/local/bin/zarf
-          curl -sL https://github.com/defenseunicorns/uds-cli/releases/latest/download/uds-cli_linux_amd64 \
+          curl -fsSL "https://github.com/defenseunicorns/uds-cli/releases/download/${UDS_VERSION}/uds-cli_${UDS_VERSION}_Linux_amd64" \
             -o /usr/local/bin/uds && sudo chmod +x /usr/local/bin/uds
           zarf version
           uds version

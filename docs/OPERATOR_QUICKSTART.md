@@ -40,13 +40,13 @@ curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
 # uds-cli (Defense Unicorns)
 brew install defenseunicorns/tap/uds
 # OR
-curl -Lo uds https://github.com/defenseunicorns/uds-cli/releases/latest/download/uds-linux-amd64
+curl -fLo uds https://github.com/defenseunicorns/uds-cli/releases/download/v0.32.0/uds-cli_v0.32.0_Linux_amd64
 chmod +x uds && sudo mv uds /usr/local/bin/
 
 # zarf
 brew install defenseunicorns/tap/zarf
 # OR
-curl -Lo zarf https://github.com/defenseunicorns/zarf/releases/latest/download/zarf-linux-amd64
+curl -fLo zarf https://github.com/zarf-dev/zarf/releases/download/v0.77.0/zarf_v0.77.0_Linux_amd64
 chmod +x zarf && sudo mv zarf /usr/local/bin/
 ```
 

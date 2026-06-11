@@ -29,11 +29,11 @@
 curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
 
 # uds CLI
-curl -sL https://github.com/defenseunicorns/uds-cli/releases/latest/download/uds-cli_linux_amd64 \
+curl -fsSL https://github.com/defenseunicorns/uds-cli/releases/download/v0.32.0/uds-cli_v0.32.0_Linux_amd64 \
   -o /usr/local/bin/uds && chmod +x /usr/local/bin/uds
 
 # zarf CLI
-curl -sL https://github.com/zarf-dev/zarf/releases/latest/download/zarf_linux_amd64 \
+curl -fsSL https://github.com/zarf-dev/zarf/releases/download/v0.77.0/zarf_v0.77.0_Linux_amd64 \
   -o /usr/local/bin/zarf && chmod +x /usr/local/bin/zarf
 ```
 

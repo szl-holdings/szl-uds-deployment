@@ -21,7 +21,7 @@ Single-repo **SZL Governance Receipts** UDS add-on: Pepr admission policy emits 
 - **Docker daemon**: If `docker info` fails, start dockerd manually (this environment uses `fuse-overlayfs` + `iptables-legacy`). Ensure `/var/run/docker.sock` is usable (`sudo chmod 666 /var/run/docker.sock` if not in the `docker` group).
 - **k3d / k3s**: Nested VMs often hit `failed to find memory cgroup (v2)` and k3s never becomes ready. Full `uds run start` may not complete here even when Docker runs. Validate Pepr/Helm/receipts server locally instead (below).
 - **CLI install URLs**: `uds run install-deps` and `docs/INSTALL.md` use legacy asset names. Current releases use:
-  - `uds-cli_v0.31.0_Linux_amd64` (not `uds-cli_linux_amd64`)
+  - `uds-cli_v0.32.0_Linux_amd64` (not `uds-cli_linux_amd64`)
   - `zarf_v0.77.0_Linux_amd64` (not `zarf_linux_amd64`)
 - **kubectl**: Not bundled with the repo; install from https://dl.k8s.io/ or use `k3d kubeconfig merge`.
 
