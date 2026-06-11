@@ -33,7 +33,7 @@ spec:
         - name: killinchu
           # Live, cosign-signed image. Zarf rewrites this to the in-cluster
           # registry reference at deploy time.
-          image: ghcr.io/szl-holdings/killinchu:uds-v0.2.0@sha256:12563c1a3c29bc894e23bc67676b1b8b6243ef459574884a65b442845023fbfc
+          image: ghcr.io/szl-holdings/killinchu:uds-v0.2.0@sha256:f6fd13ed28c65a195fd96369861adb2bba9ec2d1717ea494442fc0a79e5d6f85
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

@@ -8,7 +8,7 @@
 # DIGEST HONESTY (re-probed against GHCR 2026-06; anonymous token + manifest HEAD):
 #   VERIFIED-LIVE (HTTP 200):
 #     ghcr.io/szl-holdings/a11oy:uds-v0.3.0
-#       @sha256:0b03632f416fd6539766a5e73a12a18639ade75e66a06a11660a57c73457e170
+#       @sha256:7c572dd0c58d67711147815fd4b8ed11932a67c6d3227f3aa7175d55a001947e
 #       NOTE: this digest DIFFERS from the value recorded in HETZNER roadmap
 #       (e2ef6184...). The a11oy organ image was rebuilt again -> a11oy-bundle:0.5.0
 #       (d801f8e4...) remains STALE. Prefer szl-mesh:0.4.0 or a re-pinned bundle.
@@ -63,7 +63,7 @@ components:
         files:
           - manifests/receipt-key-init.yaml
     images:
-      - ghcr.io/szl-holdings/a11oy:uds-v0.3.0@sha256:0b03632f416fd6539766a5e73a12a18639ade75e66a06a11660a57c73457e170
+      - ghcr.io/szl-holdings/a11oy:uds-v0.3.0@sha256:7c572dd0c58d67711147815fd4b8ed11932a67c6d3227f3aa7175d55a001947e
     actions:
       onDeploy:
         after:
@@ -94,7 +94,7 @@ components:
           - manifests/deployment.yaml
     images:
       # VERIFIED-LIVE on GHCR (HTTP 200). Digest pinned for supply-chain integrity.
-      - ghcr.io/szl-holdings/a11oy:uds-v0.3.0@sha256:0b03632f416fd6539766a5e73a12a18639ade75e66a06a11660a57c73457e170
+      - ghcr.io/szl-holdings/a11oy:uds-v0.3.0@sha256:7c572dd0c58d67711147815fd4b8ed11932a67c6d3227f3aa7175d55a001947e
     actions:
       onDeploy:
         after:
