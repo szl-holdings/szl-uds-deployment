@@ -52,15 +52,19 @@ jobs:
 
       - name: Install Zarf
         run: |
-          curl -sL "https://github.com/zarf-dev/zarf/releases/download/v0.77.0/zarf_v0.77.0_Linux_amd64" \
+          # -f so a bad/renamed asset URL fails LOUDLY at download instead of
+          # writing GitHub's 404 HTML into the binary (the silent-404 that took
+          # the nightly Bundle Build Guard red — see issue #76).
+          curl -fsSL "https://github.com/zarf-dev/zarf/releases/download/v0.77.0/zarf_v0.77.0_Linux_amd64" \
             -o /usr/local/bin/zarf && chmod +x /usr/local/bin/zarf
+          zarf version
 
       - name: Install k3d
-        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+        run: curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
 
       - name: Install kubectl
         run: |
-          curl -sLO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          curl -fsSLO "https://dl.k8s.io/release/$(curl -fL -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           chmod +x kubectl && sudo mv kubectl /usr/local/bin/
           kubectl version --client
 
