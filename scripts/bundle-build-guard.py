@@ -64,6 +64,7 @@
 # that neuters a check (green while guarding nothing) is caught in CI.
 
 import argparse
+import glob
 import itertools
 import os
 import re
@@ -79,6 +80,23 @@ except ImportError:
 
 CREATE_RE = re.compile(r"zarf\s+package\s+create\s+(\S+)")
 VAR_RE = re.compile(r"\$\{(\w+)\}|\$(\w+)")
+
+# ── Invariant C: organ-coordinate file scan ─────────────────────────────────
+# An SZL organ member of a UDS bundle must be composed from a LOCAL Zarf package
+# (path: ../../packages/<organ>) that wraps the published, cosign-signed image —
+# NOT referenced as a raw `repository: ghcr.io/szl-holdings/<organ>` + `ref:
+# uds-vX.Y.Z` image coordinate. A UDS bundle composes Zarf PACKAGES, not raw
+# container images; no Zarf package was ever published at those image
+# coordinates, so a raw `repository:` organ member fails the build (this is
+# exactly the szl-full-stack regression fixed in Task #595). External upstream
+# members (zarf-dev init, Defense Unicorns core) legitimately use `repository:`
+# and are NOT flagged — only the ghcr.io/szl-holdings/<organ> prefix is.
+SZL_IMAGE_REPO_PREFIX = "ghcr.io/szl-holdings/"
+# A well-formed OCI digest pin: `sha256:` + exactly 64 lowercase hex chars.
+VALID_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+# Any `@sha256:...` pin embedded in a coordinate string (grabbed liberally so a
+# truncated / upper-case / non-hex pin is caught and reported, not skipped).
+DIGEST_PIN_RE = re.compile(r"@(sha256:[A-Za-z0-9]*)")
 
 # Authoritative list of every shipped bundle and where its member packages are
 # actually built. Adding a new bundle? Add it here so it is guarded too.
@@ -228,6 +246,107 @@ def has_flavor_gated_component(zarf_path):
     return False
 
 
+def discover_bundles(root):
+    """Return every bundles/**/uds-bundle.yaml under root, repo-root-relative."""
+    pattern = os.path.join(root, "bundles", "**", "uds-bundle.yaml")
+    found = glob.glob(pattern, recursive=True)
+    return sorted(
+        os.path.relpath(p, root).replace(os.sep, "/") for p in found
+    )
+
+
+def walk_strings(value):
+    """Yield every string scalar nested anywhere inside a parsed-YAML value."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for v in value.values():
+            yield from walk_strings(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from walk_strings(v)
+
+
+def check_digest_pins(label, strings):
+    """Return errors for any @sha256 pin (in the given strings) that is not a
+    valid 64-lowercase-hex digest."""
+    errors = []
+    for s in strings:
+        for m in DIGEST_PIN_RE.finditer(s):
+            pin = m.group(1)
+            if not VALID_DIGEST_RE.match(pin):
+                errors.append(
+                    "%s: invalid @sha256 digest pin %r — a digest pin must be "
+                    "`sha256:` followed by exactly 64 lowercase hex characters."
+                    % (label, pin)
+                )
+    return errors
+
+
+def check_bundle_organ_coordinates(root, bundle_rel):
+    """Invariant C for ONE bundles/**/uds-bundle.yaml (pure file scan).
+
+    C1: an SZL organ member must NOT be a raw image coordinate
+        (`repository: ghcr.io/szl-holdings/<organ>` + `ref: uds-vX.Y.Z`); it
+        MUST be a local `path:` to that organ's packages/<organ>/zarf.yaml.
+    C2: every local-path member must resolve to an existing
+        packages/<organ>/zarf.yaml.
+    C3: every @sha256 pin on a member coordinate must be a valid 64-hex digest.
+
+    Returns (errors, member_count). Only PARSED member values are scanned, so a
+    @sha256 example or a STAGED block inside a YAML comment is never flagged."""
+    errors = []
+    bundle_path = os.path.join(root, bundle_rel)
+    try:
+        bundle = load_yaml(bundle_path)
+    except FileNotFoundError:
+        return ["%s: missing bundle file" % bundle_rel], 0
+    except yaml.YAMLError as exc:
+        return ["%s: could not parse YAML: %s" % (bundle_rel, exc)], 0
+
+    count = 0
+    for pkg in (bundle or {}).get("packages", []) or []:
+        if not isinstance(pkg, dict):
+            continue
+        count += 1
+        name = pkg.get("name", "<unnamed>")
+        repo = pkg.get("repository")
+        path = pkg.get("path")
+        ref = pkg.get("ref")
+
+        # ── C1: raw szl-holdings image coordinate instead of a local package ──
+        if isinstance(repo, str) and repo.startswith(SZL_IMAGE_REPO_PREFIX):
+            errors.append(
+                "%s: organ member '%s' uses a raw image coordinate "
+                "`repository: %s`%s. SZL organ members MUST be composed from a "
+                "local Zarf package — use `path: <relative path to "
+                "packages/%s>` (which wraps the published, cosign-signed image), "
+                "NOT a raw ghcr.io/szl-holdings/<organ> repository/ref. A UDS "
+                "bundle composes Zarf PACKAGES, not raw container images, and no "
+                "Zarf package is published at that coordinate, so the build fails."
+                % (bundle_rel, name, repo,
+                   (" `ref: %s`" % ref) if isinstance(ref, str) else "", name)
+            )
+
+        # ── C2: local-path member must resolve to an existing package ─────────
+        if isinstance(path, str) and path.strip():
+            resolved = resolve_member_path(bundle_rel, path)
+            zarf_path = os.path.join(root, resolved, "zarf.yaml")
+            if not os.path.isfile(zarf_path):
+                errors.append(
+                    "%s: local-path member '%s' (path: %s) does not resolve to "
+                    "an existing package — %s/zarf.yaml not found."
+                    % (bundle_rel, name, path, resolved)
+                )
+
+        # ── C3: any @sha256 pin on this member's coordinate must be 64-hex ────
+        errors.extend(check_digest_pins(
+            "%s member '%s'" % (bundle_rel, name), walk_strings(pkg)
+        ))
+
+    return errors, count
+
+
 def check_target(root, target):
     """Validate invariants A and B for one bundle target.
 
@@ -320,36 +439,8 @@ def check_target(root, target):
     return errors, (members, creates)
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--root", default=".", help="repo root (default: .)")
-    ap.add_argument("--bundle", help="check ONE explicit bundle (relative to root)")
-    ap.add_argument(
-        "--build-kind", choices=["task", "workflow-loop"],
-        help="build source kind for --bundle"
-    )
-    ap.add_argument("--build-file", help="build source file for --bundle")
-    ap.add_argument(
-        "--build-task", help="tasks.yaml task name (for --build-kind task)"
-    )
-    args = ap.parse_args()
-    root = args.root
-
-    if args.bundle:
-        if not args.build_kind or not args.build_file:
-            ap.error("--bundle requires --build-kind and --build-file")
-        if args.build_kind == "task" and not args.build_task:
-            ap.error("--build-kind task requires --build-task")
-        targets = [{
-            "label": args.bundle,
-            "bundle": args.bundle,
-            "build_kind": args.build_kind,
-            "build_file": args.build_file,
-            "build_task": args.build_task,
-        }]
-    else:
-        targets = DEFAULT_TARGETS
-
+def run_ab(root, targets):
+    """Run build-consistency invariants A and B over targets; report. Returns rc."""
     all_errors = []
     summaries = []
     for target in targets:
@@ -361,13 +452,13 @@ def main():
 
     if all_errors:
         total = sum(len(e) for _, e in all_errors)
-        print("Bundle Build Guard: FAILED — %d problem(s) found.\n" % total)
+        print("Bundle Build Guard (build consistency): FAILED — %d problem(s) found.\n" % total)
         for target, errors in all_errors:
             for e in errors:
                 print("FAIL [%s]: %s\n" % (target["label"], e))
         return 1
 
-    print("Bundle Build Guard: OK — %d bundle target(s) consistent." % len(summaries))
+    print("Bundle Build Guard (build consistency): OK — %d bundle target(s) consistent." % len(summaries))
     for target, summary in summaries:
         members, creates = summary
         print(
@@ -385,6 +476,83 @@ def main():
             )
         )
     return 0
+
+
+def run_organ_scan(root):
+    """Run invariant C over every bundles/**/uds-bundle.yaml; report. Returns rc."""
+    bundles = discover_bundles(root)
+    all_errors = []
+    results = []
+    for bundle_rel in bundles:
+        errors, count = check_bundle_organ_coordinates(root, bundle_rel)
+        if errors:
+            all_errors.append((bundle_rel, errors))
+        else:
+            results.append((bundle_rel, count))
+
+    if all_errors:
+        total = sum(len(e) for _, e in all_errors)
+        print("Bundle Build Guard (organ coordinates): FAILED — %d problem(s) found.\n" % total)
+        for bundle_rel, errors in all_errors:
+            for e in errors:
+                print("FAIL [%s]: %s\n" % (bundle_rel, e))
+        return 1
+
+    print("Bundle Build Guard (organ coordinates): OK — %d bundle(s) scanned." % len(results))
+    for bundle_rel, count in results:
+        print("  [%s] %d member(s) — local-path / external coordinates valid" % (bundle_rel, count))
+    if not bundles:
+        print("  WARNING: no bundles/**/uds-bundle.yaml found to scan.")
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--root", default=".", help="repo root (default: .)")
+    ap.add_argument("--bundle", help="check ONE explicit bundle (relative to root)")
+    ap.add_argument(
+        "--build-kind", choices=["task", "workflow-loop"],
+        help="build source kind for --bundle"
+    )
+    ap.add_argument("--build-file", help="build source file for --bundle")
+    ap.add_argument(
+        "--build-task", help="tasks.yaml task name (for --build-kind task)"
+    )
+    ap.add_argument(
+        "--organ-scan", action="store_true",
+        help="ONLY run invariant C (the organ-coordinate file scan) over every "
+             "bundles/**/uds-bundle.yaml and skip the build-consistency "
+             "invariants (used by the self-test)."
+    )
+    args = ap.parse_args()
+    root = args.root
+
+    # ── Invariant C only (organ-coordinate scan over all bundles) ────────────
+    if args.organ_scan:
+        return run_organ_scan(root)
+
+    # ── Single explicit target: build-consistency (A/B) only ─────────────────
+    if args.bundle:
+        if not args.build_kind or not args.build_file:
+            ap.error("--bundle requires --build-kind and --build-file")
+        if args.build_kind == "task" and not args.build_task:
+            ap.error("--build-kind task requires --build-task")
+        targets = [{
+            "label": args.bundle,
+            "bundle": args.bundle,
+            "build_kind": args.build_kind,
+            "build_file": args.build_file,
+            "build_task": args.build_task,
+        }]
+        return run_ab(root, targets)
+
+    # ── DEFAULT: build-consistency (A/B) over DEFAULT_TARGETS + invariant C ───
+    # over every bundles/**/uds-bundle.yaml. Both run; the guard fails if either
+    # surfaces a problem.
+    ab_rc = run_ab(root, DEFAULT_TARGETS)
+    print()
+    c_rc = run_organ_scan(root)
+    return 1 if (ab_rc or c_rc) else 0
 
 
 if __name__ == "__main__":

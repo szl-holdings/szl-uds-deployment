@@ -328,5 +328,91 @@ case(
     workflow_args(),
 )
 
+# ════════════════════════════════════════════════════════════════════════════
+# Invariant C: organ-coordinate file scan (--organ-scan) over bundles/**.
+# An SZL organ member must be a LOCAL `path:` to an existing packages/<organ>/
+# zarf.yaml, NOT a raw `repository: ghcr.io/szl-holdings/<organ>` + `ref:
+# uds-vX.Y.Z` image coordinate; any @sha256 pin must be valid 64-hex.
+# ════════════════════════════════════════════════════════════════════════════
+ORGAN_BUNDLE_REL = "bundles/fixture/uds-bundle.yaml"
+
+
+def write_organ_bundle(root, members_yaml):
+    write(
+        root,
+        ORGAN_BUNDLE_REL,
+        "kind: UDSBundle\nmetadata:\n  name: fixture\n  version: \"0.1.0\"\n"
+        "packages:\n" + members_yaml,
+    )
+
+
+def write_min_zarf(root, relpath):
+    """Minimal packages/<x>/zarf.yaml so a local-path member resolves."""
+    write(
+        root,
+        os.path.join(relpath, "zarf.yaml"),
+        "kind: ZarfPackageConfig\nmetadata:\n  name: %s\ncomponents:\n"
+        "  - name: app\n    required: true\n" % os.path.basename(relpath),
+    )
+
+
+def organ_args():
+    return ["--organ-scan"]
+
+
+GOOD_DIGEST = "a" * 64  # 64 lowercase hex chars
+
+
+case(
+    "organ-scan: local-path members + external init + valid @sha256 pin",
+    True,
+    lambda root: (
+        write_min_zarf(root, "packages/a11oy"),
+        write_min_zarf(root, "packages/sentra"),
+        write_organ_bundle(
+            root,
+            "  - name: init\n    repository: ghcr.io/zarf-dev/packages/init\n"
+            "    ref: v0.77.0\n"
+            "  - name: core\n    repository: ghcr.io/defenseunicorns/core@sha256:"
+            + GOOD_DIGEST + "\n    ref: \"1.5.0\"\n"
+            "  - name: szl-a11oy\n    path: ../../packages/a11oy\n    ref: \"0.2.0\"\n"
+            "  - name: szl-sentra\n    path: ../../packages/sentra\n    ref: \"0.2.0\"\n",
+        ),
+    ),
+    organ_args(),
+)
+
+case(
+    "organ-scan broken: SZL organ member is a raw ghcr.io/szl-holdings image coordinate",
+    False,
+    lambda root: write_organ_bundle(
+        root,
+        "  - name: a11oy-uds\n    repository: ghcr.io/szl-holdings/a11oy-uds\n"
+        "    ref: uds-v0.3.0\n",
+    ),
+    organ_args(),
+)
+
+case(
+    "organ-scan broken: local-path member points at a missing package",
+    False,
+    lambda root: write_organ_bundle(
+        root,
+        "  - name: szl-ghost\n    path: ../../packages/ghost\n    ref: \"0.2.0\"\n",
+    ),
+    organ_args(),
+)
+
+case(
+    "organ-scan broken: member carries a malformed (truncated) @sha256 digest pin",
+    False,
+    lambda root: write_organ_bundle(
+        root,
+        "  - name: core\n    repository: ghcr.io/defenseunicorns/core@sha256:abc123\n"
+        "    ref: \"1.5.0\"\n",
+    ),
+    organ_args(),
+)
+
 print("\n%d passed, %d failed" % (PASS, FAILED))
 sys.exit(1 if FAILED else 0)
