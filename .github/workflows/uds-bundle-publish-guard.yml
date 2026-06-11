@@ -1,0 +1,100 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# uds-bundle-publish-guard.yml — Guard the flaky-registry safety net in
+# uds-bundle-publish.yml from being silently removed.
+#
+# Why this exists
+# ---------------
+# uds-bundle-publish.yml builds the customer hand-off deliverable: the 5-organ
+# UDS bundle. Two layers protect that build from a transient GHCR CDN stall on a
+# fat organ image layer (amaru's ~363MB single layer is the worst offender):
+#
+#   1. A "Pre-warm organ image layers" step runs scripts/prewarm-ghcr-blobs.sh
+#      FIRST, resumably fetching every blob of each digest-pinned organ image
+#      into the Zarf cache so `zarf package create` cache-hits and skips the
+#      fragile, NON-resumable pull.
+#   2. A `for attempt in 1 2 3` retry wrapper around `zarf package create` so any
+#      not-pre-warmed pull that still hiccups is retried with backoff instead of
+#      failing the whole release.
+#
+# A future edit could silently drop the pre-warm step or the retry loop, and we'd
+# only find out the next time GHCR hiccups mid-release. This guard fails CI the
+# instant either layer is removed.
+#
+# The check logic lives in scripts/uds-bundle-publish-guard-checks.sh (pure
+# text/lint, no cluster). It was extracted from this workflow so it can be UNIT
+# TESTED: scripts/uds-bundle-publish-guard-checks.test.sh feeds each check a
+# deliberately-BROKEN fixture and asserts the check FAILS, plus asserts the
+# pristine repo PASSES. That self-test runs as the `self-test` job below, so a
+# future edit that neuters a check (passing vacuously — green while guarding
+# nothing) is caught here.
+#
+# The asserted invariants:
+#   chk1  scripts/prewarm-ghcr-blobs.sh exists and parses clean (bash -n)
+#   chk2  uds-bundle-publish.yml keeps the "Pre-warm organ image layers" step AND
+#         that step invokes scripts/prewarm-ghcr-blobs.sh
+#   chk3  uds-bundle-publish.yml wraps `zarf package create` in a
+#         `for attempt in 1 2 3` retry loop that breaks on success (for < zarf <
+#         break)
+#
+# Complements (does not duplicate):
+#   - teardown-guard.yml        (uds run teardown idle-check safety net)
+#   - zarf-action-var-guard.yml (no ###ZARF_VAR_*### inside action cmd blocks)
+
+name: UDS Bundle Publish Guard
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/uds-bundle-publish.yml"
+      - "scripts/prewarm-ghcr-blobs.sh"
+      - "scripts/uds-bundle-publish-guard-checks.sh"
+      - "scripts/uds-bundle-publish-guard-checks.test.sh"
+      - ".github/workflows/uds-bundle-publish-guard.yml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/uds-bundle-publish.yml"
+      - "scripts/prewarm-ghcr-blobs.sh"
+      - "scripts/uds-bundle-publish-guard-checks.sh"
+      - "scripts/uds-bundle-publish-guard-checks.test.sh"
+      - ".github/workflows/uds-bundle-publish-guard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves each check
+  # still FAILS on bad input (i.e. is not silently passing). The guard job
+  # depends on it so a broken check blocks the build before it can wave a
+  # regression through.
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/uds-bundle-publish-guard-checks.test.sh
+
+  guard:
+    name: Assert flaky-registry safety net is intact
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check 1 — prewarm-ghcr-blobs.sh exists and parses clean
+        run: bash scripts/uds-bundle-publish-guard-checks.sh chk1 .
+
+      - name: Check 2 — pre-warm step present + invokes the helper
+        run: bash scripts/uds-bundle-publish-guard-checks.sh chk2 .
+
+      - name: Check 3 — zarf package create wrapped in a retry loop
+        run: bash scripts/uds-bundle-publish-guard-checks.sh chk3 .
+
+      - name: Flaky-registry safety net is intact
+        run: echo "The uds-bundle-publish pre-warm + zarf retry safety net is intact."
