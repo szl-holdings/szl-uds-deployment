@@ -77,12 +77,33 @@ jobs:
         run: pip install requests cryptography
 
       # ── Real-cluster substrate: UDS Core (Istio + Operator + Keycloak + authservice)
+      # Authenticate to GHCR before pulling the public k3d-core-slim-dev bundle:
+      # anonymous OCI pulls intermittently 403 at ghcr.io's token endpoint, which
+      # took this gate's first dispatch red. The job's GITHUB_TOKEN can pull the
+      # public cross-org Defense Unicorns bundle, so an authenticated pull is stable.
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Deploy UDS Core (k3d-core-slim-dev)
         run: |
-          uds deploy oci://ghcr.io/defenseunicorns/bundles/k3d-core-slim-dev:1.5.0 \
-            --set DOMAIN=uds.dev \
-            --set INSECURE_ADMIN_PASSWORD_GENERATION=true \
-            --confirm --no-progress
+          # Retry the bundle pull a few times — ghcr.io token-endpoint 403s/5xx on
+          # anonymous-ish pulls are transient; fail loudly only after exhausting them.
+          for attempt in 1 2 3; do
+            if uds deploy oci://ghcr.io/defenseunicorns/bundles/k3d-core-slim-dev:1.5.0 \
+              --set DOMAIN=uds.dev \
+              --set INSECURE_ADMIN_PASSWORD_GENERATION=true \
+              --confirm --no-progress; then
+              exit 0
+            fi
+            echo "::warning::UDS Core deploy attempt ${attempt} failed; retrying in 20s"
+            sleep 20
+          done
+          echo "::error::UDS Core deploy failed after 3 attempts"
+          exit 1
 
       # ── Canonical szl-receipts (the machine receipt sink a11oy emits to) ─────────
       - name: Build szl-receipts-server image into local Docker
