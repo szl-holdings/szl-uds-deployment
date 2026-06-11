@@ -173,7 +173,56 @@ queries **live Kubernetes state**:
 
 ---
 
-## 6. License split
+## 6. Allodial posture — what SZL holds *outright*
+
+> **What "allodial" means here, and what it does NOT mean.**
+> [Allodial title](https://en.wikipedia.org/wiki/Allodial_title) is the legal concept of
+> property held **free and clear, owing no feudal duty to a superior** (cf. the limited
+> statutory form in [Nevada NRS 361.900–361.920](https://www.leg.state.nv.us/nrs/nrs-361.html)).
+> We borrow it **only as an engineering metaphor** for *who can revoke or interfere with the
+> running substrate*. **We explicitly REJECT the sovereign-citizen "land-patent" framing** —
+> this section makes no legal claim of any kind; it is a deployment-control posture, not a deed.
+> Consistent with the [World Economic Forum framing of digital sovereignty](https://www.weforum.org/agenda/2021/03/europe-digital-sovereignty/),
+> "sovereignty" here is **operational control of data, infrastructure, and the chain of title over artifacts** — nothing more.
+
+This posture is **PROPOSED**, not a formal result. It is **not** a theorem and **not** part of
+Doctrine Λ (which remains **Conjecture 1**, advisory only). Trust in any layer is **never 100%**.
+
+### Three layers we hold outright (today)
+
+| Layer | What is held allodially | Honest status |
+| --- | --- | --- |
+| **1 — Mesh & images** | The UDS mesh runs on our own substrate; organ images are **signed** (cosign `.sig`) and pinned by digest, so no upstream party can silently swap what we run. | **REAL (L1 signing)** — L2 attestation on roadmap (see §5). |
+| **2 — Chain of title** | Provenance of every artifact via [in-toto](https://in-toto.io/) attestations, [SLSA](https://slsa.dev/) build levels, [Sigstore/cosign](https://www.sigstore.dev/) signatures, and a [Rekor](https://docs.sigstore.dev/logging/overview/) transparency-log entry — a cryptographic record of *where each artifact came from*. | **REAL (L1) / partial** — cosign signatures + Rekor inclusion are live; full DSSE verify + SLSA **L2** is roadmap (P1). |
+| **3 — Local data & model** | Inference data and model weights live on local/self-hosted infrastructure; no required runtime call to a third-party control plane to keep serving. | **REAL** for the local serving path; external compute (when used) is flagged. |
+
+### The L6 differentiator (PROPOSED)
+
+Industry sovereignty / supply-chain maturity is commonly described across roughly **L1–L5**
+(signing → provenance → hardened builds → org-isolated builds → reproducible/hermetic builds),
+the spine of which is the public [SLSA](https://slsa.dev/spec/v1.0/levels) ladder. **We propose an
+additional posture — "L6" — a machine-checked *cryptographic chain-of-title receipt*:** a single
+verifiable artifact that binds (a) the signed image digest, (b) its in-toto/SLSA provenance, and
+(c) its Rekor inclusion proof into one receipt a relying party can check **offline against a pinned
+trust root**. To our knowledge **no mainstream toolchain operationalizes this L6 receipt today** —
+the L1–L5 building blocks exist and are widely deployed, but the *consolidated, independently
+re-verifiable chain-of-title receipt* is the differentiator we are pursuing.
+
+> **L6 is a PROPOSED SZL posture, not an industry standard and not a claimed certification.**
+> It does not imply FedRAMP, CMMC, Iron Bank, or SLSA L3+ — those remain unearned (see §5).
+
+### Honest limit
+
+We do **not** hold the *entire* stack allodially. The substrate still depends on third-party
+**hardware**, the **AGPL-3.0 UDS toolchain** (interoperate-only — see License split), upstream
+**base images**, and — when used — **external compute and model providers**. The L6 receipt is
+**designed but not yet fully operationalized**: today we have cosign signatures and Rekor inclusion
+(L1), with the consolidated offline-verifiable receipt and SLSA **L2** attestation on the roadmap.
+Any claim beyond "signed + provenance-tracked, locally servable" is **roadmap, labelled honestly**.
+
+---
+
+## 7. License split
 
 | Component | License | How we use it |
 | --- | --- | --- |
@@ -191,7 +240,7 @@ OSCAL + Rego) are **Apache-2.0**.
 
 ---
 
-## 7. What requires the live Hetzner/tower environment
+## 8. What requires the live Hetzner/tower environment
 
 These can only be truly verified at **deploy time** (no bandaids — flagged honestly):
 
