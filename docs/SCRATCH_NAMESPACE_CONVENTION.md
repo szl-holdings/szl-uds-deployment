@@ -38,8 +38,25 @@ kubectl label ns szl-receipts-demo --overwrite \
 szl-ns-scratch label szl-receipts-demo --owner rosa --ttl-days 7
 ```
 
-> Tip: create the namespace and label it in one breath, e.g.
-> `kubectl create ns szl-receipts-demo && szl-ns-scratch label szl-receipts-demo`.
+### Standard pattern: create + label in one breath
+
+Always stamp a scratch namespace the moment you create it, so it can never slip
+through as **UNKNOWN**. The standard one-liner is:
+
+```bash
+kubectl create ns szl-receipts-demo && szl-ns-scratch label szl-receipts-demo
+```
+
+The repo's deploy/scratch helpers already follow this pattern — they auto-stamp
+the convention labels at `kubectl create namespace` time, so anything they create
+shows up as **EPHEMERAL** in `szl-ns-scratch audit` with no extra step:
+
+- `scripts/demo_workload.sh` stamps `szl-demo-workload`.
+- the `uds run recreate-full` flow (`tasks.yaml`) stamps `szl-receipts-demo`.
+
+Both prefer the `szl-ns-scratch label` helper and fall back to a direct
+`kubectl label` (same labels) when the helper isn't on `PATH` (e.g. off-box).
+If you hand-roll a new scratch flow, copy this pattern into it.
 
 ## The cleanup rule
 

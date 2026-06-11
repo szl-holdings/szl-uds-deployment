@@ -27,7 +27,21 @@ echo "────────────────────────�
 
 # Create namespace
 kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
-echo "[1/3] Namespace ${NAMESPACE} ready."
+# Auto-stamp the scratch-namespace convention labels at creation time so a later
+# cleanup / `szl-ns-scratch audit` treats this disposable demo workload as
+# EPHEMERAL instead of UNKNOWN (see docs/SCRATCH_NAMESPACE_CONVENTION.md). Prefer
+# the szl-ns-scratch helper; fall back to a direct kubectl label when it isn't on
+# PATH (e.g. off-box). Best-effort: never fail the demo over a missing label.
+if command -v szl-ns-scratch >/dev/null 2>&1; then
+  szl-ns-scratch label "${NAMESPACE}" --owner demo_workload.sh --ttl-days 7 || true
+else
+  kubectl label ns "${NAMESPACE}" --overwrite \
+    szl.io/ephemeral=true \
+    szl.io/owner=demo_workload.sh \
+    "szl.io/created=$(date -u +%F)" \
+    szl.io/ttl-days=7 || true
+fi
+echo "[1/3] Namespace ${NAMESPACE} ready (labeled ephemeral)."
 
 # Apply the demo Deployment — Pepr will intercept this at admission time
 kubectl apply -f - <<'MANIFEST'

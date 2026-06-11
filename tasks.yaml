@@ -601,7 +601,22 @@ tasks:
           for NS in szl-receipts-demo monitoring; do
             kubectl create namespace "${NS}" --dry-run=client -o yaml | kubectl apply -f -
           done
-          echo "scratch namespaces ensured."
+          # Auto-stamp the scratch-namespace convention labels on the genuine
+          # ad-hoc scratch ns at creation time, so `szl-ns-scratch audit` reports
+          # it EPHEMERAL instead of UNKNOWN (see
+          # docs/SCRATCH_NAMESPACE_CONVENTION.md). `monitoring` is intentionally
+          # NOT stamped: the audit classifies it SYSTEM (protected placeholder).
+          # Prefer the helper; fall back to a direct kubectl label off-box.
+          if command -v szl-ns-scratch >/dev/null 2>&1; then
+            szl-ns-scratch label szl-receipts-demo --owner recreate-full --ttl-days 7 || true
+          else
+            kubectl label ns szl-receipts-demo --overwrite \
+              szl.io/ephemeral=true \
+              szl.io/owner=recreate-full \
+              "szl.io/created=$(date -u +%F)" \
+              szl.io/ttl-days=7 || true
+          fi
+          echo "scratch namespaces ensured (szl-receipts-demo labeled ephemeral)."
 
       - description: "Deploy the pepr-szl receipt-on-deploy webhook + Ed25519 signing key (WITH_PEPR=true)"
         cmd: |
