@@ -1,13 +1,23 @@
 #!/usr/bin/env bash
-# Reproducible installer for Authelia per-user SSO gating the /uds/ dashboard.
-# Idempotent: safe to re-run. Replaces the old shared nginx basic-auth on /uds/.
+# Reproducible installer for Authelia per-user SSO gating the /uds/ + /status/ pages.
+# Idempotent: safe to re-run. Replaces the old shared nginx basic-auth.
 # Real Keycloak (UDS Core Identity) can't fit this 2-vCPU box (CPU ~95% committed),
 # so Authelia is the lightweight per-user SSO portal. Runs localhost-only (coexistence-safe).
 #
-# This is a TRUE one-command rebuild: it brings up the Authelia container AND
-# idempotently injects the three AUTHELIA-SSO-PATCH nginx location blocks
-# (from authelia-uds-nginx.snippet.conf) into the a11oy.net HTTPS server block,
-# then validates and reloads nginx. No hand-paste step.
+# This is a TRUE one-command rebuild: it brings up the Authelia container with the
+# FULL LIVE access posture (admin two_factor default + a group:guests one_factor
+# exception, both scoped to ^/uds AND ^/status), seeds the stephen (admins) and demo
+# (guests) accounts idempotently, then idempotently injects the three
+# AUTHELIA-SSO-PATCH nginx location blocks (from authelia-uds-nginx.snippet.conf)
+# into the a11oy.net HTTPS server block, validates and reloads nginx. No hand-paste step.
+#
+# Security posture reproduced (matches the live box exactly):
+#   - default_policy: deny  -> anonymous is denied everywhere
+#   - group:guests -> one_factor on ^/uds + ^/status (password-only read-only demo links)
+#   - everyone else (e.g. group:admins) -> two_factor (TOTP) on ^/uds + ^/status
+# Re-running is non-destructive: configuration.yml is rewritten identically and
+# users_database.yml is only APPENDED to for users that are absent, so an existing
+# box keeps its enrolled TOTP / rotated passwords (never a silent downgrade).
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SNIPPET="$SCRIPT_DIR/authelia-uds-nginx.snippet.conf"
@@ -23,21 +33,47 @@ chmod 600 secrets/*
 
 docker pull "$IMG" >/dev/null
 
+# --- users: seed stephen (admins) + demo (guests) idempotently ---
+# Each user is added only when ABSENT, so re-running never reverts an existing
+# users_database.yml (enrolled TOTP / rotated passwords are preserved). Generated
+# initial passwords are written to a root-only file (chmod 600); they are NEVER
+# echoed to stdout/logs and NEVER committed to git.
+CREDS_FILE="/opt/authelia/.initial-credentials"
 if [ ! -s users_database.yml ]; then
-  PW="$(openssl rand -base64 15 | tr -d '/+=' | cut -c1-18)"
-  echo "GENERATED stephen password: $PW   (change via 'authelia crypto hash generate argon2')"
-  H="$(docker run --rm "$IMG" authelia crypto hash generate argon2 --password "$PW" 2>/dev/null | sed -n 's/^Digest: //p')"
-  cat > users_database.yml <<EOF
-users:
-  stephen:
-    disabled: false
-    displayname: "Stephen Lutar"
-    password: "$H"
-    email: stephen@a11oy.net
-    groups: [admins]
-EOF
+  echo "users:" > users_database.yml
   chmod 600 users_database.yml
 fi
+
+seed_user() {
+  # $1=username  $2=displayname  $3=email  $4=group
+  local user="$1" dn="$2" email="$3" group="$4"
+  if grep -qE "^[[:space:]]+${user}:[[:space:]]*$" users_database.yml; then
+    echo "user '${user}' already present in users_database.yml — preserved (no revert)."
+    return 0
+  fi
+  local pw h
+  pw="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | cut -c1-18)"
+  h="$(docker run --rm "$IMG" authelia crypto hash generate argon2 --password "$pw" 2>/dev/null | sed -n 's/^Digest: //p')"
+  if [ -z "$h" ]; then
+    echo "ERROR: failed to generate argon2 hash for user '${user}'" >&2
+    return 1
+  fi
+  cat >> users_database.yml <<EOF
+  ${user}:
+    disabled: false
+    displayname: "${dn}"
+    password: "${h}"
+    email: ${email}
+    groups: [${group}]
+EOF
+  ( umask 077; printf '%s\t%s\n' "$user" "$pw" >> "$CREDS_FILE" )
+  chmod 600 "$CREDS_FILE" 2>/dev/null || true
+  echo "seeded user '${user}' (group ${group}); initial password written to ${CREDS_FILE} (chmod 600, not in git/logs)."
+}
+
+seed_user stephen "Stephen Lutar"          stephen@a11oy.net admins
+seed_user demo    "a11oy Demo (read-only)" demo@a11oy.net    guests
+chmod 600 users_database.yml
 
 cat > configuration.yml <<'EOF'
 theme: dark
@@ -58,8 +94,16 @@ access_control:
   default_policy: deny
   rules:
     - domain: 'a11oy.net'
-      resources: ['^/uds(/.*)?$']
+      subject: 'group:guests'
+      resources:
+        - '^/uds(/.*)?$'
+        - '^/status(/.*)?$'
       policy: one_factor
+    - domain: 'a11oy.net'
+      resources:
+        - '^/uds(/.*)?$'
+        - '^/status(/.*)?$'
+      policy: two_factor
 session:
   cookies:
     - name: authelia_session
@@ -165,4 +209,4 @@ PYEOF
 }
 inject_nginx
 
-echo "DONE: Authelia SSO is up and /uds/ is gated. Visit https://a11oy.net/uds/"
+echo "DONE: Authelia SSO is up. /uds/ + /status/ are gated (admin 2FA, guest one-factor, anon denied). Visit https://a11oy.net/uds/"
