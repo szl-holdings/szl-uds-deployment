@@ -117,7 +117,14 @@ jobs:
             --flavor upstream \
             --set DOMAIN=uds.dev \
             --confirm --no-progress
+          # SMALL_SERVER_RIGHTSIZE=false: the szl-core-rightsize onDeploy action only
+          # exists to pin UDS-core admission to single-replica on the ~2-vCPU box. This
+          # GitHub-hosted runner has full headroom (so it is semantically a no-op here),
+          # AND that action's script begins with `set -o pipefail`, which the runner's
+          # /bin/sh (dash) rejects with exit 2 — turning a small-box optimization into a
+          # hard CI failure. Disabling it makes the component early-exit cleanly.
           zarf package deploy zarf-package-szl-receipts-*.tar.zst \
+            --set SMALL_SERVER_RIGHTSIZE=false \
             --confirm --no-progress
 
       # ── a11oy: import the published image + deploy the chart WITH SSO ON ──────────
