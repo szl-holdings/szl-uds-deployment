@@ -36,27 +36,17 @@ packages:
     # (The previous `vessels` repository here was a stale copy-paste; vessels is
     #  consolidated into killinchu and is not a standalone module.)
     path: ../../packages/szl-receipts
-    ref: 0.3.1
-    # STAGED: change ref from uds-v0.3.1 to published tag once container pushed
-    optionalComponents:
-      - name: szl-receipts-server
-        description: Receipt HTTP server (port 8443)
-      - name: szl-receipts-pepr
-        description: Pepr admission webhook (cluster-wide policy)
-    overrides:
-      szl-receipts:
-        szl-receipts-server:
-          values:
-            - path: replicaCount
-              value: 1
-            - path: service.port
-              value: 8443
-            - path: receipts.signingMode
-              # Ed25519 over canonical DSSE PAE (keyid szl-receipts-ed25519-2026);
-              # verify offline with the public key only via `uds run demo:verify`.
-              value: ed25519
-            - path: receipts.retentionDays
-              value: 30
+    # ref matches packages/szl-receipts/zarf.yaml metadata.version (0.4.0), the
+    # same ref the canonical root uds-bundle.yaml uses for this local package.
+    ref: 0.4.0
+    # No overrides/optionalComponents here: the earlier block targeted chart
+    # value paths that don't exist in charts/szl-receipts (replicaCount,
+    # service.port, receipts.signingMode, receipts.retentionDays) and a
+    # non-existent szl-receipts-pepr component. Like the organ members
+    # (re-pinned in Task #595), this member now relies on the package's own
+    # zarf.yaml + chart defaults: replicas 1, Ed25519/DSSE signing, sharded
+    # on-disk retention. Tune via the root bundle's valid override block if
+    # full-stack-specific overrides are ever needed.
 
   # ─────────────────────────────────────────────────────────────────
   # Package 2: szl-a11oy (a11oy-runtime)
