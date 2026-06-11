@@ -155,6 +155,14 @@ jobs:
           # internal registry (would ImagePullBackOff). receiptKeyInit is disabled
           # here because this proof exercises SSO + egress, not signing-key custody
           # (covered by the a11oy-signing-key guards); a11oy still boots and serves.
+          #
+          # monitoring.enabled=false: the chart's UDS Package `monitor:` block makes
+          # the operator create a Prometheus ServiceMonitor. The k3d-core-slim-dev
+          # bundle this proof runs on does NOT ship the Prometheus operator (no
+          # monitoring.coreos.com CRDs), so that sub-reconcile errors and drives the
+          # whole Package to phase=Failed — which means the admin-gateway VirtualService
+          # for the expose is never created and unauth requests 404 instead of
+          # redirecting to Keycloak. Metrics scraping is out of scope for an SSO proof.
           helm template a11oy charts/a11oy \
             --set udsPackage.sso.enabled=true \
             --set image.repository=a11oy \
@@ -162,6 +170,7 @@ jobs:
             --set image.digest="" \
             --set zarfAgentIgnore=true \
             --set receiptKeyInit.enabled=false \
+            --set monitoring.enabled=false \
             > /tmp/a11oy-sso.yaml
           echo "── Rendered a11oy (SSO on) — sso/authservice block ──"
           grep -nE "sso:|enableAuthserviceSelector|clientId|redirectUris|oauth2/callback" /tmp/a11oy-sso.yaml || true
