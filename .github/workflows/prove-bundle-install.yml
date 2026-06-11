@@ -1,0 +1,243 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# Prove Bundle Install — szl-uds-deployment
+# =============================================================================
+# Proof that a CUSTOMER can install the PUBLISHED, COSIGN-SIGNED UDS bundle
+# end-to-end on a CLEAN k3d cluster. Each matrix leg, one fresh cluster:
+#
+#   1. cosign verify oci://ghcr.io/szl-holdings/szl-uds-bundle:<tag> (keyless
+#      Fulcio/Rekor) — the supply-chain gate a customer runs before deploying.
+#   2. uds pull the published bundle to a local tarball (the customer fetch).
+#   3. Stand up the minimal UDS substrate (Zarf init + core-base).
+#   4. uds deploy ONLY ONE member package from the PULLED bundle and assert its
+#      Deployment reaches Available.
+#
+# This closes the gap between "published + signed + individually deployable from
+# SOURCE" (prove-organs.yaml builds packages locally) and "the SHIPPED, SIGNED
+# artifact a customer downloads installs cleanly." One member per leg, one fresh
+# cluster per leg.
+#
+# HONESTY (matches STATUS.md / doctrine): this proves the published bundle's
+# members are individually PULLABLE + SIGNATURE-VERIFIED + DEPLOYABLE. It does
+# NOT claim "all five boot together." Co-residency of all five organs is NOT
+# tested — doctrine is "individually deployable, NOT all five boot together,"
+# and the constrained single-node substrate cannot host all organs at once.
+# We test deployability + pull + signature, NOT co-residency.
+#
+# Triggers:
+#   * workflow_dispatch — pick one organ or all; override bundle tag / identity.
+#   * push: tags uds-v* / v* — re-prove on every release so a tag can never ship
+#     while the published bundle stopped installing cleanly.
+#   * schedule (nightly, offset from prove-organs) — continuously re-prove.
+# Automatic (release/nightly) runs prove ALL five members.
+#
+# fail-fast is disabled so one member failing does not mask the others. Every
+# leg ends with a LOUD pass/fail and ALWAYS tears its cluster down. On automatic
+# failures the `alert` job pages the team CI alert channel (ntfy relay).
+#
+# Action SHA pins + uds/zarf/cosign versions match the sibling proof + publish
+# workflows (prove-organs.yaml, uds-bundle-publish.yml).
+
+name: Prove Bundle Install
+
+on:
+  workflow_dispatch:
+    inputs:
+      organ:
+        description: "Which member to prove"
+        type: choice
+        default: all
+        options:
+          - all
+          - a11oy
+          - killinchu
+          - amaru
+          - sentra
+          - rosie
+      bundle_tag:
+        description: "Published bundle OCI tag to verify + install"
+        type: string
+        default: uds-v0.2.1
+      cert_identity:
+        description: "EXACT cosign certificate-identity of the bundle signer (publish workflow). Leave blank to use the default for the resolved tag."
+        type: string
+        default: ""
+  push:
+    tags:
+      - "uds-v*"
+      - "v*"
+  schedule:
+    # Nightly at 08:00 UTC — one hour after prove-organs (07:00) so the two
+    # heavy proof jobs do not contend for runners.
+    - cron: "0 8 * * *"
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  ZARF_VERSION: "v0.77.0"
+  UDS_CLI_VERSION: "v0.31.0"
+  COSIGN_VERSION: "v2.4.3"
+  REGISTRY: "ghcr.io"
+  ORG: "szl-holdings"
+  BUNDLE_NAME: "szl-uds-bundle"
+
+jobs:
+  # ── Resolve organ matrix + the bundle ref/identity once ──────────────────────
+  setup:
+    name: Resolve matrix + bundle ref
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+      bundle_ref: ${{ steps.b.outputs.bundle_ref }}
+      cert_identity: ${{ steps.b.outputs.cert_identity }}
+      cert_identity_fallback: ${{ steps.b.outputs.cert_identity_fallback }}
+    env:
+      # workflow_dispatch supplies inputs.organ; push:tags + schedule do not, so
+      # automatic (release/nightly) runs default to proving ALL five members.
+      ORGAN: ${{ inputs.organ || 'all' }}
+    steps:
+      - id: m
+        name: Build matrix JSON
+        run: |
+          set -euo pipefail
+          A='{"organ":"a11oy"}'
+          K='{"organ":"killinchu"}'
+          M='{"organ":"amaru"}'
+          S='{"organ":"sentra"}'
+          R='{"organ":"rosie"}'
+          if [ "${ORGAN}" = "all" ]; then
+            echo "matrix={\"include\":[${A},${K},${M},${S},${R}]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "matrix={\"include\":[{\"organ\":\"${ORGAN}\"}]}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: b
+        name: Resolve bundle ref + signer identity
+        env:
+          INPUT_TAG: ${{ inputs.bundle_tag }}
+          INPUT_IDENTITY: ${{ inputs.cert_identity }}
+        run: |
+          set -euo pipefail
+          # On a tag push, prove the bundle that matches the tag; otherwise use
+          # the dispatch input (default uds-v0.2.1 — the live published bundle).
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="${INPUT_TAG:-uds-v0.2.1}"
+          fi
+          BUNDLE_REF="${REGISTRY}/${ORG}/${BUNDLE_NAME}:${TAG}"
+
+          # The publish workflow signs keyless with identity
+          # ".../uds-bundle-publish.yml@${GITHUB_REF}". A tag-published bundle is
+          # signed on refs/tags/<tag>; a dispatch-published one on refs/heads/main.
+          # We try the tag-ref form first, fall back to the main-ref form — BOTH
+          # exact identities bound to THIS repo's publish workflow (never regexp).
+          WF=".github/workflows/uds-bundle-publish.yml"
+          ID_TAG="https://github.com/${ORG}/szl-uds-deployment/${WF}@refs/tags/${TAG}"
+          ID_MAIN="https://github.com/${ORG}/szl-uds-deployment/${WF}@refs/heads/main"
+          if [ -n "${INPUT_IDENTITY}" ]; then
+            PRIMARY="${INPUT_IDENTITY}"; FALLBACK=""
+          else
+            PRIMARY="${ID_TAG}"; FALLBACK="${ID_MAIN}"
+          fi
+          echo "bundle_ref=${BUNDLE_REF}"               >> "$GITHUB_OUTPUT"
+          echo "cert_identity=${PRIMARY}"               >> "$GITHUB_OUTPUT"
+          echo "cert_identity_fallback=${FALLBACK}"     >> "$GITHUB_OUTPUT"
+          echo "Resolved bundle_ref=${BUNDLE_REF}"
+          echo "Primary identity=${PRIMARY}"
+          echo "Fallback identity=${FALLBACK}"
+
+  # ── Prove one member install per leg on a throwaway cluster ──────────────────
+  prove:
+    name: Prove ${{ matrix.organ }} (published bundle)
+    needs: setup
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install UDS CLI
+        uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1 (v1.0.1)
+        with:
+          version: ${{ env.UDS_CLI_VERSION }}
+
+      - name: Install Zarf
+        run: |
+          curl -sL "https://github.com/zarf-dev/zarf/releases/download/${ZARF_VERSION}/zarf_${ZARF_VERSION}_Linux_amd64" \
+            -o /usr/local/bin/zarf && chmod +x /usr/local/bin/zarf
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+      - name: Install kubectl
+        run: |
+          curl -sLO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+
+      - name: Log in to GHCR (anonymous pull works for public bundle; auth raises rate limits)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Prove customer can install ${{ matrix.organ }} from the published, signed bundle
+        run: |
+          uds run prove-bundle \
+            --set ORGAN=${{ matrix.organ }} \
+            --set BUNDLE_REF=${{ needs.setup.outputs.bundle_ref }} \
+            --set CERT_IDENTITY=${{ needs.setup.outputs.cert_identity }} \
+            --set CERT_IDENTITY_FALLBACK=${{ needs.setup.outputs.cert_identity_fallback }} \
+            --set PROVE_CLUSTER=uds-prove-bundle
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          NS="szl-${{ matrix.organ }}"
+          echo "==== cluster namespaces ===="; kubectl get ns || true
+          echo "==== ${NS} workloads ===="; kubectl -n "${NS}" get deploy,pods,svc -o wide || true
+          echo "==== ${NS} describe ===="; kubectl -n "${NS}" describe "deployment/${{ matrix.organ }}" || true
+          echo "==== ${NS} events ===="; kubectl -n "${NS}" get events --sort-by=.lastTimestamp || true
+          echo "==== ${NS} logs ===="; kubectl -n "${NS}" logs "deployment/${{ matrix.organ }}" --all-containers --tail=200 || true
+          echo "==== UDS operator (pepr) logs ===="; kubectl -n pepr-system logs deploy/pepr-uds-core-watcher --tail=100 2>/dev/null || true
+
+      - name: Teardown throwaway cluster
+        if: always()
+        run: k3d cluster delete "uds-prove-bundle-${{ matrix.organ }}" || true
+
+  # ── Page the CI alert channel when an AUTOMATIC run fails ─────────────────────
+  alert:
+    name: Page CI alert channel on failure
+    needs: [setup, prove]
+    if: failure() && github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Post failure to the team alert channel (ntfy relay)
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL is unset — cannot page; the red workflow run is the only signal."
+            exit 0
+          fi
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          TRIGGER="${{ github.event_name }}"
+          REF="${{ github.ref_name }}"
+          TEXT=":rotating_light: prove-bundle-install FAILED on ${TRIGGER} (${REF}) — the PUBLISHED, signed UDS bundle did NOT cosign-verify, pull, or install a member on a clean cluster. ${RUN_URL}"
+          payload=$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1]}))' "${TEXT}")
+          code=$(curl -sS -o /tmp/relay.out -w "%{http_code}" \
+            -X POST -H "Content-Type: application/json" \
+            -d "${payload}" "${SLACK_WEBHOOK_URL}")
+          echo "relay responded HTTP ${code}"
+          cat /tmp/relay.out 2>/dev/null || true
+          case "${code}" in
+            2*) echo "Alert delivered to the CI alert channel." ;;
+            *)  echo "::error::alert POST failed (HTTP ${code})"; exit 1 ;;
+          esac

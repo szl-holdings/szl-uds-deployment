@@ -1,0 +1,237 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+# yaml-language-server: $schema=https://raw.githubusercontent.com/defenseunicorns/uds-cli/refs/heads/main/tasks.schema.json
+#
+# Bundle-install proof — szl-uds-deployment
+# =============================================================================
+# `uds run prove-bundle --set ORGAN=<organ>` proves a CUSTOMER can install the
+# PUBLISHED, COSIGN-SIGNED UDS bundle end-to-end on a clean k3d cluster:
+#
+#   1. cosign verify the published bundle OCI artifact (keyless Fulcio/Rekor) —
+#      the real supply-chain gate a customer runs BEFORE deploying. LOUD fail.
+#   2. uds pull the published OCI bundle to a local tarball (proves the artifact
+#      is anonymously pullable, exactly what a customer fetch does).
+#   3. Stand up the minimal UDS substrate (Zarf init + core-base) so the UDS
+#      Operator + uds.dev/v1alpha1 Package CRD exist.
+#   4. uds deploy ONLY the selected member package from the PULLED bundle and
+#      assert its Deployment reaches Available — one member per throwaway
+#      cluster.
+#
+# How this DIFFERS from `prove-organs` (tasks/prove-organs.yaml):
+#   prove-organs builds each organ Zarf package from LOCAL source and deploys it
+#   — it proves the SOURCE is individually deployable. prove-bundle deploys from
+#   the actual PUBLISHED OCI bundle after a real `cosign verify` — it proves the
+#   SHIPPED, SIGNED artifact a customer downloads installs cleanly. Together they
+#   close the gap between "published + signed" and "installs cleanly for a
+#   customer."
+#
+# HONESTY FRAMING (do NOT overstate — matches STATUS.md / doctrine):
+#   This proves the published bundle's members are individually PULLABLE +
+#   SIGNATURE-VERIFIED + DEPLOYABLE (one member, one clean cluster). It does
+#   NOT prove "all five boot together." Co-residency of all five organs is NOT
+#   claimed: the doctrine is "individually deployable, NOT all five boot
+#   together," and the constrained single-node substrate (a 2-vCPU box runs the
+#   live cluster) cannot host all organs simultaneously. We test deployability +
+#   pull + signature, NOT co-residency.
+#
+# Signature mechanics (why --skip-signature-validation on pull/deploy):
+#   The bundle is signed by KEYLESS cosign on the published OCI artifact (Fulcio
+#   cert + Rekor transparency log), NOT by an embedded uds `--signing-key`. So
+#   uds's own embedded-key signature validation has nothing to check and must be
+#   skipped; the `cosign verify` in step 1 IS the signature gate (and IS the
+#   bundle provenance — there is no bundle-level SLSA attestation claimed here).
+#
+# Teardown is the caller's responsibility (the CI workflow deletes the cluster in
+# an always() step; locally run `k3d cluster delete ${PROVE_CLUSTER}-<organ>`),
+# so a failed run leaves the cluster intact for inspection.
+#
+# Requires: uds, zarf, k3d, docker, kubectl, cosign. See docs/INSTALL.md.
+
+variables:
+  - name: ORGAN
+    description: "Which member to prove: a11oy | killinchu | amaru | sentra | rosie (required)"
+    default: ""
+  - name: BUNDLE_REF
+    description: "Published bundle OCI ref WITHOUT scheme (registry/org/name:tag)"
+    default: "ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.2.1"
+  - name: CERT_IDENTITY
+    description: >-
+      EXACT cosign certificate-identity of the bundle's keyless signer (the
+      publish workflow). Default matches a dispatch-published bundle (signed on
+      refs/heads/main); pass the tag-ref form if the bundle was published from a
+      uds-v* tag push.
+    default: "https://github.com/szl-holdings/szl-uds-deployment/.github/workflows/uds-bundle-publish.yml@refs/heads/main"
+  - name: CERT_IDENTITY_FALLBACK
+    description: >-
+      Second EXACT identity tried only if CERT_IDENTITY fails — same publish
+      workflow, the OTHER common trigger ref. Both are strict exact identities
+      (never a regexp); the signer must still be THIS repo's publish workflow.
+    default: ""
+  - name: CERT_ISSUER
+    description: "cosign certificate-oidc-issuer (GitHub Actions OIDC)"
+    default: "https://token.actions.githubusercontent.com"
+  - name: PROVE_CLUSTER
+    description: "Base name for the throwaway k3d cluster (organ name is appended)"
+    default: "uds-prove-bundle"
+  - name: WAIT_TIMEOUT
+    description: "How long to wait for the member Deployment to reach Available"
+    default: "240s"
+
+tasks:
+  - name: prove
+    description: "Prove the PUBLISHED bundle installs: cosign-verify, pull, deploy ONE member (--set ORGAN=...) on a clean cluster, reach Available"
+    actions:
+      - description: "Validate ORGAN is exactly one of the five organs"
+        cmd: |
+          case "${ORGAN}" in
+            a11oy|killinchu|amaru|sentra|rosie)
+              echo "Proving published-bundle install of member: szl-${ORGAN}"
+              echo "Bundle: oci://${BUNDLE_REF}"
+              ;;
+            "")
+              echo "ERROR: ORGAN is required."
+              echo "       uds run prove-bundle --set ORGAN=a11oy|killinchu|amaru|sentra|rosie"
+              exit 1
+              ;;
+            *)
+              echo "ERROR: unknown ORGAN='${ORGAN}' (expected a11oy|killinchu|amaru|sentra|rosie)."
+              exit 1
+              ;;
+          esac
+
+      - description: "Check required tools (cosign included — the signature gate)"
+        cmd: |
+          for tool in uds zarf k3d docker kubectl cosign; do
+            command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: $tool not installed. See docs/INSTALL.md."; exit 1; }
+          done
+          echo "All required tools found."
+
+      - description: "GATE: cosign verify the PUBLISHED bundle signature (keyless Fulcio/Rekor) — LOUD fail"
+        cmd: |
+          set -uo pipefail
+          echo "== cosign verify ${BUNDLE_REF} =="
+          echo "   identity (primary):  ${CERT_IDENTITY}"
+          [ -n "${CERT_IDENTITY_FALLBACK}" ] && echo "   identity (fallback): ${CERT_IDENTITY_FALLBACK}"
+          echo "   issuer:              ${CERT_ISSUER}"
+
+          verify_with() {
+            COSIGN_EXPERIMENTAL=1 cosign verify "${BUNDLE_REF}" \
+              --certificate-identity="$1" \
+              --certificate-oidc-issuer="${CERT_ISSUER}" >/tmp/cosign-verify.out 2>&1
+          }
+
+          if verify_with "${CERT_IDENTITY}"; then
+            echo "PASS: bundle signature verified against primary identity."
+            sed -n '1,20p' /tmp/cosign-verify.out || true
+          elif [ -n "${CERT_IDENTITY_FALLBACK}" ] && verify_with "${CERT_IDENTITY_FALLBACK}"; then
+            echo "PASS: bundle signature verified against fallback identity."
+            sed -n '1,20p' /tmp/cosign-verify.out || true
+          else
+            echo "FAIL: cosign could NOT verify ${BUNDLE_REF} against the pinned identity/issuer."
+            echo "      A customer running 'cosign verify' would see this same failure — do NOT deploy."
+            echo "---- cosign output ----"; cat /tmp/cosign-verify.out || true
+            exit 1
+          fi
+
+      - description: "Create a COLD throwaway k3d cluster for the ${ORGAN} bundle-install proof"
+        cmd: |
+          CL="${PROVE_CLUSTER}-${ORGAN}"
+          if k3d cluster list 2>/dev/null | grep -q "${CL}"; then
+            echo "Cluster ${CL} already exists — deleting for a cold start."
+            k3d cluster delete "${CL}"
+          fi
+          k3d cluster create "${CL}" \
+            --k3s-arg "--disable=traefik@server:0" \
+            --wait
+          echo "Throwaway cluster ${CL} created."
+
+      - description: "Stand up the UDS substrate (init + core-base) — provides the UDS Operator + Package CRD"
+        cmd: |
+          mkdir -p "${BUILD_TMPDIR}"
+          # init + core-base are remote OCI packages keyless-signed by DIFFERENT
+          # OIDC identities, so --skip-signature-validation is required on create
+          # (same reason tasks/prove-organs.yaml + the root `bundle` task use it).
+          uds create bundles/prove-organs \
+            --skip-signature-validation \
+            --confirm \
+            --no-progress \
+            --tmpdir "${BUILD_TMPDIR}"
+          BUNDLE=$(ls -t uds-bundle-szl-prove-substrate-*.tar.zst 2>/dev/null | head -1)
+          if [ -z "${BUNDLE}" ]; then
+            echo "ERROR: no uds-bundle-szl-prove-substrate-*.tar.zst found after build." >&2
+            exit 1
+          fi
+          echo "Deploying substrate bundle: ${BUNDLE}"
+          uds deploy "${BUNDLE}" \
+            --set DOMAIN="${DOMAIN}" \
+            --set INSECURE_ADMIN_PASSWORD_GENERATION=true \
+            --confirm \
+            --no-progress
+
+      - description: "PULL the published OCI bundle to a local tarball (the customer fetch path)"
+        cmd: |
+          set -euo pipefail
+          mkdir -p "${BUILD_TMPDIR}"
+          # uds pull fetches the published bundle as a local tarball. Embedded-key
+          # signature validation is skipped (the bundle is keyless-cosign-signed,
+          # not signed with an embedded uds key) — the cosign GATE above already
+          # proved the signature. This step proves the artifact is anonymously
+          # PULLABLE, exactly what a customer download does.
+          echo "Pulling oci://${BUNDLE_REF} ..."
+          uds pull "oci://${BUNDLE_REF}" \
+            --skip-signature-validation \
+            -o "${BUILD_TMPDIR}" \
+            --no-progress
+          PULLED=$(ls -t "${BUILD_TMPDIR}"/uds-bundle-szl-uds-bundle-*.tar.zst 2>/dev/null | head -1)
+          if [ -z "${PULLED}" ]; then
+            echo "ERROR: no pulled uds-bundle-szl-uds-bundle-*.tar.zst found in ${BUILD_TMPDIR}." >&2
+            ls -lh "${BUILD_TMPDIR}" || true
+            exit 1
+          fi
+          echo "Pulled bundle tarball: ${PULLED}"
+
+      - description: "Deploy ONLY the szl-${ORGAN} member FROM THE PULLED PUBLISHED BUNDLE"
+        cmd: |
+          set -euo pipefail
+          PULLED=$(ls -t "${BUILD_TMPDIR}"/uds-bundle-szl-uds-bundle-*.tar.zst 2>/dev/null | head -1)
+          if [ -z "${PULLED}" ]; then
+            echo "ERROR: pulled bundle tarball missing (expected from the previous step)." >&2
+            exit 1
+          fi
+          echo "Deploying member szl-${ORGAN} from ${PULLED}"
+          # --packages selects the single member; --skip-signature-validation
+          # because the bundle carries no embedded uds key (cosign verify above
+          # is the signature gate). This is the published artifact a customer
+          # would deploy — not a locally rebuilt package.
+          uds deploy "${PULLED}" \
+            --packages "szl-${ORGAN}" \
+            --skip-signature-validation \
+            --set DOMAIN="${DOMAIN}" \
+            --confirm \
+            --no-progress
+
+      - description: "ASSERT: szl-${ORGAN} Deployment reached Available (loud fail + diagnostics)"
+        cmd: |
+          NS="szl-${ORGAN}"
+          echo "== ${ORGAN} (${NS}) =="
+          if kubectl wait --for=condition=Available "deployment/${ORGAN}" \
+               -n "${NS}" --timeout="${WAIT_TIMEOUT}"; then
+            echo "PASS: szl-${ORGAN} Deployment is Available in ${NS} (from the published, cosign-verified bundle)."
+          else
+            echo "FAIL: szl-${ORGAN} Deployment did NOT reach Available in ${NS}."
+            echo "---- deployments ----"; kubectl -n "${NS}" get deploy -o wide || true
+            echo "---- pods ----";        kubectl -n "${NS}" get pods -o wide || true
+            echo "---- describe ----";    kubectl -n "${NS}" describe "deployment/${ORGAN}" || true
+            echo "---- events ----";      kubectl -n "${NS}" get events --sort-by=.lastTimestamp || true
+            echo "---- pod logs ----";    kubectl -n "${NS}" logs "deployment/${ORGAN}" --all-containers --tail=100 || true
+            exit 1
+          fi
+
+      - description: "Proof summary"
+        cmd: |
+          echo "----"
+          echo "PROVEN: a customer can install member 'szl-${ORGAN}' from the PUBLISHED, cosign-verified"
+          echo "        bundle oci://${BUNDLE_REF} onto a clean UDS cluster (verify -> pull -> deploy ->"
+          echo "        Available). HONEST SCOPE: pull + signature + individual deployability only — this"
+          echo "        does NOT claim all five organs boot together (co-residency is not claimed)."
+          echo "Cluster left intact for inspection: ${PROVE_CLUSTER}-${ORGAN} (delete with: k3d cluster delete ${PROVE_CLUSTER}-${ORGAN})"

@@ -88,6 +88,7 @@ includes:
   - demo: ./tasks/demo.yaml
   - smoke: ./tasks/smoke.yaml
   - prove-organs: ./tasks/prove-organs.yaml
+  - prove-bundle: ./tasks/prove-bundle.yaml
 
 tasks:
   # ── Cold smoke entry point ────────────────────────────────────────────────
@@ -110,6 +111,20 @@ tasks:
     description: "Prove ONE organ (--set ORGAN=...) deploys individually on a throwaway k3d cluster and reaches Available"
     actions:
       - task: prove-organs:prove
+
+  # ── Published-bundle customer-install proof ───────────────────────────────
+  # `uds run prove-bundle --set ORGAN=<organ>`: prove a CUSTOMER can install the
+  # PUBLISHED, cosign-signed UDS bundle end-to-end on a clean cluster —
+  # cosign verify -> uds pull -> deploy ONE member -> reach Available. Differs
+  # from prove-organs (which builds packages from LOCAL source): this deploys the
+  # actual SHIPPED, SIGNED OCI artifact a customer downloads. Honest scope: pull
+  # + signature + individual deployability — NOT all-five co-residency.
+  # Implemented in tasks/prove-bundle.yaml; aliased here. The CI job
+  # .github/workflows/prove-bundle-install.yml runs this across all five members.
+  - name: prove-bundle
+    description: "Prove the PUBLISHED bundle installs (--set ORGAN=...): cosign-verify, pull, deploy ONE member on a clean cluster, reach Available"
+    actions:
+      - task: prove-bundle:prove
 
   # ── Primary entry point ───────────────────────────────────────────────────
   - name: start
