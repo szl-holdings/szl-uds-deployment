@@ -27,7 +27,10 @@ set -uo pipefail
 
 REPO="${SZL_BOX_SYNC_REPO:-/opt/szl/szl-uds-deployment}"
 BRANCH="${SZL_BOX_SYNC_BRANCH:-main}"
-REMOTE_SLUG="szl-holdings/szl-uds-deployment"
+# Default slug only; the real slug is derived from the repo's own origin URL at
+# push time (remote_slug), so this tool is reusable for ANY szl-holdings clone,
+# not just szl-uds-deployment. Override with $SZL_BOX_SYNC_SLUG.
+REMOTE_SLUG="${SZL_BOX_SYNC_SLUG:-szl-holdings/szl-uds-deployment}"
 GIT_USER_EMAIL="${SZL_BOX_SYNC_EMAIL:-forge@szlholdings.ai}"
 GIT_USER_NAME="${SZL_BOX_SYNC_NAME:-szl-box-sync}"
 
@@ -153,7 +156,21 @@ cmd_push() {
   [ -n "$msg" ] || die "push needs a commit message: szl-box-sync push -m MSG [PATH..]"
 
   local tok; tok=$(resolve_token) || die "no push token (set SZL_GITHUB_TOKEN or a token file)"
-  local url="https://x-access-token:${tok}@github.com/${REMOTE_SLUG}.git"
+  # Derive the github slug from the repo's OWN origin URL so push works for any
+  # szl-holdings clone, not just szl-uds-deployment. $SZL_BOX_SYNC_SLUG (via
+  # REMOTE_SLUG) wins if explicitly set; otherwise fall back to the derived slug
+  # and finally the default.
+  local slug="$REMOTE_SLUG"
+  if [ -z "${SZL_BOX_SYNC_SLUG:-}" ]; then
+    local ou; ou=$(g config --get remote.origin.url 2>/dev/null || true)
+    case "$ou" in
+      *github.com[:/]*) slug=$(printf '%s' "$ou" | sed -E 's#^.*github\.com[:/]##; s#\.git$##; s#/$##') ;;
+      "") die "no origin remote on $REPO — cannot derive push slug (set SZL_BOX_SYNC_SLUG)" ;;
+      *)  die "origin of $REPO is not a github.com remote ($ou) — push only supports github (set SZL_BOX_SYNC_SLUG)" ;;
+    esac
+  fi
+  [ -n "$slug" ] || die "could not determine github slug for $REPO"
+  local url="https://x-access-token:${tok}@github.com/${slug}.git"
 
   fetch_ro || die "could not fetch origin/$BRANCH"
 
@@ -210,12 +227,18 @@ cmd_verify() {
 cmd_install_hook() {
   local hook="$REPO/.git/hooks/pre-commit" src=""
   local c
+  # Search order so install-hook works for ANY clone (not only the one that
+  # ships box-scripts/): $SZL_BOX_SYNC_HOOK_SRC, next to the command, the repo's
+  # own box-scripts/, a shared installed copy, and the canonical uds clone.
   for c in \
+    "${SZL_BOX_SYNC_HOOK_SRC:-}" \
     "$(dirname "$(readlink -f "$0")")/hooks/pre-commit" \
-    "$REPO/box-scripts/hooks/pre-commit"; do
-    [ -r "$c" ] && { src="$c"; break; }
+    "$REPO/box-scripts/hooks/pre-commit" \
+    "/usr/local/share/szl-box-sync/pre-commit" \
+    "/opt/szl/szl-uds-deployment/box-scripts/hooks/pre-commit"; do
+    [ -n "$c" ] && [ -r "$c" ] && { src="$c"; break; }
   done
-  [ -n "$src" ] || die "hook source not found (looked next to the command and in $REPO/box-scripts/hooks/)"
+  [ -n "$src" ] || die "hook source not found (set SZL_BOX_SYNC_HOOK_SRC, or install it to /usr/local/share/szl-box-sync/pre-commit)"
   install -m 0755 "$src" "$hook" || die "could not install $hook"
   note "installed pre-commit stale-tip guard at $hook (from $src)"
 }
