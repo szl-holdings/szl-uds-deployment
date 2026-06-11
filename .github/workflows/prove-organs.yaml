@@ -3,16 +3,24 @@
 #
 # Prove Organs — szl-uds-deployment
 # =============================================================================
-# Dispatch-only proof that each organ (a11oy, killinchu, amaru, sentra, rosie)
-# ACTUALLY deploys individually from its UDS bundle package onto a THROWAWAY k3d
-# cluster and that its Deployment reaches Available. One organ per matrix leg,
-# one fresh cluster per leg — doctrine: "individually deployable, NOT all five
-# boot together."
+# Proof that each organ (a11oy, killinchu, amaru, sentra, rosie) ACTUALLY
+# deploys individually from its UDS bundle package onto a THROWAWAY k3d cluster
+# and that its Deployment reaches Available. One organ per matrix leg, one fresh
+# cluster per leg — doctrine: "individually deployable, NOT all five boot
+# together."
 #
-# Resource-heavy (each leg stands up Zarf init + UDS core-base, then one organ),
-# so it is workflow_dispatch ONLY — never on push/PR. fail-fast is disabled so
-# one organ failing does not mask the verdict of the others. Every leg ends with
-# a LOUD pass/fail (no silent-pass) and always tears its cluster down.
+# Triggers:
+#   * workflow_dispatch — run by hand for one organ or all (organ input).
+#   * push: tags v* / uds-v* — re-prove EVERY release so a tag can never ship
+#     while an organ silently stopped being individually deployable.
+#   * schedule (nightly) — continuously re-prove the doctrine between releases.
+# Automatic (release/nightly) runs prove ALL five organs.
+#
+# Resource-heavy (each leg stands up Zarf init + UDS core-base, then one organ).
+# fail-fast is disabled so one organ failing does not mask the verdict of the
+# others. Every leg ends with a LOUD pass/fail (no silent-pass) and ALWAYS tears
+# its cluster down. On automatic (release-tag / nightly) failures the `alert` job
+# additionally pages the team CI alert channel (ntfy relay) — loud, never silent.
 #
 # Run:  Actions -> Prove Organs -> Run workflow  (organ: all | <one organ>)
 #
@@ -34,6 +42,14 @@ on:
           - amaru
           - sentra
           - rosie
+  push:
+    tags:
+      - "v*"
+      - "uds-v*"
+  schedule:
+    # Nightly at 07:00 UTC — continuously re-prove "individually deployable"
+    # between releases so a regression is caught within a day, not at tag time.
+    - cron: "0 7 * * *"
 
 permissions:
   contents: read
@@ -47,7 +63,9 @@ jobs:
     outputs:
       matrix: ${{ steps.m.outputs.matrix }}
     env:
-      ORGAN: ${{ inputs.organ }}
+      # workflow_dispatch supplies inputs.organ; push:tags + schedule do not, so
+      # automatic (release/nightly) runs default to proving ALL five organs.
+      ORGAN: ${{ inputs.organ || 'all' }}
     steps:
       - id: m
         name: Build matrix JSON
@@ -118,3 +136,37 @@ jobs:
       - name: Teardown throwaway cluster
         if: always()
         run: k3d cluster delete "uds-prove-${{ matrix.organ }}" || true
+
+  # ── Page the CI alert channel when an AUTOMATIC run fails ─────────────────────
+  # Manual (workflow_dispatch) runs are already watched by the person who clicked
+  # "Run workflow", so we only page for release-tag / nightly failures. The red
+  # workflow run is itself the release-blocking signal; this job makes it loud.
+  alert:
+    name: Page CI alert channel on failure
+    needs: [setup, prove]
+    if: failure() && github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Post failure to the team alert channel (ntfy relay)
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL is unset — cannot page; the red workflow run is the only signal."
+            exit 0
+          fi
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          TRIGGER="${{ github.event_name }}"
+          REF="${{ github.ref_name }}"
+          TEXT=":rotating_light: prove-organs FAILED on ${TRIGGER} (${REF}) — an organ did NOT deploy individually onto a clean UDS substrate. Doctrine 'individually deployable' is at risk. ${RUN_URL}"
+          payload=$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1]}))' "${TEXT}")
+          code=$(curl -sS -o /tmp/relay.out -w "%{http_code}" \
+            -X POST -H "Content-Type: application/json" \
+            -d "${payload}" "${SLACK_WEBHOOK_URL}")
+          echo "relay responded HTTP ${code}"
+          cat /tmp/relay.out 2>/dev/null || true
+          case "${code}" in
+            2*) echo "Alert delivered to the CI alert channel." ;;
+            *)  echo "::error::alert POST failed (HTTP ${code})"; exit 1 ;;
+          esac
