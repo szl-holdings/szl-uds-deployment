@@ -59,6 +59,7 @@ install -m 0755 "$here/sbin/a11oy-signing-key-watch"   /usr/local/sbin/a11oy-sig
 install -m 0755 "$here/sbin/szl-receipts-orphan-watch" /usr/local/sbin/szl-receipts-orphan-watch
 install -m 0755 "$here/sbin/vault-auto-unseal"          /usr/local/sbin/vault-auto-unseal
 install -m 0755 "$here/sbin/vault-keystore-offbox-backup" /usr/local/sbin/vault-keystore-offbox-backup
+install -m 0755 "$here/sbin/authelia-rotate-demo"      /usr/local/sbin/authelia-rotate-demo
 
 echo "[install] copying systemd units to /etc/systemd/system ..."
 install -m 0644 "$here/systemd/a11oy-coexist.service"        /etc/systemd/system/a11oy-coexist.service
@@ -103,6 +104,8 @@ install -m 0644 "$here/systemd/vault-auto-unseal.service"   /etc/systemd/system/
 install -m 0644 "$here/systemd/vault-auto-unseal.timer"     /etc/systemd/system/vault-auto-unseal.timer
 install -m 0644 "$here/systemd/vault-keystore-offbox-backup.service" /etc/systemd/system/vault-keystore-offbox-backup.service
 install -m 0644 "$here/systemd/vault-keystore-offbox-backup.timer"   /etc/systemd/system/vault-keystore-offbox-backup.timer
+install -m 0644 "$here/systemd/authelia-rotate-demo.service" /etc/systemd/system/authelia-rotate-demo.service
+install -m 0644 "$here/systemd/authelia-rotate-demo.timer"   /etc/systemd/system/authelia-rotate-demo.timer
 
 # The uptime/DNS watchers read their push-notification channel from
 # /etc/a11oy-uptime.env. That channel is a PRIVATE secret (an ntfy topic, etc.)
@@ -365,6 +368,7 @@ systemctl enable --now dns-drift-check.timer
 systemctl enable --now box-scripts-drift-check.timer
 systemctl enable --now vault-auto-unseal.timer
 systemctl enable --now vault-keystore-offbox-backup.timer
+systemctl enable --now authelia-rotate-demo.timer
 systemctl enable --now szl-alert-relay.service
 systemctl enable --now szl-alert-relay-watch.timer
 systemctl enable --now szl-signing-health-check.timer
