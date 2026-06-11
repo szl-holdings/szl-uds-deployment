@@ -182,15 +182,69 @@ jobs:
 
       - name: Wait for a11oy + the UDS Package to be ready
         run: |
-          set -euo pipefail
-          kubectl -n szl-a11oy rollout status deployment/a11oy --timeout=300s
+          set -uo pipefail
+          kubectl -n szl-a11oy rollout status deployment/a11oy --timeout=300s || true
+
+          wait_ready() {  # $1 = number of 5s polls
+            local n="$1" phase
+            for _ in $(seq 1 "${n}"); do
+              phase="$(kubectl -n szl-a11oy get package a11oy -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+              echo "package phase: ${phase:-<none>}"
+              [ "${phase}" = "Ready" ] && return 0
+              sleep 5
+            done
+            return 1
+          }
+
+          dump_waypoint() {
+            echo "── waypoint gateway ──"
+            kubectl -n szl-a11oy get gateway szl-a11oy-waypoint -o yaml || true
+            echo "── deploy / rs / pods in szl-a11oy ──"
+            kubectl -n szl-a11oy get deploy,rs,pods -o wide || true
+            echo "── events (szl-a11oy) ──"
+            kubectl -n szl-a11oy get events --sort-by=.lastTimestamp | tail -60 || true
+            echo "── istiod logs (waypoint / szl-a11oy) ──"
+            kubectl -n istio-system logs deploy/istiod --tail=500 2>/dev/null \
+              | grep -iE "szl-a11oy|waypoint" | tail -50 || true
+          }
+
           echo "── Waiting for the UDS Package to reconcile (authservice + Keycloak client) ──"
-          for _ in $(seq 1 60); do
-            phase="$(kubectl -n szl-a11oy get package a11oy -o jsonpath='{.status.phase}' 2>/dev/null || true)"
-            echo "package phase: ${phase:-<none>}"
-            [ "${phase}" = "Ready" ] && break
-            sleep 5
-          done
+          if wait_ready 48; then
+            echo "UDS Package is Ready."
+          else
+            # ROOT CAUSE (see https://github.com/szl-holdings/szl-uds-deployment Task 417):
+            # enabling authservice SSO makes uds-core create a per-namespace ambient
+            # waypoint (szl-a11oy-waypoint). The istiod-generated waypoint pod is mesh
+            # infrastructure (istio-proxy) — under this namespace's `restricted`
+            # PodSecurity the ReplicaSet cannot create that pod at all, so the Gateway
+            # never programs, the operator times out waiting for the waypoint, the
+            # Package goes phase=Failed, the admin-gateway expose VirtualService is
+            # never created, and unauth traffic 404s instead of redirecting to Keycloak.
+            # (szl-receipts never hit this: it is machine-to-machine and is never
+            # authservice-selected, so it never needs a waypoint.)
+            echo "::warning::UDS Package not Ready — diagnosing the ambient SSO waypoint"
+            dump_waypoint
+            echo "── Relaxing PodSecurity on szl-a11oy to baseline so the istiod waypoint"
+            echo "   pod can schedule (the a11oy app pod is unaffected), then forcing a"
+            echo "   fresh operator reconcile by recreating the Package. ─────────────────"
+            kubectl label ns szl-a11oy \
+              pod-security.kubernetes.io/enforce=baseline \
+              pod-security.kubernetes.io/enforce-version=latest \
+              pod-security.kubernetes.io/warn=baseline \
+              pod-security.kubernetes.io/audit=baseline --overwrite
+            # Recreating the Package resets generation so the operator re-runs the full
+            # reconcile from scratch; the waypoint pod now schedules under baseline PSA.
+            kubectl -n szl-a11oy delete package a11oy --ignore-not-found --wait=true || true
+            sleep 3
+            kubectl apply -f /tmp/a11oy-sso.yaml
+            if ! wait_ready 72; then
+              echo "::error::a11oy UDS Package still not Ready after relaxing PSA + re-reconcile"
+              dump_waypoint
+              kubectl -n szl-a11oy get package a11oy -o yaml || true
+              exit 1
+            fi
+            echo "UDS Package is Ready after waypoint self-heal."
+          fi
           kubectl -n szl-a11oy get package a11oy -o yaml | grep -E "phase:|ssoClients|authservice" || true
 
       # ── Map the gateway hostnames to the live Istio gateway IPs ──────────────────
