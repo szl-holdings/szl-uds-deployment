@@ -1,0 +1,79 @@
+# Copyright 2026 SZL Holdings — SPDX-License-Identifier: Apache-2.0
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vessels-web
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: vessels-web
+    app.kubernetes.io/name: vessels-web
+    app.kubernetes.io/part-of: szl-uds-mesh
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: vessels-web
+  template:
+    metadata:
+      labels:
+        app: vessels-web
+        app.kubernetes.io/name: vessels-web
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
+        runAsUser: {{ .Values.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.securityContext.runAsGroup }}
+        fsGroup: {{ .Values.securityContext.fsGroup }}
+        seccompProfile:
+          type: {{ .Values.securityContext.seccompProfile.type }}
+      containers:
+        - name: vessels
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.service.port }}
+              name: http
+          env:
+            - name: VESSELS_IMO_SANCTIONS_URL
+              value: "{{ .Values.vessels.sanctionsUrl }}"
+            - name: CLUSTER_DOMAIN
+              value: "{{ .Values.global.domain }}"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: {{ .Values.securityContext.allowPrivilegeEscalation }}
+            readOnlyRootFilesystem: {{ .Values.securityContext.readOnlyRootFilesystem }}
+            capabilities:
+              drop: {{ .Values.securityContext.capabilities.drop | toYaml | nindent 16 }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.healthPath }}
+              port: {{ .Values.service.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.healthPath }}
+              port: {{ .Values.service.port }}
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources: {{ .Values.resources | toYaml | nindent 12 }}
+        # Sidecar: NGINX reverse proxy for in-mesh TLS termination.
+        - name: nginx-proxy
+          image: "{{ .Values.proxyImage.repository }}:{{ .Values.proxyImage.tag }}"
+          imagePullPolicy: {{ .Values.proxyImage.pullPolicy }}
+          ports:
+            - containerPort: 8443
+              name: https
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 101
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: tmp
+          emptyDir: {}

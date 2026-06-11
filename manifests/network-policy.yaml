@@ -1,0 +1,38 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# Default-deny NetworkPolicy for the szl-vessels namespace. Vendored locally so
+# uds/zarf.yaml's `szl-vessels-namespace` component resolves this file (no longer
+# reported UNVERIFIABLE by deploy-entry-guard). Allows in-namespace traffic and
+# DNS egress; everything else is denied by default. Istio ambient mTLS layers on
+# top (the namespace carries istio.io/dataplane-mode: ambient).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: szl-vessels-default-deny
+  namespace: szl-vessels
+  labels:
+    app.kubernetes.io/part-of: szl-uds-mesh
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from other pods within the szl-vessels namespace.
+    - from:
+        - podSelector: {}
+  egress:
+    # Allow traffic to other pods within the szl-vessels namespace.
+    - to:
+        - podSelector: {}
+    # Allow DNS resolution (CoreDNS in kube-system).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

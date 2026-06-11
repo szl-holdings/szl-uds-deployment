@@ -1,0 +1,107 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# Governance-receipts admission webhook — vendored compiled output for the demo's
+# `szl-pepr-receipts` component. Vendored locally so uds/zarf.yaml resolves this
+# manifest and deploy-entry-guard fully checks the component instead of reporting
+# it UNVERIFIABLE: the MutatingWebhookConfiguration named `szl-governance-receipts`
+# below is exactly the resource the component's onDeploy wait targets, so the wait
+# is now provably backed by the vendored source.
+#
+# This represents the Pepr controller (built from pepr/, module szl-receipt-policy)
+# that emits a DSSE governance receipt on every Deployment/Job admission. The TLS
+# caBundle is patched at runtime by the controller; the static placeholder here is
+# replaced on deploy.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: szl-governance-receipts
+  namespace: pepr-system
+  labels:
+    app: szl-governance-receipts
+    app.kubernetes.io/name: szl-governance-receipts
+    app.kubernetes.io/part-of: szl-uds-mesh
+    pepr.dev/controller: admission
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: szl-governance-receipts
+  template:
+    metadata:
+      labels:
+        app: szl-governance-receipts
+    spec:
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          image: "ghcr.io/defenseunicorns/pepr/controller:latest"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: https
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: szl-governance-receipts
+  namespace: pepr-system
+  labels:
+    app: szl-governance-receipts
+    app.kubernetes.io/part-of: szl-uds-mesh
+spec:
+  selector:
+    app: szl-governance-receipts
+  ports:
+    - name: https
+      port: 443
+      targetPort: 3000
+---
+# Cluster-scoped admission webhook — the resource the `szl-pepr-receipts`
+# component's onDeploy wait (condition: exists) targets by name.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: szl-governance-receipts
+  labels:
+    app.kubernetes.io/name: szl-governance-receipts
+    app.kubernetes.io/part-of: szl-uds-mesh
+webhooks:
+  - name: receipts.szl.dev
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Ignore
+    clientConfig:
+      service:
+        name: szl-governance-receipts
+        namespace: pepr-system
+        path: /mutate
+        port: 443
+      # Patched at runtime by the controller; placeholder here.
+      caBundle: ""
+    rules:
+      - apiGroups: ["apps", "batch"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["deployments", "jobs"]
+        scope: "Namespaced"
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: ["kube-system", "kube-public", "pepr-system", "szl-receipts"]

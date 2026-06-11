@@ -1,0 +1,52 @@
+# Copyright 2026 SZL Holdings — SPDX-License-Identifier: Apache-2.0
+# vessels Helm values. The namespace is value-driven so the chart renders into
+# the SAME namespace (szl-vessels) the uds/zarf.yaml `vessels-web` component
+# declares for it — keeping deploy-entry-guard's namespace-agreement check green.
+
+# Cluster domain — MUST match UDS Core DOMAIN.
+global:
+  domain: "uds.dev"
+
+# Namespace every templated resource renders into. The zarf component installs
+# this chart into szl-vessels; this value MUST match (Task #507 class).
+namespace: szl-vessels
+
+# Replica count (zarf maps VESSELS_REPLICAS -> replicaCount).
+replicaCount: 1
+
+image:
+  repository: ghcr.io/szl-holdings/vessels
+  tag: "0.3.1"
+  pullPolicy: IfNotPresent
+
+# Sidecar: NGINX reverse proxy for TLS termination inside the mesh.
+proxyImage:
+  repository: docker.io/library/nginx
+  tag: "1.27-alpine"
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8080
+
+healthPath: "/healthz"
+
+vessels:
+  # Upstream OFAC/UN sanctions feed URL (zarf maps VESSELS_IMO_SANCTIONS_URL).
+  # Empty string => airgap-safe mode (warn + skip).
+  sanctionsUrl: "https://sanctionslist.ofac.treas.gov/Home/SdnList"
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  seccompProfile:
+    type: RuntimeDefault
+  capabilities:
+    drop: ["ALL"]
+
+resources:
+  requests: {cpu: 20m, memory: 128Mi}
+  limits: {cpu: "1", memory: 512Mi}

@@ -1,0 +1,57 @@
+# Copyright 2026 SZL Holdings — SPDX-License-Identifier: Apache-2.0
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uds-mesh-relay
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: uds-mesh-relay
+    app.kubernetes.io/name: uds-mesh-relay
+    app.kubernetes.io/part-of: szl-uds-mesh
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: uds-mesh-relay
+  template:
+    metadata:
+      labels:
+        app: uds-mesh-relay
+        app.kubernetes.io/name: uds-mesh-relay
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
+        runAsUser: {{ .Values.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.securityContext.runAsGroup }}
+        fsGroup: {{ .Values.securityContext.fsGroup }}
+        seccompProfile:
+          type: {{ .Values.securityContext.seccompProfile.type }}
+      containers:
+        - name: relay
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.service.port }}
+              name: otlp-grpc
+          env:
+            - name: OTEL_ENDPOINT
+              value: "{{ .Values.otel.endpoint }}"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: {{ .Values.securityContext.allowPrivilegeEscalation }}
+            readOnlyRootFilesystem: {{ .Values.securityContext.readOnlyRootFilesystem }}
+            capabilities:
+              drop: {{ .Values.securityContext.capabilities.drop | toYaml | nindent 16 }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.healthPath }}
+              port: {{ .Values.service.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources: {{ .Values.resources | toYaml | nindent 12 }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
