@@ -423,6 +423,11 @@ jobs:
     #   * legacy flat-root receipts (pre-sharding files in the store root) are
     #     STILL read and verified after an archival --delete run — guarding the
     #     additive read path so the oldest receipts never go dark.
+    #   * COLD-archived tarballs are re-opened and proven to still be a
+    #     verifiable chain segment: each receipt's Ed25519/DSSE signature +
+    #     chain hash + intra-bucket link re-verify offline (public key only),
+    #     the manifest tarball_sha256 matches the actual bytes, and the cold
+    #     segments re-stitch GENESIS -> bucket -> live tail.
     # A regression in bucket math, the sealed-vs-tail boundary, the manifest
     # boundary hashes, the legacy-root read path, or the verify gate passes the
     # unit test but fails loudly here.

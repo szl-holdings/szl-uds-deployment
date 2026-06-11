@@ -40,6 +40,23 @@
 #        re-attach cold storage to the live chain;
 #     5. post-archive `verify-store` over what remains live still passes.
 #
+#   PHASE A2 - COLD tarballs are still a verifiable chain segment
+#     verify-store only audits what is LIVE; the whole point of archival is that a
+#     sealed bucket can be re-attached to the chain LATER from cold storage. This
+#     re-opens every <cold_dir>/<bucket>.tar.gz and proves, with NOTHING but the
+#     public key + manifest:
+#       * the manifest's tarball_sha256 matches the actual tarball bytes (no
+#         silent corruption of the archive at rest);
+#       * every receipt inside re-verifies its Ed25519/DSSE signature, its SHA-256
+#         chain hash, and its intra-bucket prev_hash link - verified INDEPENDENTLY
+#         of server.py (the cryptography lib here, not the server's own verifier,
+#         so this cannot go hollow if the server's verifier regresses);
+#       * the manifest's first_prev_hash/last_hash match what the real receipt
+#         bytes say, and the cold segments stitch GENESIS -> bucket -> bucket ->
+#         the surviving LIVE tail - an auditor can re-attach cold storage to disk;
+#       * the offline verifier is not an always-pass: a flipped byte in a cold
+#         receipt breaks both its signature and its chain hash.
+#
 #   PHASE B — verify-store actually catches tampering
 #     A single flipped byte in one stored receipt flips chain_ok to false and
 #     names the receipt (so "chain_ok=true" is not a hollow always-pass).
@@ -210,6 +227,94 @@ def _receipts_in_bucket(store, bucket):
             if e.is_file() and e.name.endswith(".json")]
     recs.sort(key=lambda r: r.get("chain", {}).get("chain_index", 0))
     return recs
+
+
+# ── cold-archive re-verification (offline, public-key only) ──────────────────────
+# These mirror server.py's signing/chain scheme but are RE-IMPLEMENTED here rather
+# than imported, so PHASE A2 verifies cold tarballs INDEPENDENTLY of the server's
+# own verifier — the property under test is "a cold bucket is verifiable with just
+# the public key", not "server.py agrees with itself".
+_PAYLOAD_TYPE = "application/vnd.szl.receipt.v1+json"  # mirrors server.PAYLOAD_TYPE
+
+
+def _public_key_raw_from_pem(key_path):
+    """Derive the 32-byte raw Ed25519 PUBLIC key from the guard's private PEM.
+    Cold re-verification uses ONLY the public key — exactly the posture an auditor
+    has when re-attaching a cold bucket (the private key never leaves the signer)."""
+    from cryptography.hazmat.primitives.serialization import (
+        load_pem_private_key, Encoding, PublicFormat)
+    with open(key_path, "rb") as f:
+        priv = load_pem_private_key(f.read(), password=None)
+    return priv.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+
+
+def _dsse_pae(body, payload_type=_PAYLOAD_TYPE):
+    """Canonical DSSEv1 PAE (mirrors server.dsse_pae)."""
+    tb = payload_type.encode("utf-8")
+    return b" ".join([b"DSSEv1", str(len(tb)).encode("ascii"), tb,
+                      str(len(body)).encode("ascii"), body])
+
+
+def _b64u_decode(s):
+    import base64
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def _verify_receipt_sig(rec, public_key_raw):
+    """True iff the receipt's DSSE Ed25519 signature verifies over the canonical
+    PAE of its payload, using ONLY the public key (mirrors server.verify_dsse)."""
+    import base64
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    from cryptography.exceptions import InvalidSignature
+    env = rec.get("envelope", {}) or {}
+    sigs = env.get("signatures", [])
+    if not sigs:
+        return False
+    sig_b64u = sigs[0].get("sig", "")
+    if not sig_b64u or sig_b64u.startswith("UNSIGNED"):
+        return False
+    body = base64.b64decode(env.get("payload", ""))
+    pae = _dsse_pae(body, env.get("payloadType", _PAYLOAD_TYPE))
+    try:
+        Ed25519PublicKey.from_public_bytes(public_key_raw).verify(
+            _b64u_decode(sig_b64u), pae)
+        return True
+    except InvalidSignature:
+        return False
+    except Exception:
+        return False
+
+
+def _chain_hash(rec):
+    """SHA-256 over the canonical signed envelope — the chain link value
+    (mirrors server._receipt_hash)."""
+    import hashlib
+    canonical = json.dumps(rec["envelope"], sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _sha256_file(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _extract_cold_bucket(tar_path, bucket):
+    """Extract a cold tarball into a fresh temp dir and return (records sorted by
+    chain_index, temp_dir). The server tars the bucket as `tar.add(bdir,
+    arcname=bucket)`, so receipts live under `<bucket>/*.json` inside the tarball."""
+    import tarfile
+    tmp = tempfile.mkdtemp(prefix="szl-cold-extract-")
+    with tarfile.open(tar_path, "r:gz") as tar:
+        tar.extractall(tmp)
+    bdir = os.path.join(tmp, bucket)
+    recs = [_read_json(e.path) for e in os.scandir(bdir)
+            if e.is_file() and e.name.endswith(".json")]
+    recs.sort(key=lambda r: r.get("chain", {}).get("chain_index", 0))
+    return recs, tmp
 
 
 # ── build a real, signed, multi-bucket store via the running server ───────────────
@@ -401,6 +506,96 @@ def main():
         fails += _assert(rep["valid"] == rep["total"] == tail_count,
                          f"post-archive live store = the tail bucket only "
                          f"({rep['total']} receipts)")
+
+        # ── PHASE A2: COLD-archived tarballs re-verify offline + re-stitch ───────
+        # verify-store above only audits the LIVE store. Re-open every cold tarball
+        # and prove each sealed bucket is STILL a valid, verifiable chain segment on
+        # its own — with nothing but the public key + manifest — and that the cold
+        # segments re-stitch GENESIS -> ... -> the surviving live tail. Verification
+        # is independent of server.py (cryptography lib here), so a regression in the
+        # server's own verifier cannot make this pass hollowly.
+        print("\n== PHASE A2: cold-archived tarballs re-verify offline + re-stitch ==")
+        pub = _public_key_raw_from_pem(key)
+        cold_segments = {}   # bucket -> (first_prev_hash, last_hash) from REAL bytes
+        for b in sealed_expected:
+            tar_path = os.path.join(cold, f"{b}.tar.gz")
+            mf = manifests[b]
+            # (1) no silent corruption: manifest tarball_sha256 == actual bytes.
+            fails += _assert(_sha256_file(tar_path) == mf.get("tarball_sha256"),
+                             f"cold tarball[{b}] sha256 matches its manifest "
+                             f"(no silent corruption at rest)")
+            # (2) re-open the tarball and re-verify every receipt inside it.
+            recs, tmp = _extract_cold_bucket(tar_path, b)
+            try:
+                fails += _assert(len(recs) == mf.get("count") == shard_size,
+                                 f"cold bucket[{b}] holds count receipts "
+                                 f"({len(recs)} == {mf.get('count')} == {shard_size})")
+                seg_ok = bool(recs)
+                expected_prev = (recs[0].get("chain", {}).get("prev_hash")
+                                 if recs else None)
+                first_prev = expected_prev
+                last_hash = None
+                for rec in recs:
+                    chain = rec.get("chain", {}) or {}
+                    sig_ok = _verify_receipt_sig(rec, pub)
+                    hash_ok = (_chain_hash(rec) == chain.get("hash"))
+                    link_ok = (chain.get("prev_hash") == expected_prev)
+                    seg_ok = seg_ok and sig_ok and hash_ok and link_ok
+                    expected_prev = chain.get("hash")
+                    last_hash = chain.get("hash") or last_hash
+                fails += _assert(seg_ok,
+                                 f"cold bucket[{b}]: every receipt's Ed25519/DSSE "
+                                 f"signature + chain hash + intra-bucket link "
+                                 f"re-verify offline")
+                # (3) the manifest boundary hashes match the REAL receipt bytes,
+                #     not just self-consistent metadata.
+                fails += _assert(first_prev == mf.get("first_prev_hash"),
+                                 f"cold bucket[{b}] first receipt prev_hash == "
+                                 f"manifest first_prev_hash")
+                fails += _assert(last_hash == mf.get("last_hash"),
+                                 f"cold bucket[{b}] last receipt hash == "
+                                 f"manifest last_hash")
+                cold_segments[b] = (first_prev, last_hash)
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+
+        # (4) the re-verified cold segments stitch into ONE chain from GENESIS up to
+        #     the surviving LIVE tail — using hashes read from the TARBALL bytes, so
+        #     an auditor can re-attach cold storage to what is still on disk.
+        if cold_segments and len(cold_segments) == len(sealed_expected):
+            fails += _assert(cold_segments[sealed_expected[0]][0] == GENESIS,
+                             "lowest cold bucket re-attaches to GENESIS (from bytes)")
+            for i in range(len(sealed_expected) - 1):
+                cur, nxt = sealed_expected[i], sealed_expected[i + 1]
+                fails += _assert(cold_segments[cur][1] == cold_segments[nxt][0],
+                                 f"cold segments stitch: {cur}.last_hash == "
+                                 f"{nxt}.first_prev_hash (from tarball bytes)")
+            tail_first_prev = (_receipts_in_bucket(store_a, tail_bucket)[0]
+                               .get("chain", {}).get("prev_hash"))
+            fails += _assert(
+                cold_segments[sealed_expected[-1]][1] == tail_first_prev,
+                "highest cold bucket's last_hash == live tail's first prev_hash "
+                "(cold re-attaches to the surviving live store)")
+
+        # (5) the offline cold verifier is NOT a hollow always-pass: a single
+        #     flipped payload byte in a cold receipt must break BOTH its signature
+        #     and its chain hash when re-verified here.
+        recs0, tmp0 = _extract_cold_bucket(
+            os.path.join(cold, f"{sealed_expected[0]}.tar.gz"), sealed_expected[0])
+        try:
+            import base64 as _b64
+            victim = recs0[0]
+            raw = bytearray(_b64.b64decode(victim["envelope"]["payload"]))
+            raw[0] ^= 0x01
+            victim["envelope"]["payload"] = _b64.b64encode(bytes(raw)).decode()
+            fails += _assert(not _verify_receipt_sig(victim, pub),
+                             "offline cold verifier REJECTS a flipped-byte receipt "
+                             "(signature no longer verifies — not an always-pass)")
+            fails += _assert(
+                _chain_hash(victim) != victim.get("chain", {}).get("hash"),
+                "flipping a cold receipt's payload breaks its chain hash too")
+        finally:
+            shutil.rmtree(tmp0, ignore_errors=True)
 
         # ── PHASE B: verify-store actually catches tampering ─────────────────────
         print("\n== PHASE B: a tampered receipt flips chain_ok to false ==")
