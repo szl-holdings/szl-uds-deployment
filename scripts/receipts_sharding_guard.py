@@ -405,9 +405,17 @@ def main():
         store_b = os.path.join(work, "store_b")
         store_c = os.path.join(work, "store_c")
         store_d = os.path.join(work, "store_d")
+        store_e = os.path.join(work, "store_e")
+        store_e2 = os.path.join(work, "store_e2")
+        store_e3 = os.path.join(work, "store_e3")
+        store_e4 = os.path.join(work, "store_e4")
         shutil.copytree(store, store_b)
         shutil.copytree(store, store_c)
         shutil.copytree(store, store_d)
+        shutil.copytree(store, store_e)
+        shutil.copytree(store, store_e2)
+        shutil.copytree(store, store_e3)
+        shutil.copytree(store, store_e4)
 
         # ── PHASE A: sharding layout + verify-store + archive-shards ─────────────
         print("\n== PHASE A: sharding write path + verify-store + archive-shards ==")
@@ -717,6 +725,119 @@ def main():
         fails += _assert(rep["bad_link"] == 1,
                          f"only the one expected legacy↔tail boundary link dangles "
                          f"after archiving the middle buckets ({rep['bad_link']} == 1)")
+
+        # ── PHASE E: archive --delete → restore-shards round-trip ────────────────
+        # restore-shards is the committed inverse of archive-shards. It must verify
+        # each cold tarball against its manifest (tarball_sha256 + chain linkage)
+        # BEFORE unpacking it back under <store>/shards/<bucket>/, refuse on any
+        # mismatch, and drop the cold ledger entry so a restored bucket is no longer
+        # treated as archived. The headline guarantee: after a full archive --delete
+        # then restore, verify-store sees the WHOLE reunited store as one valid chain.
+        print("\n== PHASE E: archive --delete → restore-shards round-trip ==")
+        tail_only = n - len(sealed_expected) * shard_size
+
+        # E1: full round trip — archive every sealed bucket out (deleting it from the
+        #     live store), then restore them all back and re-audit the reunited store.
+        cold_e = os.path.join(work, "cold_e")
+        rc, rep = _cli(store_e, key, shard_size,
+                       ["archive-shards", "--delete"], cold_dir=cold_e)
+        fails += _assert(sorted(rep.get("archived", [])) == sealed_expected,
+                         f"E1 archive --delete swept every sealed bucket to cold "
+                         f"({sorted(rep.get('archived', []))} == {sealed_expected})")
+        fails += _assert(_bucket_names(store_e) == [tail_bucket],
+                         f"E1 only the tail bucket remains live after archive --delete "
+                         f"({_bucket_names(store_e)} == {[tail_bucket]})")
+        rc, rep = _cli(store_e, key, shard_size,
+                       ["restore-shards"], cold_dir=cold_e)
+        print(f"  restore-shards (all): rc={rc} restored={rep.get('restored')} "
+              f"failed={rep.get('failed')}")
+        fails += _assert(rc == 0 and not rep.get("error"),
+                         "E1 restore-shards (all) exits 0 with no error")
+        fails += _assert(sorted(rep.get("restored", [])) == sealed_expected
+                         and rep.get("failed") == [],
+                         f"E1 every archived bucket restored, none failed "
+                         f"(restored={sorted(rep.get('restored', []))}, "
+                         f"failed={rep.get('failed')})")
+        fails += _assert(_bucket_names(store_e) == sealed_expected + [tail_bucket],
+                         f"E1 all buckets are live again under shards/ "
+                         f"({_bucket_names(store_e)} == "
+                         f"{sealed_expected + [tail_bucket]})")
+        ledger_e = _read_json(os.path.join(cold_e, "archived.json")) or {}
+        fails += _assert(ledger_e.get("archived") == [],
+                         f"E1 cold ledger is emptied so restored buckets are no longer "
+                         f"treated as archived (archived={ledger_e.get('archived')})")
+        leftover_tars = [f for f in os.listdir(cold_e) if f.endswith(".tar.gz")]
+        fails += _assert(leftover_tars == [],
+                         f"E1 restored cold tarballs are removed ({leftover_tars})")
+        rc, rep = _cli(store_e, key, shard_size, ["verify-store"])
+        print(f"  reunited verify-store: total={rep['total']} valid={rep['valid']} "
+              f"bad_sig={rep['bad_sig']} bad_hash={rep['bad_hash']} "
+              f"bad_link={rep['bad_link']} chain_ok={rep['chain_ok']}")
+        fails += _assert(rc == 0 and rep["chain_ok"] is True,
+                         "E1 verify-store passes over the FULL reunited store")
+        fails += _assert(rep["total"] == n and rep["valid"] == n,
+                         f"E1 all {n} receipts present + valid after round trip "
+                         f"(total={rep['total']} valid={rep['valid']})")
+
+        # E2: a single named bucket can be restored; the others stay archived.
+        cold_e2 = os.path.join(work, "cold_e2")
+        _cli(store_e2, key, shard_size,
+             ["archive-shards", "--delete"], cold_dir=cold_e2)
+        one = sealed_expected[1]
+        rc, rep = _cli(store_e2, key, shard_size,
+                       ["restore-shards", "--bucket", one], cold_dir=cold_e2)
+        print(f"  restore --bucket {one}: rc={rc} restored={rep.get('restored')}")
+        fails += _assert(rc == 0 and rep.get("restored") == [one],
+                         f"E2 restore --bucket restores only the named bucket "
+                         f"(restored={rep.get('restored')})")
+        fails += _assert(one in _bucket_names(store_e2),
+                         f"E2 the named bucket is live again ({one})")
+        ledger_e2 = _read_json(os.path.join(cold_e2, "archived.json")) or {}
+        still_cold = sorted(e["bucket"] for e in ledger_e2.get("archived", []))
+        fails += _assert(still_cold == [b for b in sealed_expected if b != one],
+                         f"E2 the other buckets stay archived in the ledger "
+                         f"({still_cold})")
+
+        # E3: a corrupted cold tarball is REFUSED — sha256 mismatch must block the
+        #     restore, leave the bucket out of the live store, and keep the ledger
+        #     entry + tarball intact (no silent data loss).
+        cold_e3 = os.path.join(work, "cold_e3")
+        _cli(store_e3, key, shard_size,
+             ["archive-shards", "--delete"], cold_dir=cold_e3)
+        bad = sealed_expected[0]
+        with open(os.path.join(cold_e3, f"{bad}.tar.gz"), "ab") as fh:
+            fh.write(b"corrupting-trailer")
+        rc, rep = _cli(store_e3, key, shard_size,
+                       ["restore-shards", "--bucket", bad], cold_dir=cold_e3)
+        print(f"  restore corrupt {bad}: rc={rc} restored={rep.get('restored')} "
+              f"failed={rep.get('failed')}")
+        fails += _assert(rc == 1 and rep.get("failed") == [bad]
+                         and rep.get("restored") == [],
+                         f"E3 a tarball_sha256 mismatch is refused "
+                         f"(rc={rc} failed={rep.get('failed')})")
+        fails += _assert(bad not in _bucket_names(store_e3),
+                         f"E3 the corrupt bucket is NOT placed into the live store "
+                         f"({_bucket_names(store_e3)})")
+        ledger_e3 = _read_json(os.path.join(cold_e3, "archived.json")) or {}
+        fails += _assert(
+            any(e["bucket"] == bad for e in ledger_e3.get("archived", [])),
+            "E3 the refused bucket's cold ledger entry is retained")
+        fails += _assert(os.path.exists(os.path.join(cold_e3, f"{bad}.tar.gz")),
+                         "E3 the refused (corrupt) cold tarball is NOT deleted")
+
+        # E4: restore must REFUSE to clobber a bucket that is already live. Archive
+        #     WITHOUT --delete so the bucket exists both live and in cold, then prove
+        #     restore-shards declines rather than overwriting live receipts.
+        cold_e4 = os.path.join(work, "cold_e4")
+        _cli(store_e4, key, shard_size, ["archive-shards"], cold_dir=cold_e4)
+        live_bucket = sealed_expected[0]
+        rc, rep = _cli(store_e4, key, shard_size,
+                       ["restore-shards", "--bucket", live_bucket], cold_dir=cold_e4)
+        print(f"  restore onto live {live_bucket}: rc={rc} failed={rep.get('failed')}")
+        fails += _assert(rc == 1 and rep.get("failed") == [live_bucket]
+                         and rep.get("restored") == [],
+                         f"E4 restore refuses to clobber an already-live bucket "
+                         f"(rc={rc} failed={rep.get('failed')})")
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

@@ -68,6 +68,7 @@ import sys
 import json
 import time
 import heapq
+import shutil
 import base64
 import hashlib
 import tarfile
@@ -1434,6 +1435,203 @@ def archive_sealed_shards(cold_dir, delete=False):
     }
 
 
+def _safe_extract_bucket(tar_path, bucket, dest_dir):
+    """Extract a cold bucket tarball into dest_dir, refusing any member that
+    would escape dest_dir or land outside the expected `<bucket>/` prefix
+    (path-traversal / absolute-path hardening — these tarballs are operator
+    input from cold storage). Returns the list of extracted receipt file paths
+    under dest_dir/<bucket>/."""
+    extracted = []
+    with tarfile.open(tar_path, "r:gz") as tar:
+        members = tar.getmembers()
+        for m in members:
+            name = m.name
+            # Reject absolute paths, parent traversal, and anything not under the
+            # bucket dir the manifest says this tarball holds.
+            norm = os.path.normpath(name)
+            if (os.path.isabs(name) or norm.startswith("..")
+                    or (norm != bucket and not norm.startswith(bucket + os.sep))):
+                raise ValueError(
+                    f"cold tarball {os.path.basename(tar_path)} contains an "
+                    f"unexpected member {name!r} (not under {bucket}/)")
+            if not (m.isfile() or m.isdir()):
+                raise ValueError(
+                    f"cold tarball {os.path.basename(tar_path)} contains a "
+                    f"non-regular member {name!r} (only files/dirs allowed)")
+        tar.extractall(dest_dir, members=members)
+    bdir = os.path.join(dest_dir, bucket)
+    if os.path.isdir(bdir):
+        for e in os.scandir(bdir):
+            if e.is_file() and e.name.endswith(".json"):
+                extracted.append(e.path)
+    return extracted
+
+
+def restore_archived_shards(cold_dir, bucket=None):
+    """Inverse of archive_sealed_shards: stitch one (or every) cold-archived
+    shard bucket back into the LIVE store under <store>/shards/<bucket>/.
+
+    For each candidate bucket this VERIFIES before it ever touches the live
+    store, and refuses (skips) on any mismatch — a cold bucket is never trusted
+    blindly:
+      1. the cold tarball's sha256 matches the tarball_sha256 its manifest
+         recorded (no silent corruption of the archive at rest);
+      2. the bucket extracts cleanly (no path-traversal / unexpected members);
+      3. every receipt re-verifies its Ed25519/DSSE signature + stored hash +
+         intra-bucket prev_hash link (the same _verify_bucket gate archival
+         used), the receipt count matches the manifest, and the bucket's real
+         first_prev_hash / last_hash match the manifest's recorded boundary
+         hashes — so chain linkage is proven, not assumed.
+
+    Only after a bucket passes ALL of the above is it moved into the live store.
+    A bucket that already exists live is REFUSED (never clobbered). On success
+    the cold ledger entry is removed and the cold tarball + manifest are deleted,
+    so the bucket is no longer treated as archived and a later archive-shards run
+    can re-seal it. Returns a summary dict; `error`/`failed` signal a non-zero
+    operator exit.
+
+    `bucket` (optional) restores only that one bucket; otherwise every bucket in
+    the cold ledger is restored."""
+    ledger_path = os.path.join(cold_dir, "archived.json")
+    try:
+        with open(ledger_path) as f:
+            ledger = json.load(f)
+    except FileNotFoundError:
+        return {"error": f"no cold ledger at {ledger_path}; nothing to restore"}
+    except Exception as e:
+        return {"error": f"cold ledger {ledger_path} unreadable: {e}"}
+
+    entries = ledger.get("archived", []) or []
+    by_bucket = {e.get("bucket"): e for e in entries}
+    if bucket is not None:
+        if bucket not in by_bucket:
+            return {"error": f"bucket {bucket!r} is not in the cold ledger "
+                             f"{ledger_path}"}
+        targets = [bucket]
+    else:
+        targets = sorted(by_bucket)
+
+    restored, failed = [], []
+    for name in targets:
+        entry = by_bucket[name]
+        # Prefer the per-bucket manifest sidecar; fall back to the ledger entry
+        # (they carry the same fields). The manifest is the at-rest source of
+        # truth written alongside the tarball.
+        manifest_path = os.path.join(cold_dir, f"{name}.manifest.json")
+        try:
+            with open(manifest_path) as f:
+                mf = json.load(f)
+        except Exception:
+            mf = entry
+        tar_name = mf.get("tarball") or f"{name}.tar.gz"
+        tar_path = os.path.join(cold_dir, tar_name)
+
+        live_dir = os.path.join(SHARDS_DIR, name)
+        if os.path.isdir(live_dir) and any(
+                e.name.endswith(".json") for e in os.scandir(live_dir)):
+            failed.append(name)
+            log("error", f"[restore] bucket {name} already exists live at "
+                         f"{live_dir}; refusing to clobber")
+            continue
+        if not os.path.exists(tar_path):
+            failed.append(name)
+            log("error", f"[restore] cold tarball missing for bucket {name} "
+                         f"({tar_path})")
+            continue
+
+        # (1) integrity at rest: tarball bytes must match the manifest sha256
+        # BEFORE we unpack anything.
+        expected_sha = mf.get("tarball_sha256")
+        sha = hashlib.sha256()
+        with open(tar_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                sha.update(chunk)
+        if not expected_sha or sha.hexdigest() != expected_sha:
+            failed.append(name)
+            log("error", f"[restore] bucket {name} tarball sha256 mismatch "
+                         f"(got {sha.hexdigest()[:12]}…, manifest "
+                         f"{str(expected_sha)[:12]}…); refusing")
+            continue
+
+        staging = os.path.join(cold_dir, f".restore-{name}")
+        if os.path.isdir(staging):
+            shutil.rmtree(staging, ignore_errors=True)
+        os.makedirs(staging, exist_ok=True)
+        try:
+            try:
+                paths = _safe_extract_bucket(tar_path, name, staging)
+            except Exception as e:
+                failed.append(name)
+                log("error", f"[restore] bucket {name} failed to extract: {e}")
+                continue
+            if not paths:
+                failed.append(name)
+                log("error", f"[restore] bucket {name} extracted no receipts")
+                continue
+            # (2)/(3) chain verification of the extracted receipts.
+            ok, count, first_prev, last_hash = _verify_bucket(paths)
+            if not ok:
+                failed.append(name)
+                log("error", f"[restore] bucket {name} failed chain verification; "
+                             f"refusing to restore")
+                continue
+            exp_count = mf.get("count")
+            if exp_count is not None and count != exp_count:
+                failed.append(name)
+                log("error", f"[restore] bucket {name} receipt count {count} != "
+                             f"manifest count {exp_count}; refusing")
+                continue
+            if (first_prev != mf.get("first_prev_hash")
+                    or last_hash != mf.get("last_hash")):
+                failed.append(name)
+                log("error", f"[restore] bucket {name} boundary hashes do not "
+                             f"match the manifest (chain linkage); refusing")
+                continue
+
+            # Verified — move the bucket into the live store atomically-ish.
+            os.makedirs(SHARDS_DIR, exist_ok=True)
+            extracted_bdir = os.path.join(staging, name)
+            if os.path.isdir(live_dir):
+                # empty dir left behind (e.g. by a prior aborted run): replace it.
+                try:
+                    os.rmdir(live_dir)
+                except OSError:
+                    pass
+            try:
+                os.replace(extracted_bdir, live_dir)
+            except OSError:
+                # cross-device or non-empty: fall back to a per-file move.
+                os.makedirs(live_dir, exist_ok=True)
+                for p in paths:
+                    shutil.move(p, os.path.join(live_dir, os.path.basename(p)))
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+        # Restored: drop the ledger entry + remove the (now redundant) cold
+        # artifacts so the bucket is no longer treated as archived and a later
+        # archive-shards run can re-seal it.
+        ledger["archived"] = [e for e in ledger.get("archived", [])
+                              if e.get("bucket") != name]
+        for stale in (tar_path, manifest_path):
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
+        restored.append(name)
+        log("info", f"[restore] bucket {name} → {live_dir} "
+                    f"({count} receipts) restored from cold storage")
+
+    with open(ledger_path, "w") as f:
+        json.dump(ledger, f, indent=2)
+    return {
+        "cold_dir": cold_dir,
+        "store_path": STORE_PATH,
+        "requested": bucket or "(all)",
+        "restored": restored,
+        "failed": failed,
+    }
+
+
 def _cli(argv):
     """Operator CLI: bounded full-store audit + cold-storage shard rollup.
     These reuse the same Ed25519/DSSE verification as the server, so they need a
@@ -1456,7 +1654,22 @@ def _cli(argv):
         report = archive_sealed_shards(cold_dir, delete=delete)
         print(json.dumps(report, indent=2))
         return 1 if report.get("error") or report.get("skipped_failed_verify") else 0
-    print("usage: server.py [verify-store | archive-shards [--cold-dir DIR] [--delete]]",
+    if cmd == "restore-shards":
+        cold_dir = os.environ.get(
+            "SZL_RECEIPT_COLD_DIR", os.path.join(STORE_PATH, "cold"))
+        bucket = None
+        rest = argv[1:]
+        for i, a in enumerate(rest):
+            if a == "--cold-dir" and i + 1 < len(rest):
+                cold_dir = rest[i + 1]
+            elif a == "--bucket" and i + 1 < len(rest):
+                bucket = rest[i + 1]
+        report = restore_archived_shards(cold_dir, bucket=bucket)
+        print(json.dumps(report, indent=2))
+        return 1 if report.get("error") or report.get("failed") else 0
+    print("usage: server.py [verify-store | "
+          "archive-shards [--cold-dir DIR] [--delete] | "
+          "restore-shards [--cold-dir DIR] [--bucket NAME]]",
           file=sys.stderr)
     return 2
 
