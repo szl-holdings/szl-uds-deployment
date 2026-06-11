@@ -1,0 +1,12 @@
+[Unit]
+Description=Rotate the public read-only a11oy demo login password (Authelia)
+Documentation=file:///usr/local/sbin/authelia-rotate-demo
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Generates a fresh password, swaps demo's argon2 hash, restarts Authelia,
+# verifies, writes the new password to /opt/authelia/demo-password.txt (600),
+# and pings the owner (no password in the push) to update any shared link.
+ExecStart=/usr/local/sbin/authelia-rotate-demo

@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodically rotate the public a11oy demo login so a leaked/scraped password self-expires
+
+[Timer]
+# Monthly: a publicly-posted demo password should not live forever. On rotation
+# the owner is pinged (see the .service) and the new password is on the box at
+# /opt/authelia/demo-password.txt (authelia-rotate-demo --print).
+OnCalendar=monthly
+Persistent=true
+AccuracySec=1h
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

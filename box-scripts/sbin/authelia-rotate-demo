@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+#
+# authelia-rotate-demo — rotate the PUBLIC read-only `demo` login password for
+# the a11oy.net Authelia SSO (box 167.233.50.75).
+#
+# WHY: the `demo` / group:guests account is meant to be shared publicly (e.g. in
+# a LinkedIn post) so anyone can try the live read-only UDS dashboard. A publicly
+# posted password will eventually be scraped/abused, so it must be cheap to
+# rotate (and rotate on a cadence). This script does the whole rotation in one
+# command: generate a fresh password, argon2-hash it, swap ONLY the `demo` user's
+# hash into users_database.yml, restart Authelia, verify the new password logs in
+# (and the old one no longer does), then record the new password where the owner
+# can retrieve it.
+#
+# USAGE:
+#   authelia-rotate-demo                # generate a random password and rotate
+#   authelia-rotate-demo 'my-chosen-pw' # rotate to a specific password
+#   authelia-rotate-demo --print        # after a rotation, just print current pw
+#
+# The plaintext password is written to $PW_FILE (root-only, chmod 600). It is
+# NEVER sent over the shared push channel and NEVER committed to git.
+#
+# Safe to re-run; each run backs up users_database.yml first.
+set -euo pipefail
+
+AUTHELIA_DIR="${AUTHELIA_DIR:-/opt/authelia}"
+USERS_DB="${USERS_DB:-$AUTHELIA_DIR/users_database.yml}"
+PW_FILE="${PW_FILE:-$AUTHELIA_DIR/demo-password.txt}"
+IMAGE="${AUTHELIA_IMAGE:-authelia/authelia:4.38}"
+CONTAINER="${AUTHELIA_CONTAINER:-authelia}"
+VERIFY_URL="${VERIFY_URL:-http://127.0.0.1:9091/authelia/api/firstfactor}"
+# Authelia matches the session-cookie domain against the request URL, so the
+# localhost verify call must present the public host via forwarded headers
+# (otherwise 1FA fails with "no configured session cookie domain matches ...").
+VERIFY_DOMAIN="${VERIFY_DOMAIN:-a11oy.net}"
+DEMO_USER="demo"
+
+log() { echo "[authelia-rotate-demo] $*"; }
+die() { echo "[authelia-rotate-demo] ERROR: $*" >&2; exit 1; }
+
+[ "$(id -u)" -eq 0 ] || die "must run as root"
+
+# --print: just show the current recorded password and exit.
+if [ "${1:-}" = "--print" ]; then
+  [ -f "$PW_FILE" ] || die "no password on file at $PW_FILE (run a rotation first)"
+  cat "$PW_FILE"
+  exit 0
+fi
+
+[ -f "$USERS_DB" ] || die "users db not found: $USERS_DB"
+command -v docker >/dev/null 2>&1 || die "docker not found"
+grep -qE '^[[:space:]]*demo:[[:space:]]*$' "$USERS_DB" || die "user '$DEMO_USER' not found in $USERS_DB"
+
+# --- 1. choose the new password ---------------------------------------------
+NEWPW="${1:-}"
+if [ -z "$NEWPW" ]; then
+  # Human-shareable: 3 groups of 4 chars from an unambiguous alphabet
+  # (no 0/O/1/l/I). ~30^12 keyspace, plenty for a rate-limited login.
+  # Subshell disables pipefail so `head` closing the pipe (SIGPIPE on tr)
+  # doesn't abort the script under `set -o pipefail`.
+  gen() { ( set +o pipefail; LC_ALL=C tr -dc 'abcdefghjkmnpqrstuvwxyz23456789' </dev/urandom 2>/dev/null | head -c 4 ); }
+  NEWPW="demo-$(gen)-$(gen)-$(gen)"
+fi
+
+# remember the previous plaintext (if any) so we can prove it stops working.
+OLDPW=""
+[ -f "$PW_FILE" ] && OLDPW="$(cat "$PW_FILE" 2>/dev/null || true)"
+
+# --- 2. argon2-hash it via the authelia image -------------------------------
+log "generating argon2 hash ..."
+HASH_OUT="$(docker run --rm "$IMAGE" authelia crypto hash generate argon2 --password "$NEWPW")" \
+  || die "argon2 hashing failed"
+DIGEST="$(printf '%s\n' "$HASH_OUT" | awk -F': *' '/Digest:/{print $2; exit}')"
+case "$DIGEST" in
+  \$argon2*) : ;;
+  *) die "could not parse argon2 digest from: $HASH_OUT" ;;
+esac
+
+# --- 3. swap ONLY demo's password line into users_database.yml --------------
+TS="$(date +%Y%m%d-%H%M%S)"
+BACKUP="$USERS_DB.bak.$TS"
+cp -p "$USERS_DB" "$BACKUP"
+log "backed up users db -> $BACKUP"
+
+TMP="$(mktemp)"
+# Track the 2-space-indented username block; replace the FIRST password line
+# inside the `demo:` block only. Reconstruct the line literally (no awk sub, so
+# the hash's $ / + chars are never interpreted).
+awk -v newhash="$DIGEST" '
+  /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { indemo = ($1=="demo:") ? 1 : 0 }
+  {
+    if (indemo && $1=="password:") {
+      match($0, /^[[:space:]]*/); ind=substr($0,1,RLENGTH)
+      print ind "password: " newhash
+      indemo=0
+      next
+    }
+    print
+  }
+' "$USERS_DB" > "$TMP"
+
+# sanity: exactly the demo hash changed, file still has all 1-level users.
+grep -qF "password: $DIGEST" "$TMP" || { rm -f "$TMP"; die "new hash not written; aborting (db unchanged)"; }
+before_users="$(grep -cE '^  [A-Za-z0-9_-]+:[[:space:]]*$' "$USERS_DB")"
+after_users="$(grep -cE '^  [A-Za-z0-9_-]+:[[:space:]]*$' "$TMP")"
+[ "$before_users" = "$after_users" ] || { rm -f "$TMP"; die "user count changed ($before_users -> $after_users); aborting"; }
+
+install -m 0600 "$TMP" "$USERS_DB"
+rm -f "$TMP"
+log "updated $DEMO_USER password hash in $USERS_DB"
+
+# --- 4. restart Authelia so it reloads the file -----------------------------
+log "restarting Authelia container '$CONTAINER' ..."
+docker restart "$CONTAINER" >/dev/null || die "docker restart $CONTAINER failed"
+
+# wait for the firstfactor endpoint to come back up
+up=0
+for _ in $(seq 1 30); do
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$VERIFY_URL" \
+    -H "Host: $VERIFY_DOMAIN" -H "X-Forwarded-Proto: https" -H "X-Forwarded-Host: $VERIFY_DOMAIN" \
+    -H 'Content-Type: application/json' \
+    --data '{"username":"__warmup__","password":"x"}' 2>/dev/null || true)"
+  # any HTTP response (200/401/etc) means the API is serving again
+  if [ -n "$code" ] && [ "$code" != "000" ]; then up=1; break; fi
+  sleep 1
+done
+[ "$up" = 1 ] || die "Authelia API did not come back up after restart"
+
+# --- 5. verify: new password authenticates; old one (if known) does not -----
+# minimal JSON string encoder (handles quotes/backslashes)
+json_str() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'; }
+auth_check() {
+  # echoes the firstfactor HTTP status for username demo / given password.
+  # Forwarded headers present the public host so Authelia's session-cookie
+  # domain (a11oy.net) matches the request URL.
+  curl -s -o /dev/null -w '%{http_code}' -X POST "$VERIFY_URL" \
+    -H "Host: $VERIFY_DOMAIN" -H "X-Forwarded-Proto: https" -H "X-Forwarded-Host: $VERIFY_DOMAIN" \
+    -H 'Content-Type: application/json' \
+    --data "{\"username\":\"$DEMO_USER\",\"password\":$(json_str "$1")}" 2>/dev/null || echo 000
+}
+
+newcode="$(auth_check "$NEWPW")"
+[ "$newcode" = "200" ] || die "verification FAILED: new password did not authenticate (HTTP $newcode)"
+log "verified: new demo password authenticates (HTTP 200)"
+
+if [ -n "$OLDPW" ] && [ "$OLDPW" != "$NEWPW" ]; then
+  oldcode="$(auth_check "$OLDPW")"
+  if [ "$oldcode" = "200" ]; then
+    log "WARNING: old password still authenticates (HTTP 200) — unexpected"
+  else
+    log "verified: old demo password no longer authenticates (HTTP $oldcode)"
+  fi
+fi
+
+# --- 6. record the new password where the owner can retrieve it -------------
+umask 077
+printf '%s\n' "$NEWPW" > "$PW_FILE"
+chmod 600 "$PW_FILE"
+log "recorded new demo password -> $PW_FILE (root-only)"
+
+# --- 7. optional: notify the owner a rotation happened (NO password in push) -
+if [ -x /usr/local/sbin/a11oy-uptime-notify ]; then
+  printf '%s' "a11oy demo login rotated $(date -u +%Y-%m-%dT%H:%MZ). New password is on the box: sudo authelia-rotate-demo --print (file $PW_FILE). Update any shared link." \
+    | /usr/local/sbin/a11oy-uptime-notify >/dev/null 2>&1 || true
+fi
+
+echo
+echo "=================================================================="
+echo "  a11oy demo (read-only) login rotated"
+echo "    username: $DEMO_USER"
+echo "    password: $NEWPW"
+echo "    login at: https://a11oy.net/uds/   (or /status/)"
+echo "  Saved to $PW_FILE  —  retrieve later with: authelia-rotate-demo --print"
+echo "=================================================================="
