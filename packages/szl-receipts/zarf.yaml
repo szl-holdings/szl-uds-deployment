@@ -64,7 +64,12 @@ components:
           - description: "Rightsize pepr-uds-core admission + zarf agent-hook to single-replica, no-surge"
             maxTotalSeconds: 90
             cmd: |
-              set -uo pipefail
+              # NB: `set -u` only (no `pipefail`). zarf runs onDeploy actions with the
+              # platform /bin/sh, which on most Linux CI runners is dash — and dash
+              # rejects `set -o pipefail` with "Illegal option" (exit 2), killing this
+              # action before its early-exit. There are no pipelines here, so pipefail
+              # was decorative; `set -u` is POSIX and behaves identically under bash.
+              set -u
               if [ "${ZARF_VAR_SMALL_SERVER_RIGHTSIZE:-true}" != "true" ]; then
                 echo "[szl-core-rightsize] SMALL_SERVER_RIGHTSIZE != true -> leaving upstream HA defaults in place"
                 exit 0
