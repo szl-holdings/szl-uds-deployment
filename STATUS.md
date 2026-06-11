@@ -41,6 +41,15 @@
 
 ## What's Deprecated
 
+- **`charts/szl-full-stack/` Helm umbrella chart** — retired in favour of the
+  UDS bundle `bundles/szl-full-stack/uds-bundle.yaml`. The chart was a duplicate
+  Doctrine-v6 "STAGED" full-stack definition that depended on an OCI Helm chart
+  repo (`oci://ghcr.io/szl-holdings/charts`) that was never published and pinned
+  organ images at `uds-v0.3.1` that were never built (the published, signed organ
+  images are `uds-v0.2.0`, with `a11oy` at `uds-v0.3.0`). It is now marked
+  `deprecated: true` in `Chart.yaml`, all sub-components are disabled, and its
+  README/NOTES point to the verified UDS bundle. The bundle remains the only
+  verified full-stack path; no `uds-v0.3.1` organ image is claimed deployable.
 - **`vessels`** (maritime sibling of killinchu) — preserved as reference, killinchu is the primary defense flagship
 - **`szl-constellation`** — replaced by the `anatomy-3d` 3D viewer
 

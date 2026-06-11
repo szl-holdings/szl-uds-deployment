@@ -1,22 +1,31 @@
 apiVersion: v2
 name: szl-full-stack
 description: >
-  SZL Holdings full-stack Helm chart — umbrella chart composing szl-receipts,
-  a11oy-runtime, sentra-gates, amaru-attestation, and rosie-replay sub-charts.
-  Doctrine v6 strict: STAGED dependencies indicate charts pending container
-  push and Zarf package creation (blocked on FA-001 founder action).
+  DEPRECATED — retired in favour of the UDS bundle
+  bundles/szl-full-stack/uds-bundle.yaml. This Helm umbrella chart was a
+  Doctrine-v6 STAGED duplicate that composed non-existent organ sub-charts
+  (a11oy-runtime, sentra-gates, amaru-attestation, rosie-replay) from an OCI
+  chart repo (oci://ghcr.io/szl-holdings/charts) that was never published, and
+  pinned the broken uds-v0.3.1 organ images that were never built. The real,
+  verified full-stack definition is the UDS bundle, whose organ members are
+  referenced by local path to packages/<organ>/ (cosign-signed, digest-pinned
+  uds-v0.2.0 / a11oy uds-v0.3.0). Do NOT deploy this chart; use `uds` with the
+  bundle instead. See STATUS.md (What's Deprecated) and the chart README.
 type: application
-version: 0.3.1
-appVersion: "0.3.1"
+# Deprecation release. Helm prints a deprecation warning for deprecated: true.
+version: 0.3.2
+appVersion: "0.3.2"
+deprecated: true
 
 # Doctrine markers
 annotations:
-  szl.holdings/doctrine-version: "v6"
-  szl.holdings/staged-dependencies: "a11oy-runtime,sentra-gates,amaru-attestation,rosie-replay"
-  szl.holdings/available-dependencies: "szl-receipts"
-  szl.holdings/uds-catalog-status: "not-submitted"
-  szl.holdings/andrew-greene-endorsement: "Option-A 2026-05-22"
-  szl.holdings/warhacker-target: "2026-06-16"
+  szl.holdings/doctrine-version: "v11"
+  szl.holdings/deprecated: "true"
+  szl.holdings/deprecated-on: "2026-06-11"
+  szl.holdings/superseded-by: "bundles/szl-full-stack/uds-bundle.yaml"
+  szl.holdings/deprecation-reason: >-
+    Duplicate full-stack definition; depended on an unpublished OCI chart repo
+    and broken uds-v0.3.1 organ images. The UDS bundle is the verified path.
 
 maintainers:
   - name: SZL Holdings Engineering
@@ -29,6 +38,7 @@ keywords:
   - governance
   - policy-gates
   - anchor-formula
+  - deprecated
 
 home: https://github.com/szl-holdings/szl-uds-deployment
 
@@ -41,36 +51,9 @@ sources:
   - https://github.com/szl-holdings/vessels
   - https://github.com/szl-holdings/uds-mesh
 
-dependencies:
-  # Available now
-  - name: szl-receipts
-    version: "0.3.1"
-    repository: "oci://ghcr.io/szl-holdings/charts"
-    # STAGED: repository not yet published — use local path override until GHCR available
-    # alias: receipts
-    condition: szl-receipts.enabled
-
-  # STAGED: awaiting FA-001 (container push to GHCR + Zarf package create)
-  - name: a11oy-runtime
-    version: "0.3.1"
-    repository: "oci://ghcr.io/szl-holdings/charts"
-    condition: a11oy-runtime.enabled
-    # STAGED: not functional until ghcr.io/szl-holdings/a11oy:uds-v0.3.1 pushed
-
-  - name: sentra-gates
-    version: "0.3.1"
-    repository: "oci://ghcr.io/szl-holdings/charts"
-    condition: sentra-gates.enabled
-    # STAGED: not functional until ghcr.io/szl-holdings/sentra:uds-v0.3.1 pushed
-
-  - name: amaru-attestation
-    version: "0.3.1"
-    repository: "oci://ghcr.io/szl-holdings/charts"
-    condition: amaru-attestation.enabled
-    # STAGED: not functional until ghcr.io/szl-holdings/amaru:uds-v0.3.1 pushed
-
-  - name: rosie-replay
-    version: "0.3.1"
-    repository: "oci://ghcr.io/szl-holdings/charts"
-    condition: rosie-replay.enabled
-    # STAGED: not functional until ghcr.io/szl-holdings/rosie:uds-v0.3.1 pushed
+# Dependencies removed on deprecation. They previously pointed at
+# `oci://ghcr.io/szl-holdings/charts`, an OCI Helm chart repo that was never
+# published, so `helm dependency build` could never resolve them and the chart
+# could not be deployed with organs. The verified organ packages live under
+# packages/<organ>/ and are composed by bundles/szl-full-stack/uds-bundle.yaml.
+dependencies: []
