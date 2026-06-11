@@ -15,9 +15,11 @@
 # no cluster needed). It was extracted from this workflow so it can be UNIT
 # TESTED: scripts/clean-deploy-checks.test.sh feeds each check a deliberately
 # BROKEN copy of its source file and asserts the check FAILS, plus asserts the
-# pristine copies PASS. That self-test runs as the `self-test` job below, so a
-# future edit that neuters a check (making it pass vacuously — green while
-# guarding nothing) is caught here, not in production.
+# pristine copies PASS. The shared run-checks-then-self-test scaffolding lives in
+# the reusable .github/workflows/guard-scaffold.yml; this workflow is now a thin
+# caller that passes its test + checks scripts. The self-test still gates the
+# guard run, so a future edit that neuters a check (making it pass vacuously —
+# green while guarding nothing) is caught before the guard can wave it through.
 #
 # The invariants:
 #   1. charts/szl-key-init/values.yaml          -> namespace: szl-receipts
@@ -54,41 +56,10 @@ permissions:
   contents: read
 
 jobs:
-  # The self-test MUST pass for the guard to be trustworthy: it proves each
-  # check still fails on bad input (i.e. is not silently passing). The guard job
-  # depends on it so a broken check blocks the build before it can wave a
-  # regression through.
-  self-test:
-    name: Self-test the guard checks (negative fixtures)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-      - name: Run negative-fixture self-test
-        run: bash scripts/clean-deploy-checks.test.sh
-
   guard:
-    name: Assert clean-deploy invariants
-    runs-on: ubuntu-latest
-    needs: self-test
-    steps:
-      - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-
-      - name: Invariant 1 — key-init Secret lands in ns szl-receipts
-        run: bash scripts/clean-deploy-checks.sh inv1 .
-
-      - name: Invariant 2 — keygen Secret uses a single ed25519.pem key file
-        run: bash scripts/clean-deploy-checks.sh inv2 .
-
-      - name: Invariant 3 — UDS Exemption (RequireNonRootUser) for the keygen pod
-        run: bash scripts/clean-deploy-checks.sh inv3 .
-
-      - name: Invariant 4 — exemption ordered before key-init & image tag is uds-v0.4.1
-        run: bash scripts/clean-deploy-checks.sh inv4 .
-
-      - name: Invariant 5 — born-rightsized posture is baked into the package
-        run: bash scripts/clean-deploy-checks.sh inv5 .
-
-      - name: All clean-deploy invariants hold
-        run: echo "All five szl-receipts clean-deploy invariants are intact."
+    uses: ./.github/workflows/guard-scaffold.yml
+    with:
+      test-command: bash scripts/clean-deploy-checks.test.sh
+      checks-command: bash scripts/clean-deploy-checks.sh
+      checks-args: "inv1 inv2 inv3 inv4 inv5"
+      success-message: "All five szl-receipts clean-deploy invariants are intact."

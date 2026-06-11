@@ -9,6 +9,12 @@
 # cluster deploy (minutes-to-hours later, on a customer cluster). This workflow
 # turns that into a seconds-long CI failure.
 #
+# The shared self-test scaffolding (negative-fixture self-tests that the render
+# jobs depend on) lives in the reusable .github/workflows/guard-scaffold.yml;
+# this workflow calls it for the self-test and keeps its own bespoke jobs
+# (whole-fleet render/lint, keygen-script checks, requireKey contract, the
+# no-committed-snapshots guard, and the deploy-receipt stall alarm tests).
+#
 # It does four things, all without a cluster:
 #   1. helm lint --strict + helm template on EVERY chart under charts/* (a11oy,
 #      amaru, killinchu, rosie, sentra, szl-full-stack, szl-key-init,
@@ -63,6 +69,7 @@ on:
       - "scripts/check-no-committed-subcharts.sh"
       - "scripts/check-no-committed-subcharts.test.sh"
       - ".github/workflows/chart-guard.yml"
+      - ".github/workflows/guard-scaffold.yml"
   push:
     branches: [main]
     paths:
@@ -72,6 +79,7 @@ on:
       - "scripts/check-no-committed-subcharts.sh"
       - "scripts/check-no-committed-subcharts.test.sh"
       - ".github/workflows/chart-guard.yml"
+      - ".github/workflows/guard-scaffold.yml"
   workflow_dispatch:
 
 permissions:
@@ -79,28 +87,22 @@ permissions:
 
 jobs:
   # ── 0. Self-test the guard logic (negative fixtures) ────────────────────────
-  # The guard job below asserts properties via scripts/chart-guard-checks.py.
-  # That assertion logic could break silently and PASS VACUOUSLY (green while
-  # guarding nothing — e.g. an unsigned-boot mount slipping past requireKey).
-  # This job feeds the checks deliberately-broken fixtures and asserts they FAIL,
-  # so a future edit that neuters a check turns CI red here. The guard job
-  # `needs: self-test`, so a regressed checker blocks the whole workflow.
+  # The guard jobs below assert properties via scripts/chart-guard-checks.py and
+  # scripts/check-no-committed-subcharts.sh. That assertion logic could break
+  # silently and PASS VACUOUSLY (green while guarding nothing — e.g. an
+  # unsigned-boot mount slipping past requireKey). The reusable scaffold feeds the
+  # checks deliberately-broken fixtures and asserts they FAIL, so a future edit
+  # that neuters a check turns CI red here. The guard jobs `needs: self-test`, so
+  # a regressed checker blocks the workflow. The self-test runs BOTH negative
+  # fixtures: the chart-guard checks and the no-committed-subcharts guard.
   self-test:
-    name: Self-test chart-guard checks (negative fixtures)
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-      - name: Install PyYAML
-        run: python3 -m pip install --quiet pyyaml
-      - name: Run chart-guard checks self-test
-        run: python3 scripts/chart-guard-checks.test.py
-      # The no-committed-snapshots job is a one-line `git ls-files` guard that
-      # could be neutered (wrong pathspec, dropped `exit 1`) and pass vacuously.
-      # This builds throwaway git repos and asserts the SHARED guard script fails
-      # on a committed snapshot and passes on a clean tree.
-      - name: Run no-committed-subcharts guard self-test
-        run: sh scripts/check-no-committed-subcharts.test.sh
+    uses: ./.github/workflows/guard-scaffold.yml
+    with:
+      runner: ubuntu-24.04
+      setup: python3 -m pip install --quiet pyyaml
+      test-command: |
+        python3 scripts/chart-guard-checks.test.py
+        sh scripts/check-no-committed-subcharts.test.sh
 
   # ── No committed umbrella subchart snapshots ────────────────────────────────
   # .gitignore (charts/*/charts/) keeps the CI-ephemeral vendored/stub subcharts

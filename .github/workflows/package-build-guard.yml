@@ -13,7 +13,12 @@
 # package build does. This workflow closes that gap with a non-destructive
 # build/render dry-run — no cluster, no publish, no signing.
 #
-# Two jobs, both cluster-free:
+# The shared self-test scaffolding (negative-fixture self-test that the build
+# jobs depend on) lives in the reusable .github/workflows/guard-scaffold.yml;
+# this workflow calls it for the self-test and keeps its own bespoke build jobs
+# (helm render + zarf build), each declaring `needs: self-test`.
+#
+# Two build jobs, both cluster-free:
 #   1. render-assert — render the key-init chart exactly as the package deploys it
 #      and assert (at the RENDERED level, complementing the grep guard) that the
 #      auto-generated Ed25519 Secret still targets ns szl-receipts with key file
@@ -43,6 +48,7 @@ on:
       - "scripts/package-build-checks.py"
       - "scripts/package-build-checks.test.py"
       - ".github/workflows/package-build-guard.yml"
+      - ".github/workflows/guard-scaffold.yml"
   push:
     branches: [main]
     paths:
@@ -52,6 +58,7 @@ on:
       - "scripts/package-build-checks.py"
       - "scripts/package-build-checks.test.py"
       - ".github/workflows/package-build-guard.yml"
+      - ".github/workflows/guard-scaffold.yml"
   workflow_dispatch:
 
 permissions:
@@ -63,21 +70,18 @@ env:
 
 jobs:
   # ── 0. Self-test the guard logic (negative fixtures) ────────────────────────
-  # Both jobs below assert properties via scripts/package-build-checks.py. That
-  # assertion logic could break silently and PASS VACUOUSLY (green while guarding
-  # nothing). This job feeds the checks deliberately-broken fixtures and asserts
-  # they FAIL, so a future edit that neuters a check turns CI red here. The guard
-  # jobs `needs: self-test`, so a regressed checker blocks the whole workflow.
+  # The build jobs below assert properties via scripts/package-build-checks.py.
+  # That assertion logic could break silently and PASS VACUOUSLY (green while
+  # guarding nothing). The reusable scaffold feeds the checks deliberately-broken
+  # fixtures and asserts they FAIL, so a future edit that neuters a check turns CI
+  # red here. The build jobs `needs: self-test`, so a regressed checker blocks the
+  # whole workflow.
   self-test:
-    name: Self-test package-build checks (negative fixtures)
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-      - name: Install PyYAML
-        run: python3 -m pip install --quiet pyyaml
-      - name: Run package-build checks self-test
-        run: python3 scripts/package-build-checks.test.py
+    uses: ./.github/workflows/guard-scaffold.yml
+    with:
+      runner: ubuntu-24.04
+      setup: python3 -m pip install --quiet pyyaml
+      test-command: python3 scripts/package-build-checks.test.py
 
   # ── 1. Render-level Secret invariant (fast, no images, no cluster) ──────────
   render-assert:

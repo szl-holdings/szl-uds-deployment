@@ -1,0 +1,108 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# guard-scaffold.yml — Reusable run-checks-then-self-test scaffolding for the
+# szl-uds-deployment family of text/lint CI guards.
+#
+# Several guards (clean-deploy, package-build, chart, teardown, ...) all repeat
+# the SAME shape: a `self-test` job runs the guard's negative-fixture test
+# (proving each check still FAILS on bad input — i.e. is not silently passing),
+# and the real guard work `needs: self-test` so a regressed/neutered check blocks
+# the build before it can wave a regression through. That scaffolding was copied
+# into every guard workflow and drifted over time. This reusable `workflow_call`
+# encapsulates it once; each guard becomes a thin caller passing its test script
+# (and, for the simple text/lint guards, its checks script + the subcommands to
+# run).
+#
+# Two modes:
+#   1. Self-test + run-checks (simple guards): pass `checks-command` and
+#      `checks-args`. The `guard` job runs `<checks-command> <arg> <checks-target>`
+#      once per arg, after the self-test passes. (clean-deploy, teardown)
+#   2. Self-test only (complex guards): omit `checks-command`. The `guard` job is
+#      skipped and the caller keeps its own bespoke jobs (helm/zarf/promtool/...),
+#      each declaring `needs: <the job that calls this workflow>`. (package-build,
+#      chart)
+#
+# No behavior change to what any guard asserts: the per-guard check + test scripts
+# are unchanged; this only consolidates the workflow plumbing around them.
+
+name: Guard Scaffold
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: "Runner image used for both jobs."
+        type: string
+        default: ubuntu-latest
+      setup:
+        description: "Optional shell run before the test/checks (e.g. install deps). Empty = skip."
+        type: string
+        default: ""
+      test-command:
+        description: "Negative-fixture self-test command (required)."
+        type: string
+        required: true
+      checks-command:
+        description: "Base command for each invariant. Empty = self-test only (guard job skipped)."
+        type: string
+        default: ""
+      checks-args:
+        description: "Space/newline-separated subcommands; each run as '<checks-command> <arg> <checks-target>'."
+        type: string
+        default: ""
+      checks-target:
+        description: "Trailing argument passed after each subcommand (the repo root)."
+        type: string
+        default: "."
+      success-message:
+        description: "Message echoed once all invariants pass."
+        type: string
+        default: "All guard invariants hold."
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves each check
+  # still FAILS on bad input (i.e. is not silently passing). Every downstream job
+  # — the guard job below and any bespoke caller jobs — depends on it, so a broken
+  # check blocks the build before it can wave a regression through.
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Setup (optional)
+        if: ${{ inputs.setup != '' }}
+        run: ${{ inputs.setup }}
+      - name: Run negative-fixture self-test
+        run: ${{ inputs.test-command }}
+
+  guard:
+    name: Assert guard invariants
+    needs: self-test
+    if: ${{ inputs.checks-command != '' }}
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Setup (optional)
+        if: ${{ inputs.setup != '' }}
+        run: ${{ inputs.setup }}
+      - name: Run guard checks
+        run: |
+          set -euo pipefail
+          ran=0
+          for sub in ${{ inputs.checks-args }}; do
+            echo "::group::${sub}"
+            ${{ inputs.checks-command }} "${sub}" "${{ inputs.checks-target }}"
+            echo "::endgroup::"
+            ran=$((ran + 1))
+          done
+          if [ "${ran}" -eq 0 ]; then
+            echo "::error::checks-command set but checks-args empty — nothing was asserted"
+            exit 1
+          fi
+          echo "${{ inputs.success-message }}"
