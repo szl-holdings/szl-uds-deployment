@@ -810,3 +810,83 @@ producer: a pepr-szl-mutated subject re-applying in a loop, a client POSTing to
 `SZL_INGEST_BURST`. It routes to the same a11oy-uptime channel as its siblings
 (`component: szl-receipts`). The promtool unit tests cover a throttling-fires
 case and the healthy-silent case alongside the flood cases.
+
+---
+
+# box-scripts (part 9) — a11oy keeps the SAME signing key across restarts (uds-szl-demo)
+
+`szl-signing-health-check` (installed alongside these) pages when the box's Vault
+seal or the receipts-server signer goes *unavailable*. **`a11oy-signing-key-watch`**
+proves the quieter, scarier property for the deployed **a11oy** organ: that it keeps
+the **same ECDSA P-256 receipt-signing key across a pod restart** instead of silently
+falling back to a fresh ephemeral key (which would make every previously-issued
+a11oy receipt unverifiable while still returning HTTP 200 — a green-but-broken
+supply chain).
+
+Every run, against the `uds-szl-demo` cluster, it:
+
+1. captures the live public key from the old pod (`GET /api/a11oy/v1/wow/cosign.pub`,
+   PEM) and a freshly-signed receipt (`POST /api/a11oy/v1/wow/govern`, a DSSE
+   envelope) **before** the restart;
+2. does a `kubectl rollout restart deploy/a11oy` and waits for the new pod to be
+   Ready;
+3. re-fetches `cosign.pub` from the **new** pod and asserts it is **byte-identical**
+   (same `sha256`) to the pre-restart key;
+4. verifies the pre-restart receipt's signature still validates under the
+   post-restart key, signs a **new** receipt and verifies it too, and confirms the
+   server reports its key came from the persistent Secret
+   (`szl-a11oy-receipts-ecdsa-p256`), not an ephemeral in-memory fallback.
+
+Any of: the public key changed across the restart, the reported key source is not
+`persistent`, or either receipt fails to verify → **ALERT**. It mirrors the
+`szl-receipts` cluster-signing-gate + `receipt-chain-watch` patterns and is
+**edge-triggered** + de-duped (one push on the OK→ALERT edge, one on RECOVERED).
+
+A cluster that is stopped/unreachable, an a11oy that isn't deployed / has 0 replicas,
+or a missing pre-restart baseline is a true **no-op** (exit 0, no alarm and — by not
+restarting — no disruption). It reuses the shared push channel
+(`/usr/local/sbin/a11oy-uptime-notify` → ntfy/Telegram/webhook in
+`/etc/a11oy-uptime.env`); a broken notifier can never hide a failure because every
+run also writes its status + log under `/var/lib` and `/var/log`. Like its siblings
+it lives ONLY at `/usr/local/sbin` + `/etc/systemd/system` on the box, so restore it
+from here after a rebuild.
+
+## Files
+
+```
+sbin/
+  a11oy-signing-key-watch              # restart a11oy, assert cosign.pub identical + receipts verify, alert on the edge
+systemd/
+  a11oy-signing-key-watch.service      # oneshot: runs a11oy-signing-key-watch (TimeoutStartSec=600 for the rollout)
+  a11oy-signing-key-watch.timer        # ~15 min after boot, then weekly (Sun 04:30, randomized)
+```
+
+The proof is **scheduled** (weekly) rather than every-5-min because each run
+deliberately restarts the a11oy pod; weekly keeps the disruption negligible while
+still catching a regression long before it matters. Trigger it on demand any time
+with `sudo systemctl start a11oy-signing-key-watch.service`.
+
+## Reinstall
+
+The top-level `./install.sh` installs + enables this guard along with the others.
+To (re)install just this guard manually:
+
+```bash
+sudo install -m 0755 sbin/a11oy-signing-key-watch /usr/local/sbin/a11oy-signing-key-watch
+sudo install -m 0644 systemd/a11oy-signing-key-watch.service /etc/systemd/system/
+sudo install -m 0644 systemd/a11oy-signing-key-watch.timer   /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now a11oy-signing-key-watch.timer
+```
+
+## Verify (safe, reversible — isolated state + captured notifier)
+
+```bash
+systemctl is-enabled a11oy-signing-key-watch.timer
+# Run once against the live cluster with a CAPTURE notifier so the team channel is
+# not paged and the real edge-state isn't disturbed. With a persistent key wired
+# (Secret szl-a11oy-receipts-ecdsa-p256) this restarts a11oy once and reports OK.
+rm -rf /tmp/askw; mkdir -p /tmp/askw/state /tmp/askw/log
+STATE_DIR=/tmp/askw/state LOG_DIR=/tmp/askw/log NOTIFY_CMD=/bin/cat \
+  ALERT_PREFIX="[TEST] " /usr/local/sbin/a11oy-signing-key-watch
+rm -rf /tmp/askw
+```

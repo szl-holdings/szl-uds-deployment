@@ -1,0 +1,108 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# a11oy-signing-key-watch-guard.yml — Guard the `a11oy-signing-key-watch` box
+# proof (the a11oy persistent-signing-key proof on the uds-szl-demo cluster) from
+# silently regressing.
+#
+# a11oy-signing-key-watch (box-scripts/sbin/a11oy-signing-key-watch) RESTARTS the
+# live a11oy pod and pages the team the moment a11oy serves a DIFFERENT public
+# receipt-signing key across that restart — the silent ephemeral fallback the
+# persistent-key (BYOK Secret) fix exists to prevent. That regression is
+# invisible in normal operation (a11oy keeps serving 200s and signing receipts,
+# just with a key that resets on restart), so without this proof a dropped Secret
+# mount goes unnoticed until an old receipt fails to verify. Its value rests on a
+# few fragile invariants that produce NO visible symptom when broken:
+#   * it captures a BASELINE (public key + a signed receipt) BEFORE restarting;
+#   * it actually RESTARTS the pod (rollout restart) and WAITS (rollout status);
+#   * it compares the key across the restart (pub_match) and asserts the
+#     post-restart key_source is "persistent";
+#   * it CRYPTOGRAPHICALLY verifies a receipt against the post-restart key
+#     (ECDSA-P256-SHA256 over the DSSE PAE);
+#   * it is EDGE-triggered (reads + writes a last_status state file);
+#   * it NO-OPs (exit 0, no page) when the cluster is absent/unreachable, a11oy is
+#     not deployed, or no baseline is available;
+#   * it stays WIRED into install.sh (copied + timer enabled) and documented in
+#     README.md, or a box rebuild silently ships without the proof.
+#
+# The check logic lives in scripts/a11oy-signing-key-watch-guard-checks.sh (pure
+# text/lint, no cluster). It was extracted from this workflow so it can be UNIT
+# TESTED: scripts/a11oy-signing-key-watch-guard-checks.test.sh feeds each check a
+# deliberately-BROKEN fixture and asserts the check FAILS, plus asserts the
+# pristine repo PASSES. That self-test runs as the `self-test` job below, so a
+# future edit that neuters a check (passing vacuously — green while guarding
+# nothing) is caught here.
+#
+# The asserted invariants:
+#   chk1  a11oy-signing-key-watch exists and parses clean (bash -n)
+#   chk2  captures the baseline (PUB1 + RECEIPT_PRE) before restarting
+#   chk3  restarts the a11oy pod and waits for the rollout
+#   chk4  detects a changed key (pub_match) + a silent ephemeral fallback
+#   chk5  cryptographically verifies a receipt (ECDSA-P256-SHA256 over DSSE PAE)
+#   chk6  edge-triggered: reads+writes last_status, both edge guards, two notifies
+#   chk7  cluster-absent / unreachable / a11oy-absent / no-baseline paths no-op
+#   chk8  wired into install.sh (script + units copied, timer enabled)
+#   chk9  documented in README.md (signing-key-across-restart proof section)
+
+name: a11oy Signing Key Watch Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves each check
+  # still FAILS on bad input (i.e. is not silently passing). The guard job
+  # depends on it so a broken check blocks the build before it can wave a
+  # regression through.
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/a11oy-signing-key-watch-guard-checks.test.sh
+
+  guard:
+    name: Assert the a11oy persistent-signing-key proof is intact
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check 1 — a11oy-signing-key-watch exists and parses clean
+        run: bash scripts/a11oy-signing-key-watch-guard-checks.sh chk1 .
+
+      - name: Check 2 — captures the baseline (PUB1 + RECEIPT_PRE) before restart
+        run: bash scripts/a11oy-signing-key-watch-guard-checks.sh chk2 .
+
+      - name: Check 3 — restarts the a11oy pod and waits for the rollout
+        run: bash scripts/a11oy-signing-key-watch-guard-checks.sh chk3 .
+
+      - name: Check 4 — detects a changed key + silent ephemeral fallback
+        run: bash scripts/a11oy-signing-key-watch-guard-checks.sh chk4 .
+
+      - name: Check 5 — cryptographically verifies a receipt (ECDSA-P256-SHA256)
+        run: bash scripts/a11oy-signing-key-watch-guard-checks.sh chk5 .
+
+      - name: Check 6 — edge-triggered (state file + exactly two notifies)
+        run: bash scripts/a11oy-signing-key-watch-guard-checks.sh chk6 .
+
+      - name: Check 7 — cluster-absent / unreachable / a11oy-absent / no-baseline no-op
+        run: bash scripts/a11oy-signing-key-watch-guard-checks.sh chk7 .
+
+      - name: Check 8 — wired into install.sh (script + timer enabled)
+        run: bash scripts/a11oy-signing-key-watch-guard-checks.sh chk8 .
+
+      - name: Check 9 — documented in README.md
+        run: bash scripts/a11oy-signing-key-watch-guard-checks.sh chk9 .
+
+      - name: a11oy persistent-signing-key proof is intact
+        run: echo "The a11oy-signing-key-watch persistent-signing-key proof is intact."

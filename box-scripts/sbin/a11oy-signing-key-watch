@@ -1,0 +1,344 @@
+#!/usr/bin/env bash
+#
+# a11oy-signing-key-watch — prove that the DEPLOYED a11oy keeps the SAME ECDSA
+# P-256 receipt-signing key across a pod restart, and PAGE A HUMAN the moment it
+# ever serves a DIFFERENT key (a silent ephemeral fallback). Runs on the box
+# 167.233.50.75 against the live k3d/UDS cluster.
+#
+# WHY: a11oy historically minted a FRESH ephemeral ECDSA P-256 key on every boot,
+# so its public key (served at /api/a11oy/v1/wow/cosign.pub) changed on every pod
+# restart and any receipt signed BEFORE a restart could no longer be verified
+# against the live key. The fix mounts a PERSISTENT key from a Kubernetes Secret
+# (szl-a11oy-receipts-ecdsa-p256 -> /etc/szl/receipt-key) so the same public key
+# verifies receipts across restarts. That fix is INVISIBLE when it silently
+# regresses: if the Secret stops mounting, the loader falls back to an ephemeral
+# key with NO error — a11oy keeps serving 200s and signing receipts, just with a
+# key that resets on every restart. Nothing alarms until someone tries to verify
+# an old receipt and it fails. This guard makes that regression loud.
+#
+# WHAT IT DOES (one cycle):
+#   1. resolve the cluster; no-op (exit 0) if it is down / unreachable.
+#   2. no-op if the a11oy Deployment is absent or has 0 available replicas
+#      (nothing deployed to test — we only alarm when it SHOULD be working).
+#   3. capture the BASELINE from a Ready pod: the public key (PUB1, /cosign.pub)
+#      and a freshly signed receipt (RECEIPT_PRE, POST /govern). No baseline
+#      (endpoint not serving yet) = no-op.
+#   4. `kubectl rollout restart deployment/a11oy` + `rollout status` (rolling, so
+#      the live service stays up via surge). A rollout that does not complete in
+#      time is a deploy problem, not a key problem -> no-op (logged, no page).
+#   5. on the NEW pod run an in-pod verifier (cryptography is present in the
+#      image) that: re-fetches the public key (PUB2) + a fresh receipt
+#      (RECEIPT_POST), and reports whether
+#        - PUB1 == PUB2 byte-identical (the key SURVIVED the restart),
+#        - RECEIPT_POST.key_source == "persistent" (no ephemeral fallback),
+#        - RECEIPT_POST verifies against PUB2 (fresh receipt is real),
+#        - RECEIPT_PRE  verifies against PUB2 (a pre-restart receipt is STILL
+#          verifiable against the post-restart key — the whole point).
+#
+# ALERT (any one of the above fails) -> the team is paged. It is EDGE-triggered
+# and de-duped via a state file: it fires the notifier only on the OK->ALERT edge
+# and once on RECOVERED, never every cycle (honours the "recurring alerts = one
+# ping" policy). Every run still appends to the log + status file, so a broken
+# notifier can never hide a regressed key.
+#
+# This mirrors the szl-receipts cluster-signing-gate pattern (boot the real
+# thing, exercise it, verify a real signature) and the receipt-chain-watch /
+# szl-signing-health-check box-alarm shape (resolve cluster, no-op when absent,
+# edge-trigger, shared ntfy notifier).
+#
+# NOTIFY: pipes the alert text on STDIN to NOTIFY_CMD (default the box's working
+# push channel /usr/local/sbin/a11oy-uptime-notify -> ntfy/Telegram/webhook in
+# /etc/a11oy-uptime.env). This box has NO Gmail/nodemailer transport and outbound
+# TCP 465 is firewalled, so SMS/email is not used here; the ntfy push IS the
+# existing alert path.
+#
+# Because it RESTARTS a live pod, it is driven INFREQUENTLY (weekly) by
+# a11oy-signing-key-watch.timer, plus on demand:
+#   sudo systemctl start a11oy-signing-key-watch.service
+#   sudo /usr/local/sbin/a11oy-signing-key-watch        # run by hand
+# Every cluster-specific input is an env override so the same body can watch any
+# cluster / namespace.
+set -uo pipefail
+
+CLUSTER="${CLUSTER:-uds-szl-demo}"
+# Explicit kubeconfig override. When empty, the kubeconfig is resolved from the
+# local k3d cluster named $CLUSTER; when set it is used verbatim (so a cluster
+# that is not a local k3d-by-name cluster can be watched).
+KUBECONFIG_FILE="${KUBECONFIG_FILE:-}"
+NS="${NS:-szl-a11oy}"
+DEPLOY="${DEPLOY:-a11oy}"
+CONTAINER="${CONTAINER:-a11oy}"
+SELECTOR="${SELECTOR:-app=a11oy}"
+PORT="${PORT:-7860}"
+# URL namespace component for the wow API (the /api/<NSAPI>/v1/wow routes).
+NSAPI="${NSAPI:-a11oy}"
+# How long to wait for the rolling restart to report all pods Ready.
+ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
+# How long to wait for the new pod's endpoints to start serving after Ready.
+POST_RETRIES="${POST_RETRIES:-6}"
+POST_SLEEP="${POST_SLEEP:-10}"
+
+BASEURL="http://127.0.0.1:${PORT}/api/${NSAPI}/v1/wow"
+
+STATE_DIR="${STATE_DIR:-/var/lib/a11oy-signing-key-watch}"
+LOG_DIR="${LOG_DIR:-/var/log/a11oy-signing-key-watch}"
+LAST_FILE="${LAST_FILE:-$STATE_DIR/$CLUSTER.last_status}"
+STATUS="${STATUS:-$STATE_DIR/$CLUSTER.status.json}"
+LOG="${LOG:-$LOG_DIR/$CLUSTER.log}"
+
+# Notifier: stdin = message. Default to the box's working push channel.
+NOTIFY_CMD="${NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
+ALERT_PREFIX="${ALERT_PREFIX:-}"
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
+
+log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$1" >>"$LOG" 2>/dev/null; }
+
+notify() {
+  # $1 = message. Fail-soft: log a warning if the notifier is missing/fails.
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed (alert was logged only)"
+}
+
+write_status() {
+  # $1 = overall (OK|ALERT|UNKNOWN)  $2 = reason
+  printf '{"overall":"%s","reason":"%s","checked_at":"%s","cluster":"%s"}\n' \
+    "$1" "$(printf '%s' "$2" | sed 's/"/\\"/g')" "$(date -u +%FT%TZ)" "$CLUSTER" \
+    >"$STATUS" 2>/dev/null
+}
+
+# jstr KEY < json-on-$1 — extract a JSON string field value (best-effort).
+jstr() { printf '%s' "$1" | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" | head -n1; }
+# jbool KEY — extract a JSON boolean field value (true|false), best-effort.
+jbool() { printf '%s' "$1" | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*(true|false)" | grep -oE '(true|false)$' | head -n1; }
+
+# ---- Resolve cluster; no-op if it is down (intentionally stopped) -----------
+if [ -n "$KUBECONFIG_FILE" ]; then
+  if [ ! -r "$KUBECONFIG_FILE" ]; then
+    log "INFO KUBECONFIG_FILE '$KUBECONFIG_FILE' unreadable — skip"; write_status UNKNOWN "kubeconfig unreadable"; exit 0
+  fi
+  export KUBECONFIG="$KUBECONFIG_FILE"
+else
+  KC="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" || { log "INFO cluster '$CLUSTER' absent — skip"; write_status UNKNOWN "cluster absent"; exit 0; }
+  export KUBECONFIG="$KC"
+fi
+kubectl --request-timeout=20s get --raw='/readyz' >/dev/null 2>&1 \
+  || { log "INFO cluster '$CLUSTER' not reachable — skip"; write_status UNKNOWN "cluster unreachable"; exit 0; }
+
+# a11oy deployed at all? If the Deployment is absent there is nothing to test.
+kubectl --request-timeout=20s -n "$NS" get deploy "$DEPLOY" >/dev/null 2>&1 \
+  || { log "INFO $NS/$DEPLOY absent — a11oy not deployed, skip"; write_status UNKNOWN "a11oy deploy absent"; exit 0; }
+
+# At least one available replica, else there is no Ready pod to probe.
+avail="$(kubectl --request-timeout=20s -n "$NS" get deploy "$DEPLOY" -o jsonpath='{.status.availableReplicas}' 2>/dev/null)"
+[ -z "$avail" ] && avail=0
+if [ "$avail" -lt 1 ] 2>/dev/null; then
+  log "INFO $NS/$DEPLOY has 0 available replicas — nothing Ready to probe, skip"; write_status UNKNOWN "a11oy 0 available replicas"; exit 0
+fi
+
+# get_ready_pod — name of the first Ready pod matching the selector (or empty).
+get_ready_pod() {
+  kubectl --request-timeout=20s -n "$NS" get pods -l "$SELECTOR" \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null \
+    | awk -F'\t' '$2=="True"{print $1; exit}'
+}
+
+# fetch_pub POD — print the served public key PEM (empty on failure).
+fetch_pub() {
+  kubectl --request-timeout=25s -n "$NS" exec "$1" -c "$CONTAINER" -- \
+    python3 -c "import urllib.request,sys
+try:
+    sys.stdout.write(urllib.request.urlopen('$BASEURL/cosign.pub',timeout=10).read().decode())
+except Exception:
+    pass" 2>/dev/null
+}
+
+# fetch_receipt POD — print the DSSE receipt envelope JSON (empty on failure).
+fetch_receipt() {
+  kubectl --request-timeout=30s -n "$NS" exec "$1" -c "$CONTAINER" -- \
+    python3 -c "import urllib.request,json,sys
+try:
+    req=urllib.request.Request('$BASEURL/govern',data=json.dumps({'text':'signing-key-watch probe','mode':'governed'}).encode(),headers={'Content-Type':'application/json'})
+    d=json.load(urllib.request.urlopen(req,timeout=20))
+    sys.stdout.write(json.dumps(d.get('receipt',{})))
+except Exception:
+    pass" 2>/dev/null
+}
+
+# ---- Step 1: capture BASELINE (PUB1 + a pre-restart signed receipt) ----------
+OLDPOD="$(get_ready_pod)"
+if [ -z "$OLDPOD" ]; then
+  log "INFO no Ready a11oy pod — skip"; write_status UNKNOWN "no Ready a11oy pod"; exit 0
+fi
+PUB1="$(fetch_pub "$OLDPOD")"
+RECEIPT_PRE="$(fetch_receipt "$OLDPOD")"
+if [ -z "$PUB1" ] || [ -z "$RECEIPT_PRE" ]; then
+  # No usable baseline (signing endpoints not serving yet) — can't compare, no-op.
+  log "INFO baseline unavailable (pub or receipt empty) on $OLDPOD — skip"; write_status UNKNOWN "baseline unavailable"; exit 0
+fi
+log "INFO baseline captured from $OLDPOD (pub ${#PUB1}B, receipt ${#RECEIPT_PRE}B)"
+
+# ---- Step 2: restart the a11oy pod and wait for the rollout to settle --------
+if ! kubectl --request-timeout=30s -n "$NS" rollout restart deployment/"$DEPLOY" >/dev/null 2>&1; then
+  log "INFO rollout restart of $NS/$DEPLOY failed to issue — skip"; write_status UNKNOWN "rollout restart failed to issue"; exit 0
+fi
+if ! kubectl -n "$NS" rollout status deployment/"$DEPLOY" --timeout="$ROLLOUT_TIMEOUT" >/dev/null 2>&1; then
+  # The restart did not converge — a deploy problem, not a key problem. Don't page.
+  log "INFO rollout of $NS/$DEPLOY did not complete within $ROLLOUT_TIMEOUT — skip (deploy issue, not a key regression)"; write_status UNKNOWN "rollout did not complete"; exit 0
+fi
+
+# ---- Step 3: on the NEW pod, fetch+verify against the post-restart key -------
+# The verifier runs INSIDE the pod (cryptography is present in the a11oy image).
+# It is fed, on STDIN, the pre-restart public key and the pre-restart receipt,
+# separated by a sentinel line, so the box never has to JSON-escape a multiline
+# PEM. It re-fetches the post-restart pub + a fresh receipt from localhost and
+# reports every assertion as a JSON object.
+read -r -d '' PYVERIFY <<'PYEOF'
+import sys, json, base64, hashlib, urllib.request
+out = {"pub_match": False, "pre_verifies": False, "post_verifies": False,
+       "post_signed": False, "post_key_source": "", "error": ""}
+try:
+    from cryptography.hazmat.primitives import serialization, hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+except Exception as e:
+    out["error"] = "cryptography unavailable: %r" % (e,)
+    sys.stdout.write(json.dumps(out)); sys.exit(0)
+
+import os
+BASE = os.environ.get("A11OY_WOW_BASE", "http://127.0.0.1:7860/api/a11oy/v1/wow")
+
+def http_get(u):
+    return urllib.request.urlopen(u, timeout=10).read().decode()
+
+def http_post_receipt():
+    req = urllib.request.Request(
+        BASE + "/govern",
+        data=json.dumps({"text": "signing-key-watch verify", "mode": "governed"}).encode(),
+        headers={"Content-Type": "application/json"})
+    d = json.load(urllib.request.urlopen(req, timeout=20))
+    return d.get("receipt", {})
+
+def pae(ptype, body):
+    return (b"DSSEv1 " + str(len(ptype)).encode() + b" " + ptype.encode()
+            + b" " + str(len(body)).encode() + b" " + body)
+
+def verify(pub, env):
+    if not env or not env.get("signed"):
+        return False
+    body = base64.b64decode(env["payload"])
+    to_sign = pae(env["payloadType"], body)
+    sig = base64.b64decode(env["signatures"][0]["sig"])
+    pub.verify(sig, to_sign, ec.ECDSA(hashes.SHA256()))  # ECDSA-P256 over DSSE PAE
+    return True
+
+raw = sys.stdin.read()
+SENT = "\n###PRE-RECEIPT###\n"
+i = raw.find(SENT)
+pub1 = raw[:i] if i >= 0 else ""
+pre_json = raw[i + len(SENT):] if i >= 0 else ""
+
+try:
+    pub2_pem = http_get(BASE + "/cosign.pub")
+    post = http_post_receipt()
+    out["post_key_source"] = post.get("key_source", "")
+    out["post_signed"] = bool(post.get("signed"))
+    pub1n = pub1.strip()
+    pub2n = pub2_pem.strip()
+    out["pub_sha256_pre"] = hashlib.sha256(pub1n.encode()).hexdigest()
+    out["pub_sha256_post"] = hashlib.sha256(pub2n.encode()).hexdigest()
+    out["pub_match"] = (pub1n != "" and pub1n == pub2n)
+    pubkey = serialization.load_pem_public_key(pub2n.encode())
+    try:
+        pre = json.loads(pre_json) if pre_json.strip() else {}
+    except Exception:
+        pre = {}
+    try:
+        out["pre_verifies"] = verify(pubkey, pre)
+    except Exception:
+        out["pre_verifies"] = False
+    try:
+        out["post_verifies"] = verify(pubkey, post)
+    except Exception:
+        out["post_verifies"] = False
+except Exception as e:
+    out["error"] = repr(e)
+sys.stdout.write(json.dumps(out))
+PYEOF
+
+VER=""
+attempt=0
+while [ "$attempt" -lt "$POST_RETRIES" ]; do
+  attempt=$((attempt + 1))
+  NEWPOD="$(get_ready_pod)"
+  if [ -n "$NEWPOD" ]; then
+    VER="$(printf '%s\n###PRE-RECEIPT###\n%s' "$PUB1" "$RECEIPT_PRE" \
+      | kubectl --request-timeout=40s -n "$NS" exec -i "$NEWPOD" -c "$CONTAINER" \
+          --env="A11OY_WOW_BASE=$BASEURL" -- python3 -c "$PYVERIFY" 2>/dev/null)"
+    # Some kubectl builds reject --env on exec; retry without it (the verifier
+    # then uses its baked default base URL).
+    if [ -z "$VER" ]; then
+      VER="$(printf '%s\n###PRE-RECEIPT###\n%s' "$PUB1" "$RECEIPT_PRE" \
+        | kubectl --request-timeout=40s -n "$NS" exec -i "$NEWPOD" -c "$CONTAINER" \
+            -- python3 -c "$PYVERIFY" 2>/dev/null)"
+    fi
+  fi
+  [ -n "$VER" ] && break
+  log "INFO verifier produced no output (attempt $attempt/$POST_RETRIES) — waiting ${POST_SLEEP}s"
+  sleep "$POST_SLEEP"
+done
+
+reasons=""
+add_reason() { reasons="${reasons:+$reasons; }$1"; }
+
+if [ -z "$VER" ]; then
+  # We HAD a baseline but the freshly-restarted a11oy served no verifiable
+  # signing surface — that is a real post-restart signing regression.
+  add_reason "a11oy served NO usable signing surface after the restart (cosign.pub / govern unreachable inside the new pod)"
+else
+  pub_match="$(jbool "$VER" pub_match)"
+  pre_ok="$(jbool "$VER" pre_verifies)"
+  post_ok="$(jbool "$VER" post_verifies)"
+  post_signed="$(jbool "$VER" post_signed)"
+  post_ks="$(jstr "$VER" post_key_source)"
+  verr="$(jstr "$VER" error)"
+  log "INFO verify result :: pub_match=$pub_match pre=$pre_ok post=$post_ok signed=$post_signed key_source=${post_ks:-?} err=${verr:-none}"
+
+  if [ "$pub_match" != "true" ]; then
+    add_reason "the served public signing key CHANGED across the pod restart (ephemeral key — receipts signed before the restart can no longer be verified against the live key)"
+  fi
+  if [ "$post_ks" != "persistent" ]; then
+    add_reason "after the restart a11oy reports key_source='${post_ks:-unknown}' (expected 'persistent'; the persistent signing Secret is NOT mounted — silent ephemeral fallback)"
+  fi
+  if [ "$post_ok" != "true" ]; then
+    add_reason "a freshly signed receipt does NOT verify against the served public key after the restart (signed=${post_signed:-?})"
+  fi
+  if [ "$pre_ok" != "true" ]; then
+    add_reason "a receipt signed BEFORE the restart no longer verifies against the post-restart public key"
+  fi
+fi
+
+# ---- Decide + edge-trigger --------------------------------------------------
+prev="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
+
+if [ -n "$reasons" ]; then
+  write_status ALERT "$reasons"
+  log "STATE ALERT :: $reasons"
+  if [ "$prev" != "ALERT" ]; then
+    notify "ALERT: a11oy did NOT keep the same ECDSA P-256 receipt-signing key across a pod restart on $CLUSTER. $reasons. Receipts may be unverifiable across restarts — check the szl-a11oy-receipts-ecdsa-p256 Secret mount on $NS/$DEPLOY."
+    log "EDGE OK->ALERT notified"
+  else
+    log "DEDUP still ALERT — no re-notify"
+  fi
+  echo ALERT >"$LAST_FILE" 2>/dev/null
+else
+  write_status OK "a11oy kept the same signing key across restart (key_source=$post_ks, pre+post receipts verify)"
+  log "STATE OK key persisted across restart (key_source=$post_ks)"
+  if [ "$prev" = "ALERT" ]; then
+    notify "RECOVERED: a11oy now keeps the same ECDSA P-256 receipt-signing key across pod restarts on $CLUSTER (key_source=$post_ks, pre+post receipts verify)."
+    log "EDGE ALERT->OK recovered, notified"
+  fi
+  echo OK >"$LAST_FILE" 2>/dev/null
+fi
+
+exit 0

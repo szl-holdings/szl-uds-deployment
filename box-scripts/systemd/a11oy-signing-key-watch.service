@@ -1,0 +1,25 @@
+[Unit]
+Description=Prove a11oy keeps the SAME ECDSA P-256 receipt-signing key across a pod restart on uds-szl-demo (alerts on a silent ephemeral-key fallback)
+Documentation=file:///usr/local/sbin/a11oy-signing-key-watch
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# This guard RESTARTS a live a11oy pod and waits for the rollout to settle, then
+# fetches+verifies a fresh receipt, so it needs a generous start timeout.
+TimeoutStartSec=600
+# Real push notifications use the SAME notifier + credentials file as the
+# a11oy-uptime / dns-drift / receipt-chain-watch monitors (ntfy / Telegram /
+# webhook). The leading "-" makes the env file optional, so the watcher still
+# runs (logging only) before any channel is configured. SMS/email is
+# intentionally NOT used here: this box has no Gmail/nodemailer transport and
+# outbound TCP 465 is firewalled.
+EnvironmentFile=-/etc/a11oy-uptime.env
+# Distinct ntfy title so signing-key alerts read differently from uptime/DNS.
+Environment=NOTIFY_TITLE=a11oy signing-key
+# Always invoke the shared notifier on every OK->ALERT edge / RECOVERED. It is
+# fail-soft: with no channel configured it just exits and the alert is still
+# logged, so wiring this is harmless before the env file is filled in.
+Environment=NOTIFY_CMD=/usr/local/sbin/a11oy-uptime-notify
+ExecStart=/usr/local/sbin/a11oy-signing-key-watch

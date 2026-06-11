@@ -1,0 +1,22 @@
+[Unit]
+Description=Weekly proof that a11oy keeps the same ECDSA P-256 receipt-signing key across a pod restart (alert on a silent ephemeral fallback)
+
+[Timer]
+# This guard RESTARTS a live a11oy pod, so it runs INFREQUENTLY (weekly), not on
+# a tight loop. The rolling restart keeps the service up via surge, but a weekly
+# cadence keeps disruption to a minimum while still catching a regressed key
+# (e.g. a chart change that drops the persistent signing Secret mount) within
+# days. Run it on demand any time with:
+#   sudo systemctl start a11oy-signing-key-watch.service
+OnCalendar=Sun *-*-* 04:30:00
+# Also run shortly after a boot so a fresh box exercises the check without
+# waiting up to a week for the next Sunday.
+OnBootSec=15min
+# Spread the start so it never lands exactly on another job's tick.
+RandomizedDelaySec=5min
+AccuracySec=1min
+Persistent=true
+Unit=a11oy-signing-key-watch.service
+
+[Install]
+WantedBy=timers.target
