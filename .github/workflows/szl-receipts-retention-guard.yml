@@ -1,0 +1,110 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# szl-receipts-retention-guard.yml — Guard the `szl-receipts-retention` box job
+# (the daily verify-store + archive-shards retention timer on uds-szl-demo) from
+# silently losing its safety properties.
+#
+# szl-receipts-retention (box-scripts/sbin/szl-receipts-retention) runs daily and
+# keeps the live szl-receipts PVC bounded: it kubectl-execs `verify-store` (a
+# bounded full-store integrity audit) then `archive-shards --delete` (itself
+# per-bucket VERIFY-GATED) into the Ready receipts-server pod, OFFLOADS each
+# freshly-sealed cold tarball off the live PVC, sha256-verifies it against the
+# bucket manifest, and only THEN prunes the in-pod copy. Its value rests on a
+# handful of fragile safety properties that produce NO visible symptom when a
+# refactor breaks them — until a tampered chain goes unalerted or unverified data
+# is pruned off the live store:
+#   * cluster down / module absent / no Ready pod  = no-op exit 0, no page;
+#   * a tampered chain (verify-store chain_ok=false) = ALERT  (the VERIFY GATE);
+#   * a bucket that fails per-bucket verification (skipped_failed_verify) = ALERT;
+#   * a BENIGN archive-shards no-op ("sharding disabled" / "no head pointer") is
+#     logged, NEVER paged;
+#   * the in-pod cold copy is PRUNED ONLY AFTER the off-box copy's sha256 matches
+#     the bucket manifest (the PRUNE GATE) — a mismatch keeps it and does NOT page;
+#   * it stays WIRED into install.sh (script + units installed, timer enabled) and
+#     documented in the retention runbook.
+#
+# Unlike the pure text/lint guards, the checks here are BEHAVIOURAL: the guard
+# script actually RUNS the real retention script against a mocked `kubectl`/`k3d`
+# (fake PATH bins emitting the JSON shapes it parses) and a capturing notifier,
+# then asserts the observable outcome (exit code, whether it paged, the status
+# file, and whether it pruned). That proves the verify gate and the prune gate
+# are wired into the control flow, not merely present as text.
+#
+# The check logic lives in scripts/szl-receipts-retention-guard-checks.sh. It was
+# extracted from this workflow so it can be UNIT TESTED:
+# scripts/szl-receipts-retention-guard-checks.test.sh feeds each check a
+# deliberately-BROKEN copy of the script (verify gate removed, prune gate
+# removed, ...) and asserts the check FAILS, plus that the pristine repo PASSES.
+# That self-test runs as the `self-test` job below, so a future edit that neuters
+# a check (green while guarding nothing) is caught here.
+#
+# The asserted invariants:
+#   chk1  szl-receipts-retention exists and parses clean (bash -n)
+#   chk2  cluster-down is a silent no-op (exit 0, no page)
+#   chk3  VERIFY GATE: verify-store chain_ok=false pages an ALERT
+#   chk4  a skipped_failed_verify bucket pages an ALERT
+#   chk5  a benign archive-shards no-op is logged, not paged
+#   chk6  PRUNE GATE: prune only after a sha256-verified offload (mismatch keeps it)
+#   chk7  wired into install.sh (script + units installed, timer enabled)
+#   chk8  documented in the retention runbook + named in install.sh
+
+name: SZL Receipts Retention Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves each check
+  # still FAILS on bad input (i.e. is not silently passing). The guard job
+  # depends on it so a broken check blocks the build before it can wave a
+  # regression through.
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/szl-receipts-retention-guard-checks.test.sh
+
+  guard:
+    name: Assert the receipt-store retention job is wired and verify-gated
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check 1 — szl-receipts-retention exists and parses clean
+        run: bash scripts/szl-receipts-retention-guard-checks.sh chk1 .
+
+      - name: Check 2 — cluster-down is a silent no-op (exit 0, no page)
+        run: bash scripts/szl-receipts-retention-guard-checks.sh chk2 .
+
+      - name: Check 3 — VERIFY GATE (verify-store chain_ok=false pages an ALERT)
+        run: bash scripts/szl-receipts-retention-guard-checks.sh chk3 .
+
+      - name: Check 4 — a skipped_failed_verify bucket pages an ALERT
+        run: bash scripts/szl-receipts-retention-guard-checks.sh chk4 .
+
+      - name: Check 5 — a benign archive-shards no-op is logged, not paged
+        run: bash scripts/szl-receipts-retention-guard-checks.sh chk5 .
+
+      - name: Check 6 — PRUNE GATE (prune only after a sha256-verified offload)
+        run: bash scripts/szl-receipts-retention-guard-checks.sh chk6 .
+
+      - name: Check 7 — wired into install.sh (script + units, timer enabled)
+        run: bash scripts/szl-receipts-retention-guard-checks.sh chk7 .
+
+      - name: Check 8 — documented in the retention runbook
+        run: bash scripts/szl-receipts-retention-guard-checks.sh chk8 .
+
+      - name: Receipt-store retention job is wired and verify-gated
+        run: echo "The szl-receipts-retention job is wired and verify-gated."
