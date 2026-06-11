@@ -340,9 +340,25 @@ jobs:
         run: |
           echo "── pods ──";        kubectl get pods -A -o wide || true
           echo "── a11oy pkg ──";   kubectl -n szl-a11oy get package a11oy -o yaml || true
+          echo "── a11oy pkg .status ──"
+          kubectl -n szl-a11oy get package a11oy -o jsonpath='{.status}' 2>/dev/null \
+            | python3 -m json.tool 2>/dev/null || true
+          echo "── istio + netpol in szl-a11oy ──"
+          kubectl -n szl-a11oy get virtualservice,serviceentry,authorizationpolicy,networkpolicy,gateway -o wide || true
+          echo "── services in szl-a11oy ──"
+          kubectl -n szl-a11oy get svc -o wide || true
+          echo "── pepr-uds-core WATCHER logs (a11oy / errors) ──"
+          kubectl -n pepr-system logs deploy/pepr-uds-core-watcher --tail=600 2>/dev/null \
+            | grep -iE "a11oy|error|fail|reject|deny|keycloak|authservice" | tail -120 || true
+          echo "── pepr-uds-core ADMISSION logs (a11oy / errors) ──"
+          kubectl -n pepr-system logs deploy/pepr-uds-core --tail=400 2>/dev/null \
+            | grep -iE "a11oy|error|fail|reject|deny" | tail -80 || true
           echo "── a11oy logs ──";  kubectl -n szl-a11oy logs deploy/a11oy --tail=120 || true
           echo "── authservice ──"; kubectl -n authservice get pods -o wide || true
           echo "── keycloak ──";    kubectl -n keycloak get pods -o wide || true
+          echo "── keycloak client log (szl-a11oy) ──"
+          kubectl -n keycloak logs keycloak-0 --tail=200 2>/dev/null \
+            | grep -iE "szl-a11oy|client|error" | tail -40 || true
 
       - name: Tear down the k3d cluster
         if: always()
