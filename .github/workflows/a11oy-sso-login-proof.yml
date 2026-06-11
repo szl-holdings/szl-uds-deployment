@@ -93,7 +93,7 @@ jobs:
           # Retry the bundle pull a few times — ghcr.io token-endpoint 403s/5xx on
           # anonymous-ish pulls are transient; fail loudly only after exhausting them.
           for attempt in 1 2 3; do
-            if uds deploy oci://ghcr.io/defenseunicorns/bundles/k3d-core-slim-dev:1.5.0 \
+            if uds deploy oci://ghcr.io/defenseunicorns/packages/uds/bundles/k3d-core-slim-dev:1.5.0 \
               --set DOMAIN=uds.dev \
               --set INSECURE_ADMIN_PASSWORD_GENERATION=true \
               --confirm --no-progress; then
