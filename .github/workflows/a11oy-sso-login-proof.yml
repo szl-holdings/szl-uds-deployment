@@ -1,0 +1,310 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# a11oy SSO Login Proof — real-cluster gate (Task #417)
+# =============================================================================
+# Proves a11oy's Keycloak SSO login screen ACTUALLY appears when SSO is turned
+# on. Until now "a11oy runs inside UDS behind Keycloak SSO" was validated only
+# by `helm template --set udsPackage.sso.enabled=true` + a server-side dry-run,
+# because Keycloak does not fit the ~2-vCPU uds-szl-demo box (scaled to 0/0).
+# That render proves the Package CR is well-formed; it canNOT prove a browser is
+# redirected to a login screen and let back in. This workflow closes that gap on
+# a throwaway, headroom GitHub-hosted cluster.
+#
+# Mirrors the szl-receipts real-cluster gate (.github/workflows/test.yaml,
+# test-install job): workflow_dispatch ONLY (a full UDS Core + Keycloak stack is
+# far too heavy for every PR), same pinned actions, same deploy-then-prove shape.
+#
+# It deploys UDS Core (Istio + the Pepr UDS Operator + Keycloak + authservice),
+# the canonical szl-receipts package, and charts/a11oy WITH
+# `--set udsPackage.sso.enabled=true`, then proves:
+#   1. PRIMARY — an unauthenticated request to a11oy.admin.uds.dev is
+#      302-redirected to the Keycloak OIDC authorize endpoint (the login screen).
+#   2. FULL FLOW — after a real Keycloak login the authservice forwards the
+#      browser back to a11oy and a11oy serves HTTP 200.
+#   3. MACHINE PATH — a11oy's egress to szl-receipts is NOT intercepted by the
+#      authservice (turning SSO on must not break a11oy's machine-to-machine
+#      receipt emission). authservice attaches to a11oy's browser INGRESS, never
+#      to its egress, so the receipt path must stay open.
+#
+# Every assertion is FAIL-LOUD. The cluster is always torn down.
+
+name: a11oy SSO Login Proof
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  sso-login-proof:
+    name: a11oy SSO Login Proof (real cluster)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install UDS CLI
+        uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1 (v1.0.1)
+        with:
+          version: v0.31.0
+
+      - name: Install Zarf
+        run: |
+          curl -sL "https://github.com/zarf-dev/zarf/releases/download/v0.77.0/zarf_v0.77.0_Linux_amd64" \
+            -o /usr/local/bin/zarf && chmod +x /usr/local/bin/zarf
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+      - name: Install kubectl
+        run: |
+          curl -sLO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+          kubectl version --client
+
+      - name: Install Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        with:
+          version: v3.14.0
+
+      - name: Install Python deps (OIDC login driver + DSSE verify)
+        run: pip install requests cryptography
+
+      # ── Real-cluster substrate: UDS Core (Istio + Operator + Keycloak + authservice)
+      - name: Deploy UDS Core (k3d-core-slim-dev)
+        run: |
+          uds deploy oci://ghcr.io/defenseunicorns/bundles/k3d-core-slim-dev:1.5.0 \
+            --set DOMAIN=uds.dev \
+            --set INSECURE_ADMIN_PASSWORD_GENERATION=true \
+            --confirm --no-progress
+
+      # ── Canonical szl-receipts (the machine receipt sink a11oy emits to) ─────────
+      - name: Build szl-receipts-server image into local Docker
+        run: |
+          docker build -t ghcr.io/szl-holdings/szl-receipts-server:uds-v0.4.0 \
+            services/szl-receipts-server
+
+      - name: Build + deploy the szl-receipts Zarf package
+        run: |
+          zarf package create packages/szl-receipts \
+            --flavor upstream \
+            --set DOMAIN=uds.dev \
+            --confirm --no-progress
+          zarf package deploy zarf-package-szl-receipts-*.tar.zst \
+            --confirm --no-progress
+
+      # ── a11oy: import the published image + deploy the chart WITH SSO ON ──────────
+      - name: Pull + import the a11oy image into k3d
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The a11oy app source lives in szl-holdings/a11oy, not here, so we deploy
+          # the published, cosign-signed organ image (the exact one the chart pins)
+          # rather than building it. Authenticate to GHCR in case the package is
+          # private to the org.
+          echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin || true
+          docker pull ghcr.io/szl-holdings/a11oy:uds-v0.3.0
+          docker tag ghcr.io/szl-holdings/a11oy:uds-v0.3.0 a11oy:local
+          CLUSTER="$(k3d cluster list -o json | python3 -c 'import sys,json; print(json.load(sys.stdin)[0]["name"])')"
+          echo "k3d cluster: ${CLUSTER}"
+          k3d image import a11oy:local -c "${CLUSTER}"
+
+      - name: Deploy charts/a11oy with SSO enabled
+        run: |
+          set -euo pipefail
+          # Render the chart with SSO ON and the k3d-imported local image, then
+          # apply it. We use template|apply (not `helm install`) for deterministic
+          # ordering on a CI cluster: it is the SAME chart deployed with
+          # --set udsPackage.sso.enabled=true. zarfAgentIgnore=true labels the
+          # namespace so the UDS/Zarf agent does NOT rewrite the local image to the
+          # internal registry (would ImagePullBackOff). receiptKeyInit is disabled
+          # here because this proof exercises SSO + egress, not signing-key custody
+          # (covered by the a11oy-signing-key guards); a11oy still boots and serves.
+          helm template a11oy charts/a11oy \
+            --set udsPackage.sso.enabled=true \
+            --set image.repository=a11oy \
+            --set image.tag=local \
+            --set image.digest="" \
+            --set zarfAgentIgnore=true \
+            --set receiptKeyInit.enabled=false \
+            > /tmp/a11oy-sso.yaml
+          echo "── Rendered a11oy (SSO on) — sso/authservice block ──"
+          grep -nE "sso:|enableAuthserviceSelector|clientId|redirectUris|oauth2/callback" /tmp/a11oy-sso.yaml || true
+          # Namespace sorts first in helm's render order; a second apply settles any
+          # resource that raced ahead of the namespace.
+          kubectl apply -f /tmp/a11oy-sso.yaml || true
+          sleep 5
+          kubectl apply -f /tmp/a11oy-sso.yaml
+
+      - name: Wait for a11oy + the UDS Package to be ready
+        run: |
+          set -euo pipefail
+          kubectl -n szl-a11oy rollout status deployment/a11oy --timeout=300s
+          echo "── Waiting for the UDS Package to reconcile (authservice + Keycloak client) ──"
+          for _ in $(seq 1 60); do
+            phase="$(kubectl -n szl-a11oy get package a11oy -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            echo "package phase: ${phase:-<none>}"
+            [ "${phase}" = "Ready" ] && break
+            sleep 5
+          done
+          kubectl -n szl-a11oy get package a11oy -o yaml | grep -E "phase:|ssoClients|authservice" || true
+
+      # ── Map the gateway hostnames to the live Istio gateway IPs ──────────────────
+      - name: Discover gateway IPs + write /etc/hosts
+        run: |
+          set -euo pipefail
+          lb_ip() {  # $1 = namespace
+            kubectl -n "$1" get svc -o jsonpath='{range .items[?(@.spec.type=="LoadBalancer")]}{.status.loadBalancer.ingress[0].ip}{"\n"}{end}' 2>/dev/null \
+              | grep -E '.' | head -1 || true
+          }
+          ADMIN_IP=""; TENANT_IP=""
+          for _ in $(seq 1 30); do
+            ADMIN_IP="$(lb_ip istio-admin-gateway)"
+            TENANT_IP="$(lb_ip istio-tenant-gateway)"
+            [ -n "${ADMIN_IP}" ] && [ -n "${TENANT_IP}" ] && break
+            sleep 5
+          done
+          # Single-LB fall-through: if a gateway has no distinct IP, reuse the other
+          # (UDS host-based routing still selects the right Gateway by SNI/Host).
+          [ -z "${ADMIN_IP}" ] && ADMIN_IP="${TENANT_IP}"
+          [ -z "${TENANT_IP}" ] && TENANT_IP="${ADMIN_IP}"
+          if [ -z "${ADMIN_IP}" ]; then
+            echo "::error::could not discover any Istio gateway LoadBalancer IP"
+            kubectl get svc -A
+            exit 1
+          fi
+          echo "admin gateway: ${ADMIN_IP}   tenant gateway: ${TENANT_IP}"
+          echo "${ADMIN_IP} a11oy.admin.uds.dev keycloak.admin.uds.dev" | sudo tee -a /etc/hosts
+          echo "${TENANT_IP} sso.uds.dev" | sudo tee -a /etc/hosts
+          echo "── /etc/hosts (uds.dev) ──"; grep uds.dev /etc/hosts
+
+      - name: Wait until the SSO redirect is live
+        run: |
+          set -euo pipefail
+          # Poll until an unauthenticated request is actually redirected to Keycloak
+          # (authservice config can take a moment to propagate to the gateway).
+          for _ in $(seq 1 36); do
+            code="$(curl -sk -o /dev/null -w '%{http_code}' "https://a11oy.admin.uds.dev/" || true)"
+            loc="$(curl -sk -o /dev/null -w '%{redirect_url}' "https://a11oy.admin.uds.dev/" || true)"
+            echo "GET a11oy -> ${code}  Location=${loc}"
+            case "${loc}" in
+              *sso.uds.dev*openid-connect/auth*) echo "SSO redirect is live."; exit 0 ;;
+            esac
+            sleep 5
+          done
+          echo "::error::a11oy never started redirecting unauthenticated traffic to Keycloak"
+          kubectl -n szl-a11oy get package a11oy -o yaml || true
+          exit 1
+
+      # ── Get the Keycloak admin password the bundle generated ─────────────────────
+      - name: Read Keycloak admin password
+        id: kc
+        run: |
+          set -euo pipefail
+          SEC="$(kubectl -n keycloak get secret -o name | grep -iE 'admin' | head -1)"
+          if [ -z "${SEC}" ]; then
+            echo "::error::no Keycloak admin secret found in the keycloak namespace"
+            kubectl -n keycloak get secret
+            exit 1
+          fi
+          PW="$(kubectl -n keycloak get "${SEC}" -o jsonpath='{.data.password}' | base64 -d)"
+          if [ -z "${PW}" ]; then
+            echo "::error::Keycloak admin secret ${SEC} had no .data.password"
+            exit 1
+          fi
+          echo "::add-mask::${PW}"
+          echo "kc_password=${PW}" >> "$GITHUB_OUTPUT"
+
+      # ── THE PROOF: real OIDC Authorization Code flow in front of a11oy ───────────
+      - name: Prove the SSO login screen appears + a real login completes
+        env:
+          A11OY_HOST: a11oy.admin.uds.dev
+          KC_ADMIN_BASE: https://keycloak.admin.uds.dev
+          KC_PUBLIC_HOST: sso.uds.dev
+          KC_ADMIN_USER: admin
+          KC_ADMIN_PASSWORD: ${{ steps.kc.outputs.kc_password }}
+          REALM: uds
+          TEST_USER: sso-proof-user
+          TEST_PASSWORD: Sso-Proof-Pass-2026!
+        run: python3 scripts/a11oy_sso_login_proof.py
+
+      # ── MACHINE PATH: a11oy egress to szl-receipts is unaffected by SSO ──────────
+      - name: Prove a11oy's machine receipt egress still works with SSO on
+        run: |
+          set -euo pipefail
+          # authservice gates a11oy's browser INGRESS, never its egress. Prove the
+          # a11oy pod can still reach the szl-receipts machine sink. a11oy's UDS
+          # Package already opens the a11oy->szl-receipts egress; we add the matching
+          # ingress on the receipts side (a full cross-organ mesh bundle would carry
+          # this) so the path completes end-to-end. NetworkPolicies are additive, so
+          # this only OPENS the path and never weakens receipts' default-deny posture.
+          cat <<'EOF' | kubectl apply -f -
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: allow-a11oy-ingress-sso-proof
+            namespace: szl-receipts
+          spec:
+            podSelector:
+              matchLabels:
+                app: szl-receipts-server
+            policyTypes: ["Ingress"]
+            ingress:
+              - from:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: szl-a11oy
+                ports:
+                  - protocol: TCP
+                    port: 8080
+          EOF
+          sleep 3
+          POD="$(kubectl -n szl-a11oy get pod -l app=a11oy -o jsonpath='{.items[0].metadata.name}')"
+          echo "a11oy pod: ${POD}"
+          set +e
+          OUT="$(kubectl -n szl-a11oy exec "${POD}" -- python3 - <<'PY'
+          import json, sys, urllib.request, urllib.error
+          url = "http://szl-receipts-server.szl-receipts.svc.cluster.local:8080/receipt"
+          body = json.dumps({"kind": "ci-sso-egress",
+                             "actor": "a11oy",
+                             "detail": "machine egress under SSO"}).encode()
+          req = urllib.request.Request(url, data=body,
+                                       headers={"Content-Type": "application/json"})
+          try:
+              r = urllib.request.urlopen(req, timeout=20)
+              print("HTTP", r.status, r.read().decode()[:300])
+          except urllib.error.HTTPError as e:
+              # Reached szl-receipts (got an HTTP status) — egress is open.
+              print("HTTP", e.code, e.read().decode()[:300])
+          except Exception as e:
+              print("EGRESS-FAILED", type(e).__name__, str(e))
+              sys.exit(1)
+          PY
+          )"
+          rc=$?
+          set -e
+          echo "egress result: ${OUT}"
+          if [ "${rc}" -ne 0 ] || echo "${OUT}" | grep -q "EGRESS-FAILED"; then
+            echo "::error::a11oy could NOT reach szl-receipts with SSO on — the machine egress path is broken"
+            kubectl -n szl-a11oy describe pod "${POD}" || true
+            exit 1
+          fi
+          echo "OK: a11oy reached the szl-receipts machine sink with SSO on (egress is not authservice-gated)."
+
+      - name: Diagnostics (on failure)
+        if: failure()
+        run: |
+          echo "── pods ──";        kubectl get pods -A -o wide || true
+          echo "── a11oy pkg ──";   kubectl -n szl-a11oy get package a11oy -o yaml || true
+          echo "── a11oy logs ──";  kubectl -n szl-a11oy logs deploy/a11oy --tail=120 || true
+          echo "── authservice ──"; kubectl -n authservice get pods -o wide || true
+          echo "── keycloak ──";    kubectl -n keycloak get pods -o wide || true
+
+      - name: Tear down the k3d cluster
+        if: always()
+        run: |
+          CLUSTER="$(k3d cluster list -o json 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d[0]["name"] if d else "")' 2>/dev/null || true)"
+          [ -n "${CLUSTER}" ] && k3d cluster delete "${CLUSTER}" || true
