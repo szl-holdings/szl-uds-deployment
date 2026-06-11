@@ -93,6 +93,7 @@ szl-ns-scratch audit            # classify every namespace (default)
 szl-ns-scratch list-unlabeled   # unmanaged ns missing the ephemeral label (the risky set)
 szl-ns-scratch list-stale [N]   # ephemeral ns older than N days (TTL-aware; default 14)
 szl-ns-scratch label <ns> [--owner who] [--created YYYY-MM-DD] [--ttl-days N]
+szl-ns-scratch reap [opts]      # DELETE expired EPHEMERAL ns — guarded, dry-run by default
 ```
 
 `audit` classifies each namespace as one of:
@@ -109,3 +110,54 @@ owner and either label it or remove it with their sign-off.
 
 The cluster-absent case is a safe no-op: if `uds-szl-demo` is stopped (k3d nodes
 are `--restart no`), the helper prints a notice and exits 0.
+
+## Auto-cleanup: `szl-ns-scratch reap`
+
+`list-stale` only *reports* expired namespaces — a human still has to delete
+them, so the 2-vCPU box's headroom keeps leaking until someone gets around to it.
+`reap` reclaims that CPU automatically while staying inside the same safety rules
+the convention is built on.
+
+```bash
+szl-ns-scratch reap                       # DRY-RUN: print what it WOULD delete
+szl-ns-scratch reap --yes                 # actually delete (alias: --confirm)
+szl-ns-scratch reap --grace-days 2        # wait 2 extra days after expiry first
+szl-ns-scratch reap --days 30 --yes       # 30-day age threshold for ns with no ttl-days
+szl-ns-scratch reap --backup-dir /path    # where to write the manifest backups
+```
+
+What makes it safe:
+
+- **Only EPHEMERAL + expired.** A namespace is reaped only if it is labeled
+  `szl.io/ephemeral=true` **and** its age (from `szl.io/created`) is at least its
+  `szl.io/ttl-days` (or the `--days` default when no TTL is set), plus any
+  `--grace-days`. SYSTEM and MANAGED namespaces are excluded, and live
+  managed-ownership is **re-derived at reap time** (`helm` releases, UDS Packages,
+  zarf label) — exactly like `audit` — so a hand-applied scratch wearing a stray
+  `managed-by=Helm` label is still protected.
+- **Never touches UNKNOWN.** An unlabeled / unmanaged namespace is never deleted —
+  the reaper simply skips it (use `list-unlabeled` / `audit` to find its owner).
+- **Never deletes when age is unknown.** A namespace missing or with an
+  unparseable `szl.io/created` is skipped and printed for manual review, never
+  reaped on a guess.
+- **Dry-run by default.** With no flags it only prints `[dry-run] WOULD delete …`
+  and changes nothing; deletion requires an explicit `--yes` / `--confirm`.
+- **Reversible — backs up first.** Before each delete it writes the full namespace
+  manifest (the Namespace object plus every namespaced resource it can enumerate)
+  to a timestamped file under `--backup-dir` (default
+  `/var/backups/szl-ns-scratch/<ns>-<UTC-timestamp>.yaml`), exactly as the prior
+  manual `szl-receipts-demo` cleanup did. If the backup can't be written, the
+  delete is **skipped** — it never deletes against an empty/garbage backup. Each
+  backup file carries a `kubectl apply -f …` restore hint in its header.
+- **Optional grace period.** `--grace-days N` (or `SZL_NS_GRACE_DAYS`) keeps an
+  expired namespace alive for `N` more days so its owner — who is already being
+  paged by `szl-ns-scratch-stale-watch` — has a window to intervene before it is
+  reclaimed.
+- **Cluster-absent = no-op.** Same as the rest of the tool: a stopped/unreachable
+  `uds-szl-demo` prints a notice and exits 0, deleting nothing.
+
+A typical hands-off loop: `szl-ns-scratch-stale-watch` pages the team when a
+labeled scratch namespace passes its TTL; a periodic `szl-ns-scratch reap --yes
+--grace-days <N>` (or a manual run after eyeballing the dry-run) then reclaims it
+once the grace window has elapsed. Restore an over-eager delete with
+`kubectl apply -f /var/backups/szl-ns-scratch/<file>.yaml`.

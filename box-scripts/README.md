@@ -442,7 +442,7 @@ owner. NEVER auto-delete an **UNKNOWN** (unlabeled + unmanaged) namespace.
 
 ```
 sbin/
-  szl-ns-scratch              # audit | list-unlabeled | list-stale | label
+  szl-ns-scratch              # audit | list-unlabeled | list-stale | label | reap
 ```
 
 `szl-ns-scratch` itself has no systemd unit — it is an on-demand operator tool,
@@ -459,12 +459,25 @@ szl-ns-scratch audit            # classify every ns: SYSTEM | MANAGED | EPHEMERA
 szl-ns-scratch list-unlabeled   # unmanaged ns missing the ephemeral label (the risky set)
 szl-ns-scratch list-stale [N]   # ephemeral ns older than N days (TTL-aware; default 14)
 szl-ns-scratch label <ns> --owner rosa --ttl-days 7   # stamp the convention onto <ns>
+szl-ns-scratch reap             # DRY-RUN: print expired EPHEMERAL ns it WOULD delete
+szl-ns-scratch reap --yes       # actually delete (backs up each ns manifest first)
 ```
 
 `audit` cross-checks live ownership (`helm list`, `kubectl get packages.uds.dev`,
 zarf-managed label) rather than trusting the `managed-by=Helm` label alone — a
 hand-applied scratch can wear that label with no release behind it. A clean
 cluster shows zero **UNKNOWN** rows.
+
+`reap` is the auto-cleanup that `list-stale` only reports. It deletes **only**
+namespaces classified EPHEMERAL and past their TTL/age (+ optional
+`--grace-days`); it re-derives managed-ownership at reap time and **never** touches
+SYSTEM, MANAGED, or UNKNOWN namespaces, nor one whose `szl.io/created` can't be
+parsed. It is **dry-run by default** — `--yes`/`--confirm` is required to act — and
+before each delete it writes the full namespace manifest to a timestamped file
+(`/var/backups/szl-ns-scratch/<ns>-<UTC>.yaml`, override with `--backup-dir`) so
+the delete is reversible via `kubectl apply -f`. If the backup can't be written
+the delete is skipped. Cluster-absent is a safe no-op. Full safety rules:
+[`docs/SCRATCH_NAMESPACE_CONVENTION.md`](../docs/SCRATCH_NAMESPACE_CONVENTION.md).
 
 ## Reinstall
 

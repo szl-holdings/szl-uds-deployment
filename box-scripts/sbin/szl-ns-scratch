@@ -32,9 +32,20 @@
 #       --owner <who>     (default: $USER@$(hostname) or "unknown")
 #       --created <date>  (default: today, UTC YYYY-MM-DD)
 #       --ttl-days <N>    (optional)
+#   szl-ns-scratch reap [opts]           # DELETE expired EPHEMERAL ns (guarded)
+#       --yes | --confirm  actually delete (default: DRY-RUN — prints only)
+#       --days <N>         age threshold when a ns has no ttl-days (default 14)
+#       --grace-days <N>   extra days to wait AFTER expiry before reaping (def 0)
+#       --backup-dir <d>   where to save the reversible manifest backups
+#                          (default /var/backups/szl-ns-scratch)
 #
-# It is read-only except for `label`. Mirrors the kubeconfig-resolution and
-# cluster-absent no-op pattern of the other box guards (szl-core-rightsize etc).
+# It is read-only except for `label` and `reap`. `reap` is DRY-RUN unless you
+# pass --yes/--confirm; it only ever deletes namespaces classified EPHEMERAL and
+# past their TTL/age (+ optional grace) — it NEVER touches SYSTEM, MANAGED, or
+# UNKNOWN namespaces, re-deriving live managed-ownership before each delete. It
+# also backs up the full namespace manifest to a timestamped file FIRST, so the
+# action is reversible. Mirrors the kubeconfig-resolution and cluster-absent
+# no-op pattern of the other box guards (szl-core-rightsize etc).
 set -uo pipefail
 
 CLUSTER="${SZL_NS_CLUSTER:-uds-szl-demo}"
@@ -181,8 +192,126 @@ cmd_label() {
   kubectl label ns "$ns" --overwrite "${args[@]}"
 }
 
+# Dump a reversible backup of a namespace (the ns object + every namespaced
+# resource we can enumerate) to a single timestamped YAML file, exactly as the
+# prior manual szl-receipts-demo cleanup did. Echoes the backup file path on
+# success; returns non-zero (and leaves no partial file) if nothing could be
+# captured, so a delete is never performed against an empty backup.
+backup_namespace() { # <ns> <backup_dir>
+  local ns="$1" dir="$2" ts file tmp
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -p "$dir" 2>/dev/null || { echo "[szl-ns-scratch] cannot create backup dir: $dir" >&2; return 1; }
+  file="$dir/${ns}-${ts}.yaml"
+  tmp="$(mktemp "${dir}/.${ns}-${ts}.XXXXXX" 2>/dev/null)" || { echo "[szl-ns-scratch] cannot create temp backup file in $dir" >&2; return 1; }
+  {
+    echo "# szl-ns-scratch reap backup"
+    echo "# namespace: $ns"
+    echo "# captured:  $ts (UTC)"
+    echo "# cluster:   $CLUSTER"
+    echo "# restore:   kubectl apply -f $(basename "$file")"
+    echo "---"
+    kubectl get namespace "$ns" -o yaml 2>/dev/null
+    echo "---"
+    # Best-effort dump of the common namespaced resources. `kubectl get all`
+    # misses several kinds, so enumerate them explicitly; any kind the cluster
+    # doesn't have is silently skipped.
+    kubectl get \
+      all,configmaps,secrets,persistentvolumeclaims,ingresses,networkpolicies,serviceaccounts,roles,rolebindings \
+      -n "$ns" -o yaml 2>/dev/null
+    # UDS Package CRs, if the CRD is installed (a scratch ns shouldn't have one,
+    # but capture it for completeness/reversibility).
+    kubectl get packages.uds.dev -n "$ns" -o yaml 2>/dev/null
+  } >"$tmp"
+  # The ns object alone guarantees a non-trivial dump; if even that failed, bail
+  # rather than delete against an empty/garbage backup.
+  if ! grep -q '^kind: Namespace' "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    echo "[szl-ns-scratch] backup of ns/$ns captured no Namespace object; refusing to delete" >&2
+    return 1
+  fi
+  mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+  echo "$file"
+}
+
+cmd_reap() {
+  local days="$DEFAULT_STALE_DAYS"
+  local grace="${SZL_NS_GRACE_DAYS:-0}"
+  local backup_dir="${SZL_NS_BACKUP_DIR:-/var/backups/szl-ns-scratch}"
+  local do_delete=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --yes|--confirm) do_delete=1; shift ;;
+      --days)          days="$2"; shift 2 ;;
+      --grace-days)    grace="$2"; shift 2 ;;
+      --backup-dir)    backup_dir="$2"; shift 2 ;;
+      -*)              die "unknown flag: $1" ;;
+      *)               die "unexpected arg: $1 (reap takes no positional args)" ;;
+    esac
+  done
+  case "$days$grace" in *[!0-9]*) die "--days/--grace-days must be non-negative integers" ;; esac
+
+  resolve_kube
+  local managed; managed="$(managed_namespaces)"
+
+  if [ "$do_delete" -eq 1 ]; then
+    echo "[szl-ns-scratch] reap: DELETING expired EPHEMERAL namespaces (threshold=${days}d default, grace=${grace}d); backups -> $backup_dir"
+  else
+    echo "[szl-ns-scratch] reap: DRY-RUN (no deletes). Re-run with --yes/--confirm to act. (threshold=${days}d default, grace=${grace}d)"
+  fi
+
+  local candidates=0 reaped=0 skipped=0 ns
+  while read -r ns; do
+    [ -n "$ns" ] || continue
+    # ── Hard safety gates: only EPHEMERAL, never SYSTEM/MANAGED/UNKNOWN ────────
+    if echo "$ns" | grep -Eq "$SYSTEM_NS_RE"; then continue; fi          # SYSTEM
+    if echo "$managed" | grep -qx "$ns"; then continue; fi                # MANAGED
+    [ "$(label_get "$ns" szl.io/ephemeral)" = "true" ] || continue        # not EPHEMERAL/UNKNOWN
+    local created ttl ad threshold effective owner
+    created="$(label_get "$ns" szl.io/created)"
+    ttl="$(label_get "$ns" szl.io/ttl-days)"
+    ad="$(age_days "${created:-}")"
+    owner="$(label_get "$ns" szl.io/owner)"; [ -n "$owner" ] || owner="(unset)"
+    # Never delete a ns whose age we cannot establish — flag it for review.
+    if [ -z "$ad" ]; then
+      echo "[skip] ns/$ns: szl.io/created missing/unparseable -> review manually (owner=$owner)"
+      skipped=$((skipped+1)); continue
+    fi
+    threshold="$days"; [ -n "$ttl" ] && threshold="$ttl"
+    effective=$(( threshold + grace ))
+    # Not yet past expiry (+grace): leave it.
+    [ "$ad" -ge "$effective" ] 2>/dev/null || continue
+
+    candidates=$((candidates+1))
+    if [ "$do_delete" -eq 1 ]; then
+      local bfile
+      if ! bfile="$(backup_namespace "$ns" "$backup_dir")"; then
+        echo "[skip] ns/$ns: backup FAILED -> not deleting (owner=$owner)"
+        skipped=$((skipped+1)); continue
+      fi
+      echo "[reap] ns/$ns age=${ad}d threshold=${threshold}d grace=${grace}d owner=$owner -> backed up to $bfile"
+      if kubectl delete ns "$ns" --wait=false >/dev/null 2>&1; then
+        echo "[reap] ns/$ns delete requested (kubectl delete ns $ns)"
+        reaped=$((reaped+1))
+      else
+        echo "[skip] ns/$ns: kubectl delete failed (backup kept at $bfile)"
+        skipped=$((skipped+1))
+      fi
+    else
+      echo "[dry-run] WOULD delete ns/$ns age=${ad}d threshold=${threshold}d grace=${grace}d owner=$owner"
+    fi
+  done < <(kubectl get ns -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null)
+
+  if [ "$do_delete" -eq 1 ]; then
+    echo "[szl-ns-scratch] reap done: ${reaped} deleted, ${skipped} skipped, ${candidates} candidate(s)."
+  else
+    echo "[szl-ns-scratch] reap dry-run: ${candidates} namespace(s) WOULD be deleted, ${skipped} skipped. Nothing was changed."
+  fi
+}
+
 usage() {
-  sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+  # Print the leading comment header (line 2 until the first non-comment line),
+  # stripping the leading "# " — robust to the header growing over time.
+  awk 'NR>=2 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"
   exit "${1:-0}"
 }
 
@@ -191,6 +320,7 @@ case "${1:-audit}" in
   list-unlabeled) shift; cmd_list_unlabeled ;;
   list-stale)     shift; cmd_list_stale "$@" ;;
   label)          shift; cmd_label "$@" ;;
+  reap)           shift; cmd_reap "$@" ;;
   -h|--help|help) usage 0 ;;
   *)              echo "unknown subcommand: $1" >&2; usage 1 ;;
 esac
