@@ -26,12 +26,7 @@ on:
         required: true
 
 permissions:
-  # Required for keyless cosign OIDC token exchange
-  id-token: write
-  # Required to upload release assets
-  contents: write
-  # Required to push to ghcr.io
-  packages: write
+  contents: read
 
 env:
   ZARF_VERSION: "v0.77.0"
@@ -53,6 +48,8 @@ jobs:
   # while the receipts server would boot UNSIGNED. This workflow only triggers on
   # tags / manual dispatch (never on PRs), so the gate adds no per-PR runner cost.
   receipts-signing-gate:
+    permissions:
+      contents: read
     # The real-cluster signing proof now lives in ONE reusable workflow
     # (.github/workflows/receipts-signing-gate.yml), shared with test.yaml's
     # `test-install` job so the two copies can never drift. build-and-sign
@@ -67,6 +64,10 @@ jobs:
   build-and-sign:
     name: Build & Sign (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write   # zarf package publish → ghcr.io
+      id-token: write    # keyless cosign OIDC token exchange
     # Gate: never build/sign/publish a release until the receipts server has been
     # proven to actually SIGN on a real cluster (see receipts-signing-gate above).
     needs: receipts-signing-gate
@@ -287,6 +288,8 @@ jobs:
     runs-on: ubuntu-24.04
     needs: build-and-sign
     environment: release
+    permissions:
+      contents: write   # create the GitHub release + upload assets
 
     steps:
       - name: Checkout (for release notes template)

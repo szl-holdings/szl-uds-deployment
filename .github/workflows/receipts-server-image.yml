@@ -38,10 +38,7 @@ on:
       - "receipts-server-v*"
 
 permissions:
-  contents: write # push the auto-repin branch
-  packages: write
-  id-token: write # keyless cosign fallback
-  pull-requests: write # open the auto-repin PR
+  contents: read
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/szl-receipts-server
@@ -183,6 +180,11 @@ jobs:
   build-push:
     name: Build + push (+ sign) receipts-server
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the auto-repin branch
+      packages: write
+      id-token: write # keyless cosign fallback
+      pull-requests: write # open the auto-repin PR
     # Gate: never push/sign the receipts-server image until the freshly built image
     # has been proven to actually SIGN (see receipts-signing-gate above). A failing
     # signing proof blocks the publish — an UNSIGNED image can never ship.

@@ -35,9 +35,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write     # Required for OIDC token exchange with Fulcio (keyless signing)
-  contents: read      # Required for checkout
-  packages: write     # Required to push to ghcr.io
+  contents: read
 
 env:
   ZARF_VERSION: "v0.77.0"
@@ -50,6 +48,10 @@ jobs:
   package-sign:
     name: Build & Sign Zarf Package
     runs-on: ubuntu-latest
+    permissions:
+      contents: read      # checkout
+      id-token: write     # OIDC token exchange with Fulcio (keyless signing)
+      packages: write     # push to ghcr.io
 
     steps:
       # ── Checkout ─────────────────────────────────────────────────────────

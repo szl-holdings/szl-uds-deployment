@@ -32,6 +32,11 @@ on:
         type: string
         default: 'receipts-signing-gate'
 
+# Least-privilege default (OSSF Scorecard Token-Permissions). This reusable gate
+# only checks out and deploys to an ephemeral k3d cluster — no token writes.
+permissions:
+  contents: read
+
 jobs:
   receipts-signing-gate:
     name: Receipts Signing Gate (real cluster)
