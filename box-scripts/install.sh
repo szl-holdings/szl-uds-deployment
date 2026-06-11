@@ -12,6 +12,10 @@
 #        szl-receipts-retention — daily verify-store + archive sealed shards off
 #                               the live PVC (keeps the receipt store bounded;
 #                               alerts on chain_ok=false / skipped buckets)
+#        szl-receipts-cold-offsite — daily mirror of the box cold receipt archive
+#                               OFFSITE (object bucket / 2nd host) so the sealed
+#                               history survives box loss; sha256-verified against
+#                               the bucket manifests, append-only, alerts on failure
 #   3. the a11oy.net public-site alerting watchers:
 #        a11oy-uptime-check   — probe a11oy.net uptime, alert on the outage edge
 #        a11oy-uptime-notify  — shared push notifier (ntfy/Telegram/webhook)
@@ -40,6 +44,7 @@ install -m 0755 "$here/sbin/istiod-fit-strategy"       /usr/local/sbin/istiod-fi
 install -m 0755 "$here/sbin/receipt-chain-watch"       /usr/local/sbin/receipt-chain-watch
 install -m 0755 "$here/sbin/receipt-flood-watch"       /usr/local/sbin/receipt-flood-watch
 install -m 0755 "$here/sbin/szl-receipts-retention"    /usr/local/sbin/szl-receipts-retention
+install -m 0755 "$here/sbin/szl-receipts-cold-offsite" /usr/local/sbin/szl-receipts-cold-offsite
 install -m 0755 "$here/sbin/szl-ns-scratch"            /usr/local/sbin/szl-ns-scratch
 install -m 0755 "$here/sbin/szl-ns-scratch-watch"      /usr/local/sbin/szl-ns-scratch-watch
 install -m 0755 "$here/sbin/szl-ns-scratch-stale-watch" /usr/local/sbin/szl-ns-scratch-stale-watch
@@ -72,6 +77,8 @@ install -m 0644 "$here/systemd/receipt-flood-watch@.service" /etc/systemd/system
 install -m 0644 "$here/systemd/receipt-flood-watch@.timer"   /etc/systemd/system/receipt-flood-watch@.timer
 install -m 0644 "$here/systemd/szl-receipts-retention.service" /etc/systemd/system/szl-receipts-retention.service
 install -m 0644 "$here/systemd/szl-receipts-retention.timer"   /etc/systemd/system/szl-receipts-retention.timer
+install -m 0644 "$here/systemd/szl-receipts-cold-offsite.service" /etc/systemd/system/szl-receipts-cold-offsite.service
+install -m 0644 "$here/systemd/szl-receipts-cold-offsite.timer"   /etc/systemd/system/szl-receipts-cold-offsite.timer
 install -m 0644 "$here/systemd/szl-ns-scratch-watch.service" /etc/systemd/system/szl-ns-scratch-watch.service
 install -m 0644 "$here/systemd/szl-ns-scratch-watch.timer"   /etc/systemd/system/szl-ns-scratch-watch.timer
 install -m 0644 "$here/systemd/szl-ns-scratch-stale-watch.service" /etc/systemd/system/szl-ns-scratch-stale-watch.service
@@ -173,6 +180,36 @@ if [ ! -e /etc/vault-keystore-offbox.env ]; then
 EOF
   chmod 600 /etc/vault-keystore-offbox.env
   echo "[install] seeded commented-out /etc/vault-keystore-offbox.env (off-box keystore backup log-only until configured)"
+fi
+
+
+# The offsite receipt-cold mirror (szl-receipts-cold-offsite) replicates the box
+# cold receipt archive to a SECOND location so the sealed history survives box
+# loss. Its destination is a PRIVATE config (an object bucket / 2nd host) and is
+# NEVER committed to git. Seed a commented-out stub so the job installs as a SAFE
+# no-op (SKIPPED_UNCONFIGURED) until an operator fills it in. The unit loads it as
+# an OPTIONAL EnvironmentFile (leading "-"). Receipts are signed integrity
+# records (not secrets) so the mirror is PLAINTEXT — the manifest tarball_sha256
+# stays verifiable against the offsite object.
+if [ ! -e /etc/szl-receipts-cold-offsite.env ]; then
+  cat > /etc/szl-receipts-cold-offsite.env <<'EOF'
+# szl-receipts cold-archive OFFSITE mirror config (PRIVATE - keep OUT of git).
+# Set exactly ONE destination, then the daily timer mirrors the box cold archive
+# (/var/lib/szl-receipts-cold) offsite. Until one is set this job is a no-op.
+#
+# --- destination (pick one; transport auto-detected, or force OFFSITE_TRANSPORT) ---
+#OFFSITE_SSH_TARGET=backup@second-host:/srv/szl/receipts-cold
+#OFFSITE_SSH_KEY=/root/.ssh/offsite_backup
+#OFFSITE_LOCAL_DIR=/mnt/offsite/receipts-cold
+#OFFSITE_RCLONE_REMOTE=offsite:szl/receipts-cold
+#OFFSITE_S3_URI=s3://my-bucket/szl/receipts-cold
+#OFFSITE_S3_ENDPOINT=
+#
+# --- optional: force the transport (ssh|local|rclone|s3) ---
+#OFFSITE_TRANSPORT=
+EOF
+  chmod 600 /etc/szl-receipts-cold-offsite.env
+  echo "[install] seeded commented-out /etc/szl-receipts-cold-offsite.env (offsite mirror log-only until a destination is set)"
 fi
 
 # Install the nginx location snippet and idempotently wire it into the a11oy.net
@@ -317,6 +354,7 @@ for c in "${receipt_extra_clusters[@]}"; do
   systemctl enable --now "receipt-flood-watch@${c}.timer"
 done
 systemctl enable --now szl-receipts-retention.timer
+systemctl enable --now szl-receipts-cold-offsite.timer
 systemctl enable --now szl-ns-scratch-watch.timer
 systemctl enable --now szl-ns-scratch-stale-watch.timer
 systemctl enable --now a11oy-uptime-check.timer
@@ -343,6 +381,9 @@ done
 # Run retention once now (idempotent no-op if the cluster is down or nothing is
 # sealed to archive).
 [ -x /usr/local/sbin/szl-receipts-retention ] && /usr/local/sbin/szl-receipts-retention || true
+# Mirror the cold archive offsite once now (idempotent no-op if unconfigured or
+# there is nothing new to mirror).
+[ -x /usr/local/sbin/szl-receipts-cold-offsite ] && /usr/local/sbin/szl-receipts-cold-offsite || true
 [ -x /usr/local/sbin/szl-ns-scratch-watch ] && /usr/local/sbin/szl-ns-scratch-watch  || true
 [ -x /usr/local/sbin/szl-ns-scratch-stale-watch ] && /usr/local/sbin/szl-ns-scratch-stale-watch || true
 # Alert-only watchers (idempotent: cluster/endpoint down = no-op, no false page).

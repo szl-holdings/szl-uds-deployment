@@ -1,0 +1,18 @@
+[Unit]
+Description=Periodically mirror the szl-receipts cold archive offsite (survives box loss)
+
+[Timer]
+# Daily, and 40 min after boot — i.e. AFTER szl-receipts-retention (OnBootSec=10min)
+# has had a chance to seal + offload the day's buckets onto the box cold dir, so
+# this run mirrors a fresh archive. The job is a no-op when nothing is configured
+# or there is nothing new to mirror, so a daily run is cheap.
+OnBootSec=40min
+OnUnitActiveSec=1d
+AccuracySec=1h
+# Spread the run so it does not collide with retention / other daily jobs.
+RandomizedDelaySec=30min
+Persistent=true
+Unit=szl-receipts-cold-offsite.service
+
+[Install]
+WantedBy=timers.target

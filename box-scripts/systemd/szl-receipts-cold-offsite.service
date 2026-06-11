@@ -1,0 +1,19 @@
+[Unit]
+Description=szl-receipts cold archive offsite mirror — copy sealed receipt buckets off the box so they survive box loss
+Documentation=file:///usr/local/sbin/szl-receipts-cold-offsite
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The offsite destination (object bucket / 2nd host) is a PRIVATE secret and is
+# loaded from /etc/szl-receipts-cold-offsite.env (NEVER committed). The leading
+# "-" makes it optional, so the job installs as a SAFE no-op (SKIPPED_UNCONFIGURED)
+# until an operator fills in a destination.
+EnvironmentFile=-/etc/szl-receipts-cold-offsite.env
+# Real push notifications use the SAME notifier + credentials file as the
+# a11oy-uptime / receipt-chain-watch / szl-receipts-retention monitors.
+EnvironmentFile=-/etc/a11oy-uptime.env
+Environment=NOTIFY_TITLE=szl-receipts cold offsite
+Environment=NOTIFY_CMD=/usr/local/sbin/a11oy-uptime-notify
+ExecStart=/usr/local/sbin/szl-receipts-cold-offsite

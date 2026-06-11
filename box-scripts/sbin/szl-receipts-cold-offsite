@@ -1,0 +1,284 @@
+#!/usr/bin/env bash
+#
+# szl-receipts-cold-offsite — mirror the box's cold receipt archive OFFSITE so
+# the sealed receipt history survives loss of box 167.233.50.75.
+#
+# WHY THIS EXISTS
+# `szl-receipts-retention` already offloads each SEALED shard bucket off the live
+# PVC onto the box host disk HOST_COLD_DIR (default /var/lib/szl-receipts-cold):
+# a `<bucket>.tar.gz` + `<bucket>.manifest.json` (carrying `tarball_sha256`) per
+# bucket, plus an append-only `archived.json` ledger (see
+# docs/operations/RECEIPT_STORE_RETENTION_RUNBOOK.md). That makes the live store
+# bounded and keeps a full-history archive — but ONLY on the box. If the box is
+# lost, so is the cold archive. This job mirrors that cold archive to a SECOND
+# location (object bucket or 2nd host) on a cadence so it survives box loss.
+#
+# WHAT IT DOES
+#   1. Walks HOST_COLD_DIR for each sealed bucket (`<bucket>.manifest.json`).
+#   2. INCREMENTAL: a bucket already mirrored+verified offsite (a marker in
+#      $SYNCED_DIR/<bucket>) is skipped — cold buckets are immutable once sealed,
+#      so we never re-upload them. Only NEW buckets transfer each run.
+#   3. LOCAL VERIFY GATE: before mirroring, the local `<bucket>.tar.gz` sha256
+#      must equal the bucket manifest `tarball_sha256`. A local mismatch (a
+#      corrupt on-box archive) is NEVER mirrored — it is paged so the bad bucket
+#      is fixed at the source, not propagated offsite.
+#   4. Mirrors `<bucket>.tar.gz` + `<bucket>.manifest.json` to the offsite
+#      destination, PLAINTEXT (receipts are Ed25519/DSSE-signed integrity records,
+#      not secrets — mirroring as-is keeps the manifest `tarball_sha256`
+#      verifiable against the offsite object).
+#   5. OFFSITE VERIFY GATE: reads the sha256 of the JUST-uploaded offsite copy
+#      back (remote_sha256) and requires it to equal the manifest
+#      `tarball_sha256`. Only on a verified match is the $SYNCED_DIR marker
+#      written (so a half-finished or corrupt upload retries next run instead of
+#      being recorded as done). A mismatch is paged.
+#   6. APPEND-ONLY: the offsite mirror is never pruned here. Cold storage is the
+#      durable full-history copy; trimming is a separate, deliberate operation.
+#
+# Transports (auto-detected from which OFFSITE_* var is set, or forced via
+# OFFSITE_TRANSPORT): ssh (scp to a 2nd host), local (a mounted volume / 2nd
+# disk), rclone (any rclone remote — S3/B2/GCS/...), s3 (aws s3 cli). The most
+# portable, fully self-contained choice is `local` (e.g. a separate physical
+# disk or an NFS/object mount).
+#
+# SAFE NO-OP when nothing is configured (no OFFSITE_* destination) or there is
+# nothing to mirror (HOST_COLD_DIR missing/empty): exit 0, status records the
+# reason, NO page — an unconfigured box must not become a paging storm (mirrors
+# szl-receipts-retention / vault-keystore-offbox-backup).
+#
+# EDGE-TRIGGERED + DE-DUPED via a state file: pages the notifier only on the
+# healthy->problem edge and once on RECOVERED, never every cycle. Every run still
+# appends to the log + status file, so a broken notifier can never hide a problem.
+#
+# NOTIFY: pipes the alert text on STDIN to NOTIFY_CMD (default the box's working
+# push channel /usr/local/sbin/a11oy-uptime-notify -> ntfy/Telegram/webhook,
+# channel in /etc/a11oy-uptime.env). Fail-soft: a missing/broken notifier is
+# logged, never fatal.
+#
+# Driven by szl-receipts-cold-offsite.timer (daily, after retention). Installed
+# at /usr/local/sbin/szl-receipts-cold-offsite. Versioned in repo box-scripts/.
+set -uo pipefail
+
+# ---- config (overridable via env for testing) -------------------------------
+# Source: the box host cold archive that szl-receipts-retention populates.
+HOST_COLD_DIR="${HOST_COLD_DIR:-/var/lib/szl-receipts-cold}"
+
+STATE_DIR="${STATE_DIR:-/var/lib/szl-receipts-cold-offsite}"
+# Per-bucket "mirrored + offsite-verified" markers (incremental sync state).
+SYNCED_DIR="${SYNCED_DIR:-$STATE_DIR/synced}"
+LOG_DIR="${LOG_DIR:-/var/log/szl-receipts-cold-offsite}"
+LAST_FILE="${LAST_FILE:-$STATE_DIR/last_status}"
+STATUS="${STATUS:-$STATE_DIR/status.json}"
+LOG="${LOG:-$LOG_DIR/offsite.log}"
+
+NOTIFY_CMD="${NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
+ALERT_PREFIX="${ALERT_PREFIX:-}"
+
+# ---- offsite destination (set exactly ONE; transport auto-detected) ----------
+# Force the transport with OFFSITE_TRANSPORT=ssh|local|rclone|s3 if desired.
+OFFSITE_TRANSPORT="${OFFSITE_TRANSPORT:-}"
+OFFSITE_SSH_TARGET="${OFFSITE_SSH_TARGET:-}"     # user@host:/srv/szl/receipts-cold
+OFFSITE_SSH_KEY="${OFFSITE_SSH_KEY:-}"           # ssh identity file (optional)
+OFFSITE_LOCAL_DIR="${OFFSITE_LOCAL_DIR:-}"       # /mnt/offsite/receipts-cold
+OFFSITE_RCLONE_REMOTE="${OFFSITE_RCLONE_REMOTE:-}" # remote:bucket/receipts-cold
+OFFSITE_S3_URI="${OFFSITE_S3_URI:-}"             # s3://bucket/receipts-cold
+OFFSITE_S3_ENDPOINT="${OFFSITE_S3_ENDPOINT:-}"   # optional non-AWS endpoint URL
+
+# Python for JSON parsing on the BOX. Falls back to python.
+PY="${PY:-python3}"; command -v "$PY" >/dev/null 2>&1 || PY=python
+
+mkdir -p "$STATE_DIR" "$SYNCED_DIR" "$LOG_DIR" 2>/dev/null
+
+now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+log() { printf '%s %s\n' "$(now_iso)" "$1" >>"$LOG" 2>/dev/null; }
+
+notify() {
+  # $1 = message. Fail-soft: log a warning if the notifier is missing/fails.
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed (alert was logged only)"
+}
+
+write_status() {
+  # $1 = overall (OK|ALERT|UNKNOWN)  $2 = reason
+  printf '{"overall":"%s","reason":"%s","checked_at":"%s","transport":"%s"}\n' \
+    "$1" "$(printf '%s' "$2" | sed 's/"/\\"/g')" "$(now_iso)" "${TRANSPORT:-none}" \
+    >"$STATUS" 2>/dev/null
+}
+
+# json_get FILE EXPR — print a value from JSON file via python (EXPR uses `d`).
+json_get() {
+  "$PY" -c 'import sys,json
+try: d=json.load(open(sys.argv[1]))
+except Exception: sys.exit(3)
+try: print(eval(sys.argv[2]))
+except Exception: sys.exit(4)' "$1" "$2" 2>/dev/null
+}
+
+# ---- Resolve transport from configured OFFSITE_* vars ------------------------
+detect_transport() {
+  if [ -n "$OFFSITE_TRANSPORT" ]; then echo "$OFFSITE_TRANSPORT"; return; fi
+  if [ -n "$OFFSITE_SSH_TARGET" ];    then echo ssh;    return; fi
+  if [ -n "$OFFSITE_LOCAL_DIR" ];     then echo local;  return; fi
+  if [ -n "$OFFSITE_RCLONE_REMOTE" ]; then echo rclone; return; fi
+  if [ -n "$OFFSITE_S3_URI" ];        then echo s3;     return; fi
+  echo ""   # nothing configured
+}
+
+# offsite_put LOCAL_PATH NAME — copy LOCAL_PATH to the offsite destination under
+# basename NAME. Returns non-zero on transport failure.
+offsite_put() {
+  local src="$1" name="$2"
+  case "$TRANSPORT" in
+    local)
+      mkdir -p "$OFFSITE_LOCAL_DIR" 2>/dev/null
+      cp -f "$src" "$OFFSITE_LOCAL_DIR/$name" ;;
+    ssh)
+      local dest="${OFFSITE_SSH_TARGET%/}/$name"
+      local host="${OFFSITE_SSH_TARGET%%:*}" path="${OFFSITE_SSH_TARGET#*:}"
+      ssh ${OFFSITE_SSH_KEY:+-i "$OFFSITE_SSH_KEY"} -o BatchMode=yes \
+        -o StrictHostKeyChecking=accept-new "$host" "mkdir -p '${path%/}'" 2>>"$LOG" || true
+      scp ${OFFSITE_SSH_KEY:+-i "$OFFSITE_SSH_KEY"} -B \
+        -o StrictHostKeyChecking=accept-new "$src" "$dest" ;;
+    rclone)
+      rclone copyto "$src" "${OFFSITE_RCLONE_REMOTE%/}/$name" ;;
+    s3)
+      aws ${OFFSITE_S3_ENDPOINT:+--endpoint-url "$OFFSITE_S3_ENDPOINT"} \
+        s3 cp "$src" "${OFFSITE_S3_URI%/}/$name" ;;
+    *) return 2 ;;
+  esac
+}
+
+# remote_sha256 NAME — print the sha256 of the offsite copy of NAME, so we can
+# verify the offsite object against the bucket manifest `tarball_sha256` WITHOUT
+# trusting the local file. Empty output on any failure.
+remote_sha256() {
+  local name="$1"
+  case "$TRANSPORT" in
+    local)
+      sha256sum "$OFFSITE_LOCAL_DIR/$name" 2>/dev/null | awk '{print $1}' ;;
+    ssh)
+      local host="${OFFSITE_SSH_TARGET%%:*}" path="${OFFSITE_SSH_TARGET#*:}"
+      ssh ${OFFSITE_SSH_KEY:+-i "$OFFSITE_SSH_KEY"} -o BatchMode=yes \
+        -o StrictHostKeyChecking=accept-new "$host" \
+        "sha256sum '${path%/}/$name'" 2>>"$LOG" | awk '{print $1}' ;;
+    rclone)
+      rclone sha256sum "${OFFSITE_RCLONE_REMOTE%/}/$name" 2>>"$LOG" | awk '{print $1}' ;;
+    s3)
+      # No universal server-side sha256; stream the object back and hash locally.
+      aws ${OFFSITE_S3_ENDPOINT:+--endpoint-url "$OFFSITE_S3_ENDPOINT"} \
+        s3 cp "${OFFSITE_S3_URI%/}/$name" - 2>>"$LOG" | sha256sum 2>/dev/null | awk '{print $1}' ;;
+    *) echo "" ;;
+  esac
+}
+
+# ---- Decide transport; no-op if unconfigured --------------------------------
+TRANSPORT="$(detect_transport)"
+if [ -z "$TRANSPORT" ]; then
+  log "INFO no OFFSITE_* destination configured — offsite mirror is a SKIPPED_UNCONFIGURED no-op"
+  write_status UNKNOWN "SKIPPED_UNCONFIGURED: no offsite destination set"
+  exit 0
+fi
+log "INFO transport=$TRANSPORT source=$HOST_COLD_DIR"
+
+# Nothing to mirror? (retention hasn't sealed/offloaded any bucket yet, or the
+# cold dir doesn't exist on this box.) Silent no-op — not a problem.
+if [ ! -d "$HOST_COLD_DIR" ]; then
+  log "INFO HOST_COLD_DIR '$HOST_COLD_DIR' absent — nothing to mirror, skip"
+  write_status OK "no cold archive yet (HOST_COLD_DIR absent)"
+  echo OK >"$LAST_FILE" 2>/dev/null
+  exit 0
+fi
+
+shopt -s nullglob
+manifests=( "$HOST_COLD_DIR"/*.manifest.json )
+shopt -u nullglob
+if [ "${#manifests[@]}" -eq 0 ]; then
+  log "INFO no sealed buckets in '$HOST_COLD_DIR' — nothing to mirror, skip"
+  write_status OK "no sealed buckets to mirror"
+  echo OK >"$LAST_FILE" 2>/dev/null
+  exit 0
+fi
+
+reasons=""
+add_reason() { reasons="${reasons:+$reasons; }$1"; }
+mirrored=0; skipped=0
+
+for man in "${manifests[@]}"; do
+  bucket="$(basename "$man" .manifest.json)"
+  marker="$SYNCED_DIR/$bucket"
+  tar="$HOST_COLD_DIR/$bucket.tar.gz"
+
+  # Incremental: a sealed bucket is immutable; if it's already mirrored+verified
+  # offsite, never re-upload it.
+  if [ -f "$marker" ]; then
+    skipped=$((skipped + 1)); continue
+  fi
+  if [ ! -f "$tar" ]; then
+    add_reason "bucket $bucket has a manifest but no tarball on box ($tar missing)"
+    log "STATE bucket $bucket missing tarball — cannot mirror"
+    continue
+  fi
+
+  want="$(json_get "$man" 'd.get("tarball_sha256")')"
+  got_local="$(sha256sum "$tar" 2>/dev/null | awk '{print $1}')"
+
+  # LOCAL VERIFY GATE: never mirror a locally-corrupt archive offsite.
+  if [ -z "$want" ] || [ "$want" != "$got_local" ]; then
+    add_reason "LOCAL archive for bucket $bucket FAILS its manifest sha256 (want=${want:-?} got=${got_local:-?}) — NOT mirrored offsite"
+    log "STATE bucket $bucket LOCAL sha mismatch — not mirrored"
+    continue
+  fi
+
+  # Mirror tarball + manifest offsite (plaintext; signed records, not secrets).
+  if ! offsite_put "$tar" "$bucket.tar.gz" >>"$LOG" 2>&1; then
+    add_reason "offsite transfer of bucket $bucket tarball FAILED (transport=$TRANSPORT)"
+    log "STATE bucket $bucket tarball transfer failed"
+    continue
+  fi
+  if ! offsite_put "$man" "$bucket.manifest.json" >>"$LOG" 2>&1; then
+    add_reason "offsite transfer of bucket $bucket manifest FAILED (transport=$TRANSPORT)"
+    log "STATE bucket $bucket manifest transfer failed"
+    continue
+  fi
+
+  # OFFSITE VERIFY GATE: the offsite object must match the manifest sha256 before
+  # we record the bucket as done (else a corrupt/partial upload retries).
+  roff="$(remote_sha256 "$bucket.tar.gz")"
+  if [ -n "$roff" ] && [ "$want" = "$roff" ]; then
+    : > "$marker"
+    mirrored=$((mirrored + 1))
+    log "MIRROR bucket $bucket -> offsite ($TRANSPORT), sha256 verified, marker written"
+  else
+    add_reason "OFFSITE copy of bucket $bucket FAILS verification (want=${want:-?} offsite=${roff:-unreadable}) — marker NOT written, will retry"
+    log "STATE bucket $bucket OFFSITE sha mismatch — marker not written"
+  fi
+done
+
+# Best-effort mirror of the append-only archival ledger (informational; not gated).
+if [ -f "$HOST_COLD_DIR/archived.json" ]; then
+  offsite_put "$HOST_COLD_DIR/archived.json" "archived.json" >>"$LOG" 2>&1 \
+    || log "WARN could not mirror archived.json ledger offsite"
+fi
+
+# ---- Decide + edge-trigger --------------------------------------------------
+prev="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
+if [ -n "$reasons" ]; then
+  write_status ALERT "$reasons"
+  log "STATE ALERT :: $reasons"
+  if [ "$prev" != "ALERT" ]; then
+    notify "ALERT: szl-receipts cold archive offsite-mirror problem (transport=$TRANSPORT). $reasons. (see /var/log/szl-receipts-cold-offsite/offsite.log)"
+    log "EDGE OK->ALERT notified"
+  else
+    log "DEDUP still ALERT — no re-notify"
+  fi
+  echo ALERT >"$LAST_FILE" 2>/dev/null
+else
+  write_status OK "offsite mirror ok (transport=$TRANSPORT, mirrored=$mirrored already-synced=$skipped)"
+  log "STATE OK mirrored=$mirrored already-synced=$skipped"
+  if [ "$prev" = "ALERT" ]; then
+    notify "RECOVERED: szl-receipts cold archive offsite-mirror is healthy again (transport=$TRANSPORT, mirrored=$mirrored)."
+    log "EDGE ALERT->OK recovered, notified"
+  fi
+  echo OK >"$LAST_FILE" 2>/dev/null
+fi
+exit 0

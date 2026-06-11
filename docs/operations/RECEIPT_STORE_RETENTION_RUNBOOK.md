@@ -195,6 +195,46 @@ a systemd timer that follows the same pattern as the other szl guards
 > sharding — sealing/archival is the supported way to shrink the live store, and
 > a separate task owns any one-time history reset.
 
+### 4.2 Offsite mirror of the cold archive (survives box loss)
+
+§4.1 keeps a **full-history** cold archive on the box host disk
+(`/var/lib/szl-receipts-cold`: `<bucket>.tar.gz` + `<bucket>.manifest.json` with
+`tarball_sha256`, plus an append-only `archived.json` ledger). That protects the
+live PVC, but the archive still lives on **one box** — lose the box and you lose
+the sealed history. The `szl-receipts-cold-offsite` job closes that gap by
+mirroring the cold archive to a **second location** on a cadence.
+
+- **Source / install:** `box-scripts/sbin/szl-receipts-cold-offsite` +
+  `box-scripts/systemd/szl-receipts-cold-offsite.{service,timer}`, installed (and
+  re-installed after a box rebuild) by `sudo box-scripts/install.sh`. Full
+  details: [`box-scripts/szl-receipts-cold-offsite.README.md`](../../box-scripts/szl-receipts-cold-offsite.README.md).
+- **Cadence:** daily (`OnUnitActiveSec=1d`), first run 40 min after boot — i.e.
+  **after** `szl-receipts-retention` (10 min) has sealed + offloaded the day's
+  buckets onto the box cold dir, so the mirror copies a fresh archive.
+- **Destination (set ONE, in the PRIVATE `/etc/szl-receipts-cold-offsite.env`):**
+  an object bucket or a second host. The transport is auto-detected from which
+  variable you set: `OFFSITE_SSH_TARGET` (scp to a 2nd host), `OFFSITE_LOCAL_DIR`
+  (a mounted volume / 2nd disk), `OFFSITE_RCLONE_REMOTE` (any rclone remote —
+  S3/B2/GCS/...), or `OFFSITE_S3_URI` (`aws s3 cp`). Until one is set the job is a
+  **SKIPPED_UNCONFIGURED no-op**, never a page.
+- **sha256-verifiable both ways:** before mirroring, the local `<bucket>.tar.gz`
+  must match its manifest `tarball_sha256` (a corrupt on-box archive is **never**
+  propagated offsite); after upload, the offsite object is read back and must
+  match the same `tarball_sha256` before the bucket is recorded as mirrored. The
+  manifest is mirrored alongside the tarball so the offsite copy stays
+  independently verifiable.
+- **Incremental + append-only:** sealed buckets are immutable, so each bucket
+  transfers once (a `/var/lib/szl-receipts-cold-offsite/synced/<bucket>` marker is
+  written only after the offsite copy verifies); the offsite mirror is never
+  pruned here.
+- **Alerting:** fires the shared `a11oy-uptime-notify` channel (edge-triggered,
+  de-duped) on a local sha mismatch, a failed transfer, or an offsite-copy
+  verification failure.
+
+> A box rebuild re-installs and re-enables `szl-receipts-cold-offsite` via
+> `install.sh`; restoring `/etc/szl-receipts-cold-offsite.env` (the offsite
+> destination) is the only manual step before the daily mirror resumes.
+
 ---
 
 ## 5. Quick reference

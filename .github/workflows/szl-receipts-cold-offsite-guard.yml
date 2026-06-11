@@ -1,0 +1,112 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# szl-receipts-cold-offsite-guard.yml — Guard the `szl-receipts-cold-offsite` box
+# job (the daily OFFSITE mirror of the box cold receipt archive) from silently
+# losing its safety properties.
+#
+# szl-receipts-cold-offsite (box-scripts/sbin/szl-receipts-cold-offsite) runs
+# daily and mirrors the box cold receipt archive (HOST_COLD_DIR, populated by
+# szl-receipts-retention) to a SECOND location (object bucket / 2nd host) so the
+# sealed receipt history survives loss of the box. Its value rests on a handful of
+# fragile safety properties that produce NO visible symptom when a refactor breaks
+# them — until a corrupt archive is mirrored, a bad upload is recorded as done, or
+# the offsite copy silently stops happening:
+#   * nothing configured (no OFFSITE_* destination) = no-op exit 0, no page;
+#   * an empty / absent cold dir = silent no-op (nothing to mirror);
+#   * the LOCAL VERIFY GATE: a bucket whose on-box tarball sha256 != its manifest
+#     tarball_sha256 is NEVER mirrored offsite, and pages (corrupt at source);
+#   * the OFFSITE VERIFY GATE: the per-bucket "done" marker is written ONLY AFTER
+#     the offsite copy's sha256 matches the manifest — a mismatch leaves NO marker
+#     (so it retries) and pages;
+#   * the happy path mirrors + verifies + marks (silent) and is INCREMENTAL (a
+#     second run does not re-upload an already-synced bucket);
+#   * it stays WIRED into install.sh (script + units installed, timer enabled, env
+#     stub seeded) and documented in the retention runbook.
+#
+# Unlike the pure text/lint guards, the checks here are BEHAVIOURAL: the guard
+# script actually RUNS the real offsite script using the `local` transport
+# (OFFSITE_LOCAL_DIR -> a temp dir, so no network/object store is needed) over a
+# fabricated cold dir and a capturing notifier, then asserts the observable
+# outcome (exit code, whether it paged, the status file, whether the offsite file
+# landed, and whether the incremental marker was written). That proves the verify
+# gates and the incremental marker are wired into the control flow, not merely
+# present as text.
+#
+# The check logic lives in scripts/szl-receipts-cold-offsite-guard-checks.sh. It
+# was extracted from this workflow so it can be UNIT TESTED:
+# scripts/szl-receipts-cold-offsite-guard-checks.test.sh feeds each check a
+# deliberately-BROKEN copy of the script (a verify gate removed, the unconfigured
+# no-op removed, the marker write removed, ...) and asserts the check FAILS, plus
+# that the pristine repo PASSES. That self-test runs as the `self-test` job below,
+# so a future edit that neuters a check (green while guarding nothing) is caught.
+#
+# The asserted invariants:
+#   chk1  szl-receipts-cold-offsite exists and parses clean (bash -n)
+#   chk2  unconfigured is a silent no-op (exit 0, no page, SKIPPED_UNCONFIGURED)
+#   chk3  empty/absent cold dir is a silent no-op (nothing to mirror)
+#   chk4  LOCAL VERIFY GATE: a locally-corrupt bucket is NOT mirrored + pages
+#   chk5  OFFSITE VERIFY GATE: an offsite sha mismatch leaves no marker + pages
+#   chk6  happy path mirrors+verifies+marks (silent) and is incremental
+#   chk7  wired into install.sh (script + units, env stub, timer enabled)
+#   chk8  documented in the retention runbook + named in install.sh
+
+name: SZL Receipts Cold-Offsite Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves each check
+  # still FAILS on bad input (i.e. is not silently passing). The guard job
+  # depends on it so a broken check blocks the build before it can wave a
+  # regression through.
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/szl-receipts-cold-offsite-guard-checks.test.sh
+
+  guard:
+    name: Assert the receipt cold-archive offsite mirror is wired and verify-gated
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check 1 — szl-receipts-cold-offsite exists and parses clean
+        run: bash scripts/szl-receipts-cold-offsite-guard-checks.sh chk1 .
+
+      - name: Check 2 — unconfigured is a silent no-op (SKIPPED_UNCONFIGURED)
+        run: bash scripts/szl-receipts-cold-offsite-guard-checks.sh chk2 .
+
+      - name: Check 3 — empty/absent cold dir is a silent no-op
+        run: bash scripts/szl-receipts-cold-offsite-guard-checks.sh chk3 .
+
+      - name: Check 4 — LOCAL VERIFY GATE (corrupt bucket not mirrored, pages)
+        run: bash scripts/szl-receipts-cold-offsite-guard-checks.sh chk4 .
+
+      - name: Check 5 — OFFSITE VERIFY GATE (sha mismatch leaves no marker, pages)
+        run: bash scripts/szl-receipts-cold-offsite-guard-checks.sh chk5 .
+
+      - name: Check 6 — happy path mirrors+verifies+marks and is incremental
+        run: bash scripts/szl-receipts-cold-offsite-guard-checks.sh chk6 .
+
+      - name: Check 7 — wired into install.sh (script + units, env stub, timer)
+        run: bash scripts/szl-receipts-cold-offsite-guard-checks.sh chk7 .
+
+      - name: Check 8 — documented in the retention runbook
+        run: bash scripts/szl-receipts-cold-offsite-guard-checks.sh chk8 .
+
+      - name: Receipt cold-archive offsite mirror is wired and verify-gated
+        run: echo "The szl-receipts-cold-offsite job is wired and verify-gated."
