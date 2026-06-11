@@ -203,11 +203,16 @@ _RA_FORM_ACTION_RE = re.compile(
 )
 
 
-def _totp_now(secret_b32, digits=6, period=30, drift=0):
-    """RFC-6238 TOTP for the current 30s window (optionally shifted by `drift`)."""
-    secret_b32 = secret_b32.replace(" ", "").upper()
-    pad = "=" * ((8 - len(secret_b32) % 8) % 8)
-    key = base64.b32decode(secret_b32 + pad)
+def _totp_now(secret_raw, digits=6, period=30, drift=0):
+    """RFC-6238 TOTP for the current 30s window (optionally shifted by `drift`).
+
+    Keycloak's CONFIGURE_TOTP form posts the *raw* secret string in the hidden
+    `totpSecret` field, and Keycloak's HmacOTP keys the HMAC with that string's
+    bytes directly (`secret.getBytes()`) — the base32 form is only the encoded
+    value shown for an authenticator app to scan. So we key on the raw bytes,
+    NOT a base32 decode (which fails on the mixed-case raw secret).
+    """
+    key = secret_raw.encode("utf-8")
     counter = int(time.time() // period) + drift
     digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
     offset = digest[-1] & 0x0F
