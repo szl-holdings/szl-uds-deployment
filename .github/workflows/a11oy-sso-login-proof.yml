@@ -180,6 +180,72 @@ jobs:
           sleep 5
           kubectl apply -f /tmp/a11oy-sso.yaml
 
+      - name: Grant the ambient waypoint access to the internal registry
+        run: |
+          set -uo pipefail
+          # ROOT CAUSE (Task 417, second blocker): szl-a11oy is labeled
+          # `zarf.dev/agent: ignore` so the UDS/Zarf agent leaves the locally
+          # `k3d image import`-ed a11oy:local image alone. Side effect: the agent
+          # ALSO stops injecting the internal-registry pull secret into pods in
+          # this namespace. The app pod is fine (a11oy:local lives in the node's
+          # containerd), but the istiod-created ambient waypoint pod pulls its
+          # istio-proxy image (127.0.0.1:31999/istio/proxyv2:...) from the
+          # in-cluster Zarf registry, which REQUIRES credentials -> the pod
+          # ImagePullBackOffs -> Gateway never programs -> Package=Failed -> no
+          # SSO redirect. (keycloak's waypoint works precisely because keycloak is
+          # NOT agent-ignored, so it gets the secret.) Mirror the Zarf pull secret
+          # into szl-a11oy and attach it to the waypoint ServiceAccount so the
+          # waypoint pod can authenticate to the same registry every other
+          # istio-proxy pod already pulls from.
+          REG_SECRET=""; REG_NS=""
+          for ns in zarf uds-dev-stack; do
+            if kubectl -n "${ns}" get secret private-registry >/dev/null 2>&1; then
+              REG_SECRET=private-registry; REG_NS="${ns}"; break
+            fi
+          done
+          if [ -z "${REG_SECRET}" ]; then
+            LINE="$(kubectl get secret -A \
+              --field-selector type=kubernetes.io/dockerconfigjson \
+              -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+              | grep -m1 -i 'private-registry' || true)"
+            REG_NS="${LINE%% *}"; REG_SECRET="${LINE##* }"
+          fi
+          cat > /tmp/reseat-secret.py <<'PY'
+          import sys, json
+          s = json.load(sys.stdin)
+          for k in ("namespace", "resourceVersion", "uid", "creationTimestamp",
+                    "ownerReferences", "annotations", "managedFields"):
+              s["metadata"].pop(k, None)
+          s["metadata"]["name"] = "private-registry"
+          print(json.dumps(s))
+          PY
+          if [ -n "${REG_SECRET}" ] && [ -n "${REG_NS}" ]; then
+            echo "Mirroring pull secret ${REG_NS}/${REG_SECRET} -> szl-a11oy/private-registry"
+            kubectl -n "${REG_NS}" get secret "${REG_SECRET}" -o json \
+              | python3 /tmp/reseat-secret.py \
+              | kubectl -n szl-a11oy apply -f -
+          else
+            echo "::warning::could not find an internal-registry pull secret to mirror"
+          fi
+          # Pre-patch the namespace default SA; then patch the waypoint SA + recycle
+          # its stuck pod once istiod has created them (pods inherit imagePullSecrets
+          # from their ServiceAccount only at admission, so the failed pod must be
+          # recreated to pick up the credentials).
+          kubectl -n szl-a11oy patch sa default \
+            -p '{"imagePullSecrets":[{"name":"private-registry"}]}' || true
+          for _ in $(seq 1 90); do
+            if kubectl -n szl-a11oy get sa szl-a11oy-waypoint >/dev/null 2>&1; then
+              kubectl -n szl-a11oy patch sa szl-a11oy-waypoint \
+                -p '{"imagePullSecrets":[{"name":"private-registry"}]}' || true
+              kubectl -n szl-a11oy delete pod \
+                -l gateway.networking.k8s.io/gateway-name=szl-a11oy-waypoint \
+                --field-selector status.phase!=Running 2>/dev/null || true
+              echo "patched waypoint ServiceAccount with imagePullSecrets + recycled stuck pod(s)"
+              break
+            fi
+            sleep 2
+          done
+
       - name: Wait for a11oy + the UDS Package to be ready
         run: |
           set -uo pipefail
@@ -201,6 +267,12 @@ jobs:
             kubectl -n szl-a11oy get gateway szl-a11oy-waypoint -o yaml || true
             echo "── deploy / rs / pods in szl-a11oy ──"
             kubectl -n szl-a11oy get deploy,rs,pods -o wide || true
+            echo "── describe waypoint pod (image + pull error) ──"
+            kubectl -n szl-a11oy describe pod \
+              -l gateway.networking.k8s.io/gateway-name=szl-a11oy-waypoint | sed -n '1,140p' || true
+            echo "── serviceaccounts (imagePullSecrets) ──"
+            kubectl -n szl-a11oy get sa -o yaml \
+              | grep -E "name:|imagePullSecrets" || true
             echo "── events (szl-a11oy) ──"
             kubectl -n szl-a11oy get events --sort-by=.lastTimestamp | tail -60 || true
             echo "── istiod logs (waypoint / szl-a11oy) ──"
@@ -217,9 +289,11 @@ jobs:
           # Failed and unauth traffic 404s instead of redirecting to Keycloak.
           # The chart now enforces `baseline` PodSecurity on szl-a11oy whenever SSO
           # is enabled (charts/a11oy/templates/namespace.yaml), so the waypoint pod
-          # schedules on the first reconcile and the app pod stays restricted-
-          # compliant. (szl-receipts never hits this: machine-to-machine, never
-          # authservice-selected, so it never needs a waypoint.)
+          # is admitted, and the preceding step mirrors the Zarf registry pull
+          # secret into this agent-ignored namespace so the waypoint can actually
+          # pull its istio-proxy image. With both in place the Gateway programs and
+          # the Package reaches Ready. (szl-receipts never hits this: machine-to-
+          # machine, never authservice-selected, so it never needs a waypoint.)
           echo "── Waiting for the UDS Package to reconcile (authservice + Keycloak client) ──"
           if ! wait_ready 96; then
             echo "::error::a11oy UDS Package not Ready — the ambient SSO waypoint never programmed"
