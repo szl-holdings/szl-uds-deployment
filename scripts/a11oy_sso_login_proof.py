@@ -28,10 +28,15 @@
 # authservice selector, or a broken redirectUri) turns red here instead of
 # silently shipping an unprotected a11oy.
 
+import base64
+import hashlib
+import hmac
 import html
 import os
 import re
+import struct
 import sys
+import time
 import urllib.parse
 
 try:
@@ -184,6 +189,73 @@ _FORM_ACTION_RE = re.compile(
     r'<form[^>]*\baction="([^"]*login-actions/authenticate[^"]*)"', re.IGNORECASE
 )
 
+# The uds realm's browser flow REQUIRES OTP, so a brand-new test user (no OTP
+# credential yet) is sent to Keycloak's CONFIGURE_TOTP required-action page after
+# the password is accepted. We register the second factor headlessly: parse the
+# offered TOTP secret, compute the current RFC-6238 code (Keycloak default policy:
+# SHA1 / 6 digits / 30s), and submit the setup form so the flow continues back to
+# a11oy. This makes the FULL-FLOW proof real against a hardened MFA realm rather
+# than depending on OTP being disabled.
+_TOTP_SECRET_RE = re.compile(r'name="totpSecret"[^>]*\bvalue="([^"]*)"', re.IGNORECASE)
+_TOTP_SECRET_RE_ALT = re.compile(r'\bvalue="([^"]*)"[^>]*name="totpSecret"', re.IGNORECASE)
+_RA_FORM_ACTION_RE = re.compile(
+    r'<form[^>]*\baction="([^"]*login-actions/required-action[^"]*)"', re.IGNORECASE
+)
+
+
+def _totp_now(secret_b32, digits=6, period=30, drift=0):
+    """RFC-6238 TOTP for the current 30s window (optionally shifted by `drift`)."""
+    secret_b32 = secret_b32.replace(" ", "").upper()
+    pad = "=" * ((8 - len(secret_b32) % 8) % 8)
+    key = base64.b32decode(secret_b32 + pad)
+    counter = int(time.time() // period) + drift
+    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    code = (struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF) % (10 ** digits)
+    return str(code).zfill(digits)
+
+
+def _handle_totp_setup(session, resp):
+    """If Keycloak demands OTP enrollment, register a TOTP factor and continue."""
+    if urllib.parse.urlparse(resp.url).netloc != KC_PUBLIC_HOST:
+        return resp
+    if "totpSecret" not in resp.text:
+        return resp
+    m = _TOTP_SECRET_RE.search(resp.text) or _TOTP_SECRET_RE_ALT.search(resp.text)
+    fm = _RA_FORM_ACTION_RE.search(resp.text)
+    if not m or not fm:
+        fail(
+            "Keycloak demanded OTP enrollment but the TOTP secret / setup form "
+            "could not be parsed from the CONFIGURE_TOTP page.",
+            resp.text[:800],
+        )
+    secret = html.unescape(m.group(1))
+    action = html.unescape(fm.group(1))
+    print(
+        "NOTE: realm forces OTP — registering a TOTP credential headlessly and "
+        "completing the second factor to finish the login."
+    )
+    out = session.post(
+        action,
+        data={"totp": _totp_now(secret), "totpSecret": secret,
+              "userLabel": "sso-proof-totp"},
+        allow_redirects=True, verify=False, timeout=TIMEOUT,
+    )
+    # If the window rolled over between compute and validation, retry once.
+    if (urllib.parse.urlparse(out.url).netloc == KC_PUBLIC_HOST
+            and "totpSecret" in out.text):
+        m2 = _TOTP_SECRET_RE.search(out.text) or _TOTP_SECRET_RE_ALT.search(out.text)
+        fm2 = _RA_FORM_ACTION_RE.search(out.text)
+        if m2 and fm2:
+            secret = html.unescape(m2.group(1))
+            out = session.post(
+                html.unescape(fm2.group(1)),
+                data={"totp": _totp_now(secret), "totpSecret": secret,
+                      "userLabel": "sso-proof-totp"},
+                allow_redirects=True, verify=False, timeout=TIMEOUT,
+            )
+    return out
+
 
 def complete_login(session, authorize_url):
     """FULL flow: load the Keycloak login form, POST creds, land back on a11oy."""
@@ -209,6 +281,9 @@ def complete_login(session, authorize_url):
         verify=False,
         timeout=TIMEOUT,
     )
+    # The realm forces a second factor: if password acceptance lands on the
+    # CONFIGURE_TOTP page, enroll a TOTP credential headlessly and continue.
+    resp = _handle_totp_setup(session, resp)
     final_host = urllib.parse.urlparse(resp.url).netloc
     if resp.status_code != 200 or final_host != A11OY_HOST:
         hops = " -> ".join(h.headers.get("Location", h.url) for h in resp.history) or "(none)"
