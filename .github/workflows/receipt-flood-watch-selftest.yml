@@ -1,0 +1,46 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# receipt-flood-watch-selftest.yml — behavioural self-test for the
+# `receipt-flood-watch` box alarm (box-scripts/sbin/receipt-flood-watch), the
+# alarm that pages when the signed DSSE receipt chain grows TOO FAST (a flood
+# that can overwhelm the Ed25519 signer — the chain once ballooned to ~205,919
+# entries before anyone noticed).
+#
+# Unlike the sibling box-alarm guards (receipt-chain-watch, receipts-orphan-watch,
+# ns-scratch-watch, teardown), which assert text/lint invariants, this alarm's
+# whole value is its RATE/EDGE MATH: the delta/min computation, the
+# reset=>rate-0 guard, the baseline-only first run, the cluster-absent no-op, and
+# the EXACTLY-ONE-notify-per-edge de-dup. Those were only ever exercised by the
+# README drill recipe — a drill is not CI. scripts/receipt-flood-watch-selftest.sh
+# DRIVES the real script with a stubbed kubectl/k3d/metrics source (no cluster,
+# no network) and asserts:
+#   * ALERT when delta/min >= FLOOD_PER_MIN
+#   * OK when below the threshold
+#   * rate 0 on a chain reset (count drops) — never a negative/false alarm
+#   * baseline-only on the first run (a rate needs two samples)
+#   * a true no-op (exit 0, UNKNOWN, no page) when the cluster is absent
+#   * exactly one page on each edge (OK->ALERT, RECOVERED), silent in between
+# so a future refactor that silently neuters the flood-rate computation is a red
+# CI run instead of a hole that only shows up during the next real flood.
+
+name: Receipt Flood Watch Self-test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    name: Drive receipt-flood-watch with stubbed kubectl/metrics
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run behavioural self-test (flood-rate alert actually fires)
+        run: bash scripts/receipt-flood-watch-selftest.sh
