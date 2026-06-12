@@ -302,6 +302,19 @@ def _sha256_file(path):
     return h.hexdigest()
 
 
+def _stream_out(src, dst, chunk=1 << 16):
+    """Copy a file as a raw BYTE STREAM, stdlib-only, NEVER shelling out to a
+    `tar` binary nor repacking via tarfile. This mirrors EXACTLY how the box
+    retention job (box-scripts/sbin/szl-receipts-retention) lifts a cold tarball
+    OFF the receipts PVC: the slim receipts-server image has no `tar`, so
+    `kubectl cp` cannot be used and the script streams the bytes with
+    `kubectl exec -- cat <pod-path> > <host-path>`. Returns the dst path."""
+    with open(src, "rb") as fi, open(dst, "wb") as fo:
+        for blk in iter(lambda: fi.read(chunk), b""):
+            fo.write(blk)
+    return dst
+
+
 def _extract_cold_bucket(tar_path, bucket):
     """Extract a cold tarball into a fresh temp dir and return (records sorted by
     chain_index, temp_dir). The server tars the bucket as `tar.add(bdir,
@@ -409,6 +422,7 @@ def main():
         store_e2 = os.path.join(work, "store_e2")
         store_e3 = os.path.join(work, "store_e3")
         store_e4 = os.path.join(work, "store_e4")
+        store_f = os.path.join(work, "store_f")
         shutil.copytree(store, store_b)
         shutil.copytree(store, store_c)
         shutil.copytree(store, store_d)
@@ -416,6 +430,7 @@ def main():
         shutil.copytree(store, store_e2)
         shutil.copytree(store, store_e3)
         shutil.copytree(store, store_e4)
+        shutil.copytree(store, store_f)
 
         # ── PHASE A: sharding layout + verify-store + archive-shards ─────────────
         print("\n== PHASE A: sharding write path + verify-store + archive-shards ==")
@@ -838,6 +853,100 @@ def main():
                          and rep.get("restored") == [],
                          f"E4 restore refuses to clobber an already-live bucket "
                          f"(rc={rc} failed={rep.get('failed')})")
+
+        # ── PHASE F: cold-storage offload OFF the data volume round-trips ─────────
+        # PHASE E proved archive→restore from the SAME cold dir, but the box
+        # retention job (box-scripts/sbin/szl-receipts-retention) does more: after
+        # archive-shards --delete, it lifts every cold tarball+manifest OFF the
+        # receipts PVC onto a separate host volume, BYTE-STREAMED via
+        # `kubectl exec -- cat` (the slim image has no `tar`, so `kubectl cp` is out),
+        # sha256-verifies the streamed-out copy against the bucket manifest, and only
+        # then prunes the in-pod copy so the live PVC stays bounded. NOTHING in CI
+        # exercised that stream-out-then-prune-then-reimport path — exactly where the
+        # retention job's real behaviour lives. Simulate it end to end with stdlib
+        # only and prove the offloaded archive still round-trips to a verifiable
+        # shard (bad_sig==0, bad_hash==0).
+        print("\n== PHASE F: cold offload OFF the data volume (stream-out) round-trips ==")
+        # cold_f = the in-pod cold dir on the receipts PVC; host_f = the off-PVC
+        # full-history volume on the box. archive --delete first, so cold_f holds the
+        # sealed tarballs+manifests+ledger and only the tail bucket is live.
+        cold_f = os.path.join(work, "cold_f")          # on the "PVC"
+        host_f = os.path.join(work, "host_cold_f")     # off the "PVC", on the "box"
+        os.makedirs(host_f, exist_ok=True)
+        rc, rep = _cli(store_f, key, shard_size,
+                       ["archive-shards", "--delete"], cold_dir=cold_f)
+        archived_f = sorted(rep.get("archived", []))
+        fails += _assert(archived_f == sealed_expected,
+                         f"F archive --delete swept every sealed bucket to cold "
+                         f"({archived_f} == {sealed_expected})")
+        fails += _assert(_bucket_names(store_f) == [tail_bucket],
+                         f"F only the tail bucket remains live after archive --delete "
+                         f"({_bucket_names(store_f)} == {[tail_bucket]})")
+
+        # F1: stream every cold tarball+manifest OFF the PVC (stdlib bytes, no tar
+        #     binary), sha256-verify the streamed-out copy against the manifest
+        #     (the exact gate the retention job applies), then PRUNE the in-pod copy.
+        for b in sealed_expected:
+            pod_tar = os.path.join(cold_f, f"{b}.tar.gz")
+            pod_man = os.path.join(cold_f, f"{b}.manifest.json")
+            host_tar = _stream_out(pod_tar, os.path.join(host_f, f"{b}.tar.gz"))
+            _stream_out(pod_man, os.path.join(host_f, f"{b}.manifest.json"))
+            want = _read_json(os.path.join(host_f, f"{b}.manifest.json")) \
+                .get("tarball_sha256")
+            fails += _assert(_is_hex64(want),
+                             f"F manifest[{b}] records a real tarball_sha256")
+            fails += _assert(_sha256_file(host_tar) == want,
+                             f"F streamed-out tarball[{b}] sha256 matches the manifest "
+                             f"(byte-faithful offload off the PVC, no corruption)")
+            # Prune the in-pod copy (PRUNE_AFTER_OFFLOAD=1) so the live PVC is bounded.
+            os.remove(pod_tar)
+            os.remove(pod_man)
+        leftover_pod = [f for f in os.listdir(cold_f) if f.endswith(".tar.gz")]
+        fails += _assert(leftover_pod == [],
+                         f"F in-pod cold tarballs pruned after offload — PVC bounded "
+                         f"({leftover_pod})")
+        # With the in-pod copies gone, restore CANNOT proceed from the PVC: the
+        # archive now lives ONLY on the off-PVC host volume (proves the offload, not
+        # a mere second copy left on the PVC).
+        rc, rep = _cli(store_f, key, shard_size, ["restore-shards"], cold_dir=cold_f)
+        fails += _assert(rc == 1 and sorted(rep.get("failed", [])) == sealed_expected
+                         and rep.get("restored") == [],
+                         f"F restore from the emptied PVC cold dir fails (tarballs are "
+                         f"offloaded to the host volume) "
+                         f"(rc={rc} failed={sorted(rep.get('failed', []))})")
+
+        # F2: re-import from the OFF-PVC host volume — stream the tarball+manifest
+        #     back onto the PVC cold dir (again stdlib bytes, no tar binary), restore,
+        #     and prove the offloaded archive round-trips to a verifiable shard.
+        for b in sealed_expected:
+            _stream_out(os.path.join(host_f, f"{b}.tar.gz"),
+                        os.path.join(cold_f, f"{b}.tar.gz"))
+            _stream_out(os.path.join(host_f, f"{b}.manifest.json"),
+                        os.path.join(cold_f, f"{b}.manifest.json"))
+        rc, rep = _cli(store_f, key, shard_size, ["restore-shards"], cold_dir=cold_f)
+        print(f"  restore from re-imported off-PVC archive: rc={rc} "
+              f"restored={rep.get('restored')} failed={rep.get('failed')}")
+        fails += _assert(rc == 0 and sorted(rep.get("restored", [])) == sealed_expected
+                         and rep.get("failed") == [],
+                         f"F every offloaded bucket re-imports from the host volume "
+                         f"(restored={sorted(rep.get('restored', []))}, "
+                         f"failed={rep.get('failed')})")
+        fails += _assert(_bucket_names(store_f) == sealed_expected + [tail_bucket],
+                         f"F all buckets are live again under shards/ after re-import "
+                         f"({_bucket_names(store_f)} == "
+                         f"{sealed_expected + [tail_bucket]})")
+        rc, rep = _cli(store_f, key, shard_size, ["verify-store"])
+        print(f"  post-offload-roundtrip verify-store: total={rep['total']} "
+              f"valid={rep['valid']} bad_sig={rep['bad_sig']} "
+              f"bad_hash={rep['bad_hash']} chain_ok={rep['chain_ok']}")
+        fails += _assert(rep["bad_sig"] == 0 and rep["bad_hash"] == 0,
+                         f"F the offloaded-then-reimported store is verifiable "
+                         f"(bad_sig={rep['bad_sig']} bad_hash={rep['bad_hash']})")
+        fails += _assert(rc == 0 and rep["chain_ok"] is True
+                         and rep["total"] == n and rep["valid"] == n,
+                         f"F verify-store passes over the FULL store after the cold "
+                         f"offload round trip (total={rep['total']} valid={rep['valid']} "
+                         f"chain_ok={rep['chain_ok']})")
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
