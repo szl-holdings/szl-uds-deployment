@@ -226,6 +226,192 @@ jobs:
       - name: End-to-end pin-catching proof passed
         run: echo "Offline fixture classification gated this run; the live crane->classify drift check confirmed it (or was skipped on a proven Docker Hub outage)."
 
+  # ── 0b-chart. End-to-end proof: a CHART image.digest flows through the REAL
+  #             collect-pins -> crane manifest -> classify-manifest pipeline ───
+  # pin-pipeline-e2e above feeds the classifier RAW fixtures/refs directly. It
+  # proves crane->classify, but NOT that a digest pinned in a chart's
+  # `image.digest` (charts/**/values.yaml) actually survives `collect-pins` and
+  # reaches that classify pipeline. That chart-side collection path
+  # (_chart_image_pins / _iter_image_blocks -> collect-pins) is new (Task #630):
+  # if it regressed and dropped chart digests, a multi-arch OCI INDEX pinned ONLY
+  # in a chart would never be classified — yet the synthetic unit self-test (which
+  # never runs crane) and the docker.io/GHCR direct-ref proofs would all stay
+  # green. This job closes that gap end to end:
+  #   1. Build a synthetic chart values.yaml that pins a known multi-arch INDEX
+  #      digest in image.digest (the exact field charts/a11oy uses), and a second
+  #      pinning that index's linux/amd64 CHILD digest.
+  #   2. Run the REAL `collect-pins` and assert BOTH chart digests are emitted —
+  #      proving the chart-side collection path feeds the classifier.
+  #   3. Feed each collected chart ref through the REAL crane manifest ->
+  #      classify-manifest pipeline and assert the INDEX is REJECTED and the
+  #      CHILD is ACCEPTED.
+  #
+  # Like pin-pipeline-e2e it uses the docker.io/library/nginx index+child whose
+  # immutable manifests are the committed fixtures (scripts/fixtures/image-pin/),
+  # so an OFFLINE gate (no Docker Hub) always runs and FAILS LOUDLY on a bad chart
+  # index — never a vacuous skip. A best-effort LIVE crane fetch of the same chart
+  # refs then exercises the real network path and only skips on a PROVEN outage.
+  chart-pin-pipeline-e2e:
+    name: Guard catches a bad multi-arch index pinned in a CHART image.digest (collect-pins + real crane)
+    runs-on: ubuntu-24.04
+    env:
+      CRANE_VERSION: v0.20.2
+      CHART_REPO: docker.io/library/nginx
+      # docker.io/library/nginx multi-arch INDEX (manifest list) digest — the
+      # unbuildable "bad pin"; the committed nginx-index.json fixture hashes to it.
+      NGINX_INDEX_DIGEST: "sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10"
+      # The linux/amd64 CHILD of that same index — a correct single-platform pin.
+      NGINX_CHILD_DIGEST: "sha256:62223d644fa234c3a1cc785ee14242ec47a77364226f1c811d2f669f96dc2ac8"
+      INDEX_FIXTURE: scripts/fixtures/image-pin/nginx-index.json
+      CHILD_FIXTURE: scripts/fixtures/image-pin/nginx-child.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      # ── Build a synthetic chart tree that pins the index + child digests ──────
+      # Two charts under charts/**/values.yaml, one pinning the multi-arch INDEX
+      # digest and one the amd64 CHILD digest, in the SAME image.digest field the
+      # real charts (charts/a11oy/values.yaml) use. A tag-only zarf.yaml satisfies
+      # collect-pins' file list without adding any zarf-side @sha256: pins, so the
+      # ONLY pins it can emit are the chart-side digests under test.
+      - name: Build a synthetic chart tree pinning the index + child digests
+        run: |
+          set -euo pipefail
+          ROOT="$(mktemp -d)"
+          echo "CHART_E2E_ROOT=$ROOT" >> "$GITHUB_ENV"
+          mkdir -p "$ROOT/charts/idxchart" "$ROOT/charts/childchart"
+          cat > "$ROOT/zarf.yaml" <<'EOF'
+          kind: ZarfPackageConfig
+          metadata:
+            name: chart-pin-e2e
+          components:
+            - name: noop
+          EOF
+          cat > "$ROOT/charts/idxchart/values.yaml" <<EOF
+          image:
+            repository: ${CHART_REPO}
+            tag: "1.27-alpine"
+            digest: "${NGINX_INDEX_DIGEST}"
+          EOF
+          cat > "$ROOT/charts/childchart/values.yaml" <<EOF
+          image:
+            repository: ${CHART_REPO}
+            tag: "1.27-alpine"
+            digest: "${NGINX_CHILD_DIGEST}"
+          EOF
+
+      # ── The chart collection path MUST emit both chart-pinned digests ─────────
+      - name: collect-pins must emit the chart image.digest pins
+        run: |
+          set -euo pipefail
+          python3 scripts/image-pin-checks.py collect-pins --root "$CHART_E2E_ROOT" --out /tmp/chart-pins.txt
+          echo "--- collected chart pins ---"; cat /tmp/chart-pins.txt
+          idx_ref="${CHART_REPO}@${NGINX_INDEX_DIGEST}"
+          child_ref="${CHART_REPO}@${NGINX_CHILD_DIGEST}"
+          for want in "$idx_ref" "$child_ref"; do
+            if ! grep -qxF "$want" /tmp/chart-pins.txt; then
+              echo "::error::collect-pins did NOT emit the chart-pinned digest $want — the chart image.digest collection path has regressed, so a multi-arch INDEX pinned only in a chart would never reach crane->classify."
+              exit 1
+            fi
+          done
+          echo "OK: collect-pins emitted both chart-pinned digests."
+
+      # ── Offline gate (no Docker Hub): classify the immutable fixtures the chart
+      #    refs point at. Always runs; a bad chart index FAILS LOUDLY here. ───────
+      - name: Verify committed fixtures content-address to the chart-pinned digests
+        run: |
+          set -euo pipefail
+          python3 scripts/image-pin-checks.py verify-fixture-digest "$INDEX_FIXTURE" --expect "$NGINX_INDEX_DIGEST"
+          python3 scripts/image-pin-checks.py verify-fixture-digest "$CHILD_FIXTURE" --expect "$NGINX_CHILD_DIGEST"
+
+      - name: Offline — chart-pinned multi-arch INDEX must be REJECTED (guard bites)
+        run: |
+          set -euo pipefail
+          if python3 scripts/image-pin-checks.py classify-manifest "$INDEX_FIXTURE"; then
+            echo "::error::image-pin guard FAILED to reject a multi-arch INDEX digest pinned in a chart image.digest ($NGINX_INDEX_DIGEST). The chart pin path has regressed to an always-pass no-op."
+            exit 1
+          fi
+          echo "OK: guard correctly rejected the chart-pinned multi-arch index."
+
+      - name: Offline — chart-pinned single-platform CHILD must be ACCEPTED
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/image-pin-checks.py classify-manifest "$CHILD_FIXTURE"; then
+            echo "::error::image-pin guard wrongly REJECTED a valid single-platform CHILD digest pinned in a chart image.digest ($NGINX_CHILD_DIGEST). False positive — correct chart pins would be blocked."
+            exit 1
+          fi
+          echo "OK: guard correctly accepted the chart-pinned single-platform child."
+
+      # ── Live drift check (best-effort): fetch the collected chart refs via the
+      #    REAL crane->classify path; skip ONLY on a proven outage. ──────────────
+      - name: Install crane
+        run: |
+          set -euo pipefail
+          curl -sSL \
+            "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin crane
+          crane version
+
+      - name: Live — feed the collected chart refs through real crane->classify
+        run: |
+          set -uo pipefail
+
+          # Pull a digest with retry+backoff. Prints "OK" or "OUTAGE" on stdout;
+          # crane's manifest body goes to the file.
+          pull() {
+            ref="$1"; out="$2"; attempt=1
+            while [ "$attempt" -le 5 ]; do
+              if crane manifest "$ref" > "$out" 2>/tmp/crane.err; then
+                echo OK
+                return 0
+              fi
+              echo "::notice::crane manifest $ref failed (attempt $attempt); retrying..." >&2
+              cat /tmp/crane.err >&2 || true
+              sleep "$((attempt * 5))"
+              attempt="$((attempt + 1))"
+            done
+            echo OUTAGE
+            return 0
+          }
+
+          # Use the refs collect-pins actually emitted, so this is the chart digest
+          # flowing through the SAME crane->classify pipeline the prod guard runs.
+          idx_ref="$(grep -F "@${NGINX_INDEX_DIGEST}" /tmp/chart-pins.txt | head -n1)"
+          child_ref="$(grep -F "@${NGINX_CHILD_DIGEST}" /tmp/chart-pins.txt | head -n1)"
+          echo "chart index ref: $idx_ref"
+          echo "chart child ref: $child_ref"
+          status_idx="$(pull "$idx_ref" /tmp/chart-live-index.json)"
+          status_child="$(pull "$child_ref" /tmp/chart-live-child.json)"
+
+          if [ "$status_idx" = "OUTAGE" ] || [ "$status_child" = "OUTAGE" ]; then
+            echo "::warning::Docker Hub unreachable/rate-limited after retries — skipping the LIVE crane chart-digest check. The offline fixture classification proof already gated this run, so this is NOT a code failure."
+            exit 0
+          fi
+
+          fail=0
+          # The chart-pinned multi-arch INDEX digest MUST be rejected.
+          if python3 scripts/image-pin-checks.py classify-manifest /tmp/chart-live-index.json; then
+            echo "::error::live crane->classify FAILED to reject the chart-pinned multi-arch index ($idx_ref) — the chart pin guard regressed."
+            fail=1
+          else
+            echo "OK: chart-pinned index correctly REJECTED via real crane->classify."
+          fi
+          # The chart-pinned single-platform CHILD digest MUST be accepted.
+          if ! python3 scripts/image-pin-checks.py classify-manifest /tmp/chart-live-child.json; then
+            echo "::error::live crane->classify wrongly REJECTED the chart-pinned single-platform child ($child_ref)."
+            fail=1
+          else
+            echo "OK: chart-pinned child correctly ACCEPTED via real crane->classify."
+          fi
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "Chart image.digest e2e confirmed: collect-pins -> crane -> classify rejects the index pin, accepts the child pin."
+
+      - name: Chart image.digest pin-catching proof passed
+        run: echo "A chart image.digest flowed through the REAL collect-pins -> crane -> classify pipeline; the index pin was caught and the child pin accepted (or the live step was skipped on a proven Docker Hub outage after the offline gate passed)."
+
   # ── 0c. End-to-end proof on a PRIVATE GHCR image (authenticated) ───────────
   # pin-pipeline-e2e above only exercises the docker.io ANONYMOUS code path. The
   # pins that matter in production — receipts-server + the 5 organ images — live
@@ -367,7 +553,7 @@ jobs:
 
   image-pin-guard:
     name: Image pins are single-platform + bundle task wired
-    needs: [self-test, pin-pipeline-e2e, ghcr-pin-pipeline-e2e]
+    needs: [self-test, pin-pipeline-e2e, chart-pin-pipeline-e2e, ghcr-pin-pipeline-e2e]
     runs-on: ubuntu-24.04
     env:
       CRANE_VERSION: v0.20.2
