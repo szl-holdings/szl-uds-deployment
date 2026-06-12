@@ -155,7 +155,15 @@ packages:
   #   bundle references it by tag (imagePullPolicy IfNotPresent).
   - name: szl-receipts
     path: ./packages/szl-receipts
-    ref: 0.4.0
+    # ref carries the flavor suffix on purpose. The szl-receipts-server
+    # component is flavor-gated (only.flavor: upstream), so the bundle task
+    # pre-builds it with `zarf package create --flavor upstream`. zarf (v0.77.0)
+    # writes that as zarf-package-szl-receipts-amd64-0.4.0-upstream.tar.zst, and
+    # uds-cli locates a local path member as zarf-package-<name>-<arch>-<ref>.tar.zst
+    # — so ref MUST be 0.4.0-upstream (matching the published OCI tag
+    # ghcr.io/szl-holdings/szl-receipts:0.4.0-upstream). Dropping the suffix back
+    # to 0.4.0 makes `uds create` fail "no such file or directory" (incident #75).
+    ref: 0.4.0-upstream
     overrides:
       szl-receipts-server:
         szl-receipts:
