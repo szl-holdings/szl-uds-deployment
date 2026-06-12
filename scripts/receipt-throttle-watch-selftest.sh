@@ -23,7 +23,7 @@
 #   * a stub `kubectl` that answers /readyz, the deploy presence check, the pod
 #     listing, the `exec ... /metrics` read (emitting a controllable
 #     szl_receipts_throttled_total counter via $STUB_THROTTLED), and the
-#     `exec ... python3 ...glob...` subject-read (emitting $STUB_SUBJECT);
+#     `exec ... python3 ...os.walk...` subject-read (emitting $STUB_SUBJECT);
 #   * a stub `k3d` that fails (to simulate an absent cluster);
 #   * a stub notifier that counts invocations AND records each message so we can
 #     assert the offending subject is named in the page.
@@ -58,14 +58,14 @@ trap 'rm -rf "$STUBBIN"' EXIT
 cat >"$STUBBIN/kubectl" <<'KEOF'
 #!/usr/bin/env bash
 # Minimal kubectl stub. Order matters: match the most specific first.
-#   * the SUBJECT read exec carries the marker 'glob' in its python -c body
+#   * the SUBJECT read exec carries the marker 'os.walk' in its python -c body
 #     -> emit $STUB_SUBJECT (the dominant accepted-receipt subject line).
 #   * the METRICS read exec carries 'urlopen' -> emit the throttled counter.
 all="$*"
 case "$all" in
   *"--raw=/readyz"*)
     exit 0 ;;                                   # cluster reachable
-  *" exec "*"glob"*)
+  *" exec "*"os.walk"*)
     printf '%s\n' "${STUB_SUBJECT:-}"           # subject identification read
     exit 0 ;;
   *" exec "*"urlopen"*|*" exec "*"/metrics"*)
