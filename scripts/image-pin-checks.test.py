@@ -325,7 +325,9 @@ with tempfile.TemporaryDirectory() as root:
     rc, _ = run("chart-zarf-digest-match", "--root", root)
     case("chart-zarf-digest-match: no chart digest passes vacuously", True, rc)
 
-# PASS (conservative): chart pins a digest but no wrapping zarf bakes that repo.
+# PASS (conservative default): a chart pins a digest but no wrapping zarf bakes
+# that repo -> ORPHAN. Default mode reports it as a ::warning:: but stays GREEN so
+# intentionally-aspirational charts never produce a false failure.
 with tempfile.TemporaryDirectory() as root:
     write(
         root,
@@ -333,9 +335,110 @@ with tempfile.TemporaryDirectory() as root:
         chart_values("ghcr.io/szl-holdings/a11oy", "uds-v0.3.0", GOOD_DIGEST),
     )
     write(root, "zarf.yaml", zarf(["docker.io/library/alpine:3.21"]))
-    rc, _ = run("chart-zarf-digest-match", "--root", root)
+    rc, out = run("chart-zarf-digest-match", "--root", root)
+    warned = "::warning::orphan chart digest" in out
     case(
-        "chart-zarf-digest-match: unwrapped chart digest skipped (no false fail)",
+        "chart-zarf-digest-match: orphan chart digest warns but stays green",
+        True,
+        0 if (rc == 0 and warned) else 1,
+    )
+
+# FAIL (--strict): the SAME orphan is a hard failure when strict mode is opted in.
+with tempfile.TemporaryDirectory() as root:
+    write(
+        root,
+        "charts/a11oy/values.yaml",
+        chart_values("ghcr.io/szl-holdings/a11oy", "uds-v0.3.0", GOOD_DIGEST),
+    )
+    write(root, "zarf.yaml", zarf(["docker.io/library/alpine:3.21"]))
+    rc, _ = run("chart-zarf-digest-match", "--root", root, "--strict")
+    case("chart-zarf-digest-match: --strict fails on orphan chart digest", False, rc)
+
+# PASS (--strict + --allow by repository): an allowlisted orphan is tolerated.
+with tempfile.TemporaryDirectory() as root:
+    write(
+        root,
+        "charts/a11oy/values.yaml",
+        chart_values("ghcr.io/szl-holdings/a11oy", "uds-v0.3.0", GOOD_DIGEST),
+    )
+    write(root, "zarf.yaml", zarf(["docker.io/library/alpine:3.21"]))
+    rc, _ = run(
+        "chart-zarf-digest-match",
+        "--root",
+        root,
+        "--strict",
+        "--allow",
+        "ghcr.io/szl-holdings/a11oy",
+    )
+    case(
+        "chart-zarf-digest-match: --strict tolerates allowlisted orphan (by repo)",
+        True,
+        rc,
+    )
+
+# PASS (--strict + --allow by chart dir): allowlisting by chart path also works.
+with tempfile.TemporaryDirectory() as root:
+    write(
+        root,
+        "charts/a11oy/values.yaml",
+        chart_values("ghcr.io/szl-holdings/a11oy", "uds-v0.3.0", GOOD_DIGEST),
+    )
+    write(root, "zarf.yaml", zarf(["docker.io/library/alpine:3.21"]))
+    rc, _ = run(
+        "chart-zarf-digest-match",
+        "--root",
+        root,
+        "--strict",
+        "--allow",
+        "charts/a11oy",
+    )
+    case(
+        "chart-zarf-digest-match: --strict tolerates allowlisted orphan (by chart dir)",
+        True,
+        rc,
+    )
+
+# FAIL (--strict): a DIFFERENT chart's allowlist entry must not mask this orphan.
+with tempfile.TemporaryDirectory() as root:
+    write(
+        root,
+        "charts/a11oy/values.yaml",
+        chart_values("ghcr.io/szl-holdings/a11oy", "uds-v0.3.0", GOOD_DIGEST),
+    )
+    write(root, "zarf.yaml", zarf(["docker.io/library/alpine:3.21"]))
+    rc, _ = run(
+        "chart-zarf-digest-match",
+        "--root",
+        root,
+        "--strict",
+        "--allow",
+        "charts/somethingelse",
+    )
+    case(
+        "chart-zarf-digest-match: --strict ignores non-matching allowlist entry",
+        False,
+        rc,
+    )
+
+# PASS (--strict): a properly reconciled chart/zarf pair is NOT an orphan even in
+# strict mode -> matching digests still pass.
+with tempfile.TemporaryDirectory() as root:
+    write(
+        root,
+        "charts/a11oy/values.yaml",
+        chart_values("ghcr.io/szl-holdings/a11oy", "uds-v0.3.0", GOOD_DIGEST),
+    )
+    write(
+        root,
+        "packages/a11oy/zarf.yaml",
+        zarf(
+            ["ghcr.io/szl-holdings/a11oy:uds-v0.3.0@" + GOOD_DIGEST],
+            chart_localpath="../../charts/a11oy",
+        ),
+    )
+    rc, _ = run("chart-zarf-digest-match", "--root", root, "--strict")
+    case(
+        "chart-zarf-digest-match: --strict passes a reconciled chart/zarf pair",
         True,
         rc,
     )
