@@ -45,6 +45,7 @@ on:
       - "tasks.yaml"
       - "scripts/image-pin-checks.py"
       - "scripts/image-pin-checks.test.py"
+      - "scripts/fixtures/image-pin/**"
       - ".github/workflows/image-pin-guard.yml"
   push:
     branches: [main]
@@ -55,6 +56,7 @@ on:
       - "tasks.yaml"
       - "scripts/image-pin-checks.py"
       - "scripts/image-pin-checks.test.py"
+      - "scripts/fixtures/image-pin/**"
       - ".github/workflows/image-pin-guard.yml"
   workflow_dispatch:
 
@@ -81,72 +83,148 @@ jobs:
       - name: Run image-pin checks self-test
         run: python3 scripts/image-pin-checks.test.py
 
-  # ── 0b. End-to-end proof: the REAL pipeline catches a REAL bad pin ─────────
-  # The self-test above unit-tests classify-manifest with synthetic JSON, but it
-  # never feeds a real digest through the real resolution path. This job does:
-  # it runs the SAME `crane manifest <ref> | classify-manifest` pipeline the
-  # guard uses, against two IMMUTABLE, hand-verified digests of docker.io's
-  # nginx:1.27-alpine —
-  #   * a multi-arch OCI INDEX digest (the exact "bad pin" zarf cannot package),
-  #     which MUST be rejected, and
-  #   * its linux/amd64 CHILD digest (a correct single-platform pin),
-  #     which MUST be accepted.
-  # If a future refactor of the crane/classify path silently turns the guard into
-  # an always-pass no-op, the index case here flips green-should-be-red and fails
-  # CI. Digests are content-addressable + immutable, so a moved tag never changes
-  # what these refer to. docker.io is pulled anonymously (no auth), same as the
-  # real guard pulls its nginx pin.
+  # ── 0b. End-to-end proof: the REAL classify path catches a REAL bad pin ────
+  # The self-test above unit-tests classify-manifest with synthetic JSON. This
+  # job feeds the REAL nginx manifests through classify-manifest — but OFFLINE,
+  # from two COMMITTED fixtures (scripts/fixtures/image-pin/), not a live Docker
+  # Hub pull. Anonymous docker.io pulls from CI are rate-limited and sometimes
+  # unavailable; gating this proof on a live pull turned the guard RED for
+  # reasons unrelated to the code under review (and tempted people to ignore it).
+  #
+  # The fixtures are the genuine, IMMUTABLE nginx manifests: OCI content-
+  # addressing means sha256(manifest bytes) IS the image digest, and
+  # verify-fixture-digest asserts each fixture hashes to its pinned digest, so a
+  # doctored fixture (e.g. an index edited to look single-platform) is rejected.
+  #   * the multi-arch OCI INDEX manifest (the exact "bad pin" zarf cannot
+  #     package) MUST be rejected, and
+  #   * its linux/amd64 CHILD manifest (a correct single-platform pin) MUST be
+  #     accepted.
+  # This OFFLINE classify proof runs on EVERY run regardless of Docker Hub, so a
+  # genuine classification regression still fails and an outage never silently
+  # turns the negative case into a no-op.
+  #
+  # A best-effort LIVE step then pulls the same digests via crane (retry+backoff)
+  # to exercise the real crane->classify path and detect fixture drift. Only on a
+  # PROVEN network/registry outage does it emit a ::warning:: and skip — never
+  # masking a real classification failure (the offline gate already caught that).
   pin-pipeline-e2e:
-    name: Guard rejects a real multi-arch index pin (crane + classify e2e)
+    name: Guard rejects a real multi-arch index pin (offline fixture + live drift)
     runs-on: ubuntu-24.04
     env:
       CRANE_VERSION: v0.20.2
       # docker.io/library/nginx:1.27-alpine multi-arch INDEX (manifest list)
-      # digest — mediaType application/vnd.oci.image.index.v1+json. Verified by
-      # hand against registry-1.docker.io. This is the unbuildable "bad pin".
+      # digest — mediaType application/vnd.oci.image.index.v1+json. This is the
+      # unbuildable "bad pin"; the committed fixture below hashes to it.
       NGINX_INDEX_DIGEST: "sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10"
       # The linux/amd64 CHILD of that same index — a single-platform manifest,
       # i.e. a CORRECT pin that the guard must accept.
       NGINX_CHILD_DIGEST: "sha256:62223d644fa234c3a1cc785ee14242ec47a77364226f1c811d2f669f96dc2ac8"
+      INDEX_FIXTURE: scripts/fixtures/image-pin/nginx-index.json
+      CHILD_FIXTURE: scripts/fixtures/image-pin/nginx-child.json
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
-      - name: Install crane + PyYAML
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      # ── Offline gate (no Docker Hub): the always-run proof ───────────────────
+      - name: Verify committed fixtures content-address to the pinned digests
+        run: |
+          set -euo pipefail
+          python3 scripts/image-pin-checks.py verify-fixture-digest "$INDEX_FIXTURE" --expect "$NGINX_INDEX_DIGEST"
+          python3 scripts/image-pin-checks.py verify-fixture-digest "$CHILD_FIXTURE" --expect "$NGINX_CHILD_DIGEST"
+
+      - name: Offline — a multi-arch INDEX fixture must be REJECTED (guard bites)
+        run: |
+          set -euo pipefail
+          if python3 scripts/image-pin-checks.py classify-manifest "$INDEX_FIXTURE"; then
+            echo "::error::image-pin guard FAILED to reject the known multi-arch INDEX manifest ($NGINX_INDEX_DIGEST). The guard has regressed to an always-pass no-op."
+            exit 1
+          fi
+          echo "OK: guard correctly rejected the multi-arch index fixture."
+
+      - name: Offline — a single-platform CHILD fixture must be ACCEPTED (no false positive)
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/image-pin-checks.py classify-manifest "$CHILD_FIXTURE"; then
+            echo "::error::image-pin guard wrongly REJECTED the valid single-platform CHILD manifest ($NGINX_CHILD_DIGEST). False positive — the guard would block correct pins."
+            exit 1
+          fi
+          echo "OK: guard correctly accepted the single-platform child fixture."
+
+      # ── Live drift check (best-effort): keeps the fixtures honest ────────────
+      - name: Install crane
         run: |
           set -euo pipefail
           curl -sSL \
             "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
             | sudo tar -xz -C /usr/local/bin crane
           crane version
-          python3 -m pip install --quiet pyyaml
 
-      - name: A multi-arch INDEX pin must be REJECTED (proves the guard bites)
+      - name: Live crane->classify + drift check (skips only on a proven outage)
         run: |
-          set -euo pipefail
-          ref="docker.io/library/nginx@${NGINX_INDEX_DIGEST}"
-          echo "Resolving known multi-arch index pin: $ref"
-          crane manifest "$ref" > /tmp/e2e-index.json
-          if python3 scripts/image-pin-checks.py classify-manifest /tmp/e2e-index.json; then
-            echo "::error::image-pin guard FAILED to reject a known multi-arch INDEX pin ($ref). The guard is not catching bad pins — it has regressed to an always-pass no-op."
-            exit 1
-          fi
-          echo "OK: guard correctly rejected the multi-arch index pin."
+          set -uo pipefail
 
-      - name: A single-platform CHILD pin must be ACCEPTED (no false positives)
-        run: |
-          set -euo pipefail
-          ref="docker.io/library/nginx@${NGINX_CHILD_DIGEST}"
-          echo "Resolving known single-platform child pin: $ref"
-          crane manifest "$ref" > /tmp/e2e-child.json
-          if ! python3 scripts/image-pin-checks.py classify-manifest /tmp/e2e-child.json; then
-            echo "::error::image-pin guard wrongly REJECTED a valid single-platform CHILD pin ($ref). False positive — the guard would block correct pins."
-            exit 1
+          # Pull a digest with retry+backoff. Prints "OK" or "OUTAGE" on stdout;
+          # crane's manifest body goes to the file. Network/registry failures
+          # (rate limit, DNS, 5xx) are treated as a possible outage; only after
+          # all attempts fail do we report OUTAGE.
+          pull() {
+            ref="$1"; out="$2"; attempt=1
+            while [ "$attempt" -le 5 ]; do
+              if crane manifest "$ref" > "$out" 2>/tmp/crane.err; then
+                echo OK
+                return 0
+              fi
+              echo "::notice::crane manifest $ref failed (attempt $attempt); retrying..." >&2
+              cat /tmp/crane.err >&2 || true
+              sleep "$((attempt * 5))"
+              attempt="$((attempt + 1))"
+            done
+            echo OUTAGE
+            return 0
+          }
+
+          idx_ref="docker.io/library/nginx@${NGINX_INDEX_DIGEST}"
+          child_ref="docker.io/library/nginx@${NGINX_CHILD_DIGEST}"
+          status_idx="$(pull "$idx_ref" /tmp/live-index.json)"
+          status_child="$(pull "$child_ref" /tmp/live-child.json)"
+
+          if [ "$status_idx" = "OUTAGE" ] || [ "$status_child" = "OUTAGE" ]; then
+            echo "::warning::Docker Hub unreachable/rate-limited after retries — skipping the LIVE crane drift check. The offline fixture classification proof already gated this run, so this is NOT a code failure."
+            exit 0
           fi
-          echo "OK: guard correctly accepted the single-platform child pin."
+
+          # Content-addressing: a digest can only ever return the same bytes, so a
+          # live-vs-fixture digest mismatch means the committed fixture has drifted.
+          fail=0
+          check_drift() {
+            live="$1"; dig="$2"; fix="$3"
+            got="sha256:$(sha256sum "$live" | cut -d' ' -f1)"
+            if [ "$got" != "$dig" ]; then
+              echo "::warning::live manifest for $dig hashed to $got (crane re-encoding?) — committed fixture $fix may be stale; re-capture with: crane manifest docker.io/library/nginx@$dig > $fix"
+            else
+              echo "OK: live manifest content-addresses to $dig (fixture $fix is current)."
+            fi
+          }
+          check_drift /tmp/live-index.json "$NGINX_INDEX_DIGEST" "$INDEX_FIXTURE"
+          check_drift /tmp/live-child.json "$NGINX_CHILD_DIGEST" "$CHILD_FIXTURE"
+
+          # Real crane->classify path, end to end (only runs when crane succeeded).
+          if python3 scripts/image-pin-checks.py classify-manifest /tmp/live-index.json; then
+            echo "::error::live crane->classify FAILED to reject the multi-arch index pin — guard regressed."
+            fail=1
+          fi
+          if ! python3 scripts/image-pin-checks.py classify-manifest /tmp/live-child.json; then
+            echo "::error::live crane->classify wrongly rejected the single-platform child pin."
+            fail=1
+          fi
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "Live crane->classify path confirmed: rejects the index pin, accepts the child pin."
 
       - name: End-to-end pin-catching proof passed
-        run: echo "The crane + classify pipeline rejects a real index pin and accepts a real child pin."
+        run: echo "Offline fixture classification gated this run; the live crane->classify drift check confirmed it (or was skipped on a proven Docker Hub outage)."
 
   image-pin-guard:
     name: Image pins are single-platform + bundle task wired

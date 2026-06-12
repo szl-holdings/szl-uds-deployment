@@ -9,6 +9,7 @@
 # that neuters a check (green while guarding nothing). Run by the `self-test` job
 # in .github/workflows/image-pin-guard.yml. No crane, no network — pure fixtures.
 
+import hashlib
 import json
 import os
 import subprocess
@@ -161,6 +162,40 @@ with tempfile.TemporaryDirectory() as root:
     )
     rc, _ = run("classify-manifest", sneaky)
     case("classify-manifest: .manifests[] with no mediaType fails", False, rc)
+
+
+# ── verify-fixture-digest ─────────────────────────────────────────────────────────
+# The e2e proof classifies COMMITTED manifest fixtures offline (no live Docker Hub
+# pull). verify-fixture-digest is what keeps those fixtures honest: a fixture is
+# only trusted if its bytes hash to the digest it claims (OCI content-addressing).
+# A doctored fixture (e.g. an index edited to look single-platform) changes the
+# hash and must be rejected here, or the offline proof could be silently faked.
+with tempfile.TemporaryDirectory() as root:
+    body = b'{"mediaType":"application/vnd.oci.image.manifest.v1+json"}'
+    path = os.path.join(root, "fixture.json")
+    with open(path, "wb") as fh:
+        fh.write(body)
+    good = "sha256:" + hashlib.sha256(body).hexdigest()
+
+    rc, _ = run("verify-fixture-digest", path, "--expect", good)
+    case("verify-fixture-digest: matching content passes", True, rc)
+
+    rc, _ = run("verify-fixture-digest", path, "--expect", "sha256:" + "0" * 64)
+    case("verify-fixture-digest: wrong digest fails", False, rc)
+
+    # A doctored fixture (one byte changed) no longer hashes to its claimed digest.
+    with open(path, "wb") as fh:
+        fh.write(body + b" ")
+    rc, _ = run("verify-fixture-digest", path, "--expect", good)
+    case("verify-fixture-digest: edited fixture fails", False, rc)
+
+    rc, _ = run("verify-fixture-digest", path, "--expect", "not-a-digest")
+    case("verify-fixture-digest: malformed expected digest fails", False, rc)
+
+    rc, _ = run(
+        "verify-fixture-digest", os.path.join(root, "missing.json"), "--expect", good
+    )
+    case("verify-fixture-digest: missing fixture file fails", False, rc)
 
 
 # ── start-routes-bundle ──────────────────────────────────────────────────────────

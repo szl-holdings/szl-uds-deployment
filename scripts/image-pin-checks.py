@@ -32,6 +32,7 @@
 # Usage:
 #   image-pin-checks.py collect-pins            [--root DIR] [--out FILE]
 #   image-pin-checks.py classify-manifest       <manifest.json>
+#   image-pin-checks.py verify-fixture-digest   <manifest.json> --expect sha256:..
 #   image-pin-checks.py start-routes-bundle     [--root DIR]
 #   image-pin-checks.py chart-zarf-digest-match [--root DIR]
 #
@@ -40,6 +41,7 @@
 
 import argparse
 import glob
+import hashlib
 import json
 import os
 import sys
@@ -194,6 +196,36 @@ def classify_manifest(path):
     return 0
 
 
+# ── verify-fixture-digest ─────────────────────────────────────────────────────────
+# A committed manifest fixture is only trustworthy if its bytes hash to the digest
+# it claims. OCI content-addressing means sha256(manifest bytes) IS the image
+# digest, so this both proves the fixture is the GENUINE immutable manifest (not a
+# hand-edited fake) AND lets the e2e proof classify it OFFLINE — no live Docker Hub
+# pull, which is rate-limited and occasionally unavailable from CI. Any edit to the
+# fixture changes its hash and fails here, so an index fixture cannot be doctored to
+# look single-platform.
+def verify_fixture_digest(path, expect):
+    expect = (expect or "").strip()
+    if not (expect.startswith("sha256:") and len(expect) == len("sha256:") + 64):
+        return err("expected digest must be 'sha256:<64-hex>' (got %r)" % expect)
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError as e:
+        return err("could not read fixture %s: %s" % (path, e))
+    got = "sha256:" + hashlib.sha256(data).hexdigest()
+    if got != expect:
+        return err(
+            "fixture %s hashes to %s but is pinned at %s — the committed manifest "
+            "is not the immutable content it claims (edited, truncated, or "
+            "re-encoded). Re-capture it with "
+            "`crane manifest docker.io/library/nginx@%s > %s`."
+            % (path, got, expect, expect, path)
+        )
+    print("OK: %s content-addresses to %s" % (path, expect))
+    return 0
+
+
 # ── start-routes-bundle ──────────────────────────────────────────────────────────
 # Assert tasks.yaml has a `bundle` task AND a `start` task whose actions route
 # through `- task: bundle`. If `start` stops calling `bundle`, a fresh
@@ -343,6 +375,15 @@ def main():
     p2 = sub.add_parser("classify-manifest", help="fail on a multi-arch index")
     p2.add_argument("manifest", help="path to a `crane manifest` JSON body")
 
+    p5 = sub.add_parser(
+        "verify-fixture-digest",
+        help="fail unless a committed manifest fixture hashes to its pinned digest",
+    )
+    p5.add_argument("manifest", help="path to a committed manifest fixture")
+    p5.add_argument(
+        "--expect", required=True, help="expected sha256:<hex> content digest"
+    )
+
     p3 = sub.add_parser("start-routes-bundle", help="check start -> bundle wiring")
     p3.add_argument("--root", default=".", help="repo root (default: .)")
 
@@ -357,6 +398,8 @@ def main():
         return collect_pins(args.root, args.out)
     if args.cmd == "classify-manifest":
         return classify_manifest(args.manifest)
+    if args.cmd == "verify-fixture-digest":
+        return verify_fixture_digest(args.manifest, args.expect)
     if args.cmd == "start-routes-bundle":
         return start_routes_bundle(args.root)
     if args.cmd == "chart-zarf-digest-match":
