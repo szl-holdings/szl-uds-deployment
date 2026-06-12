@@ -30,6 +30,19 @@
 #   * the APPEND path — a real running server fast-boots against the large store,
 #                      then POSTs a burst of receipts; the live window stays
 #                      bounded and the chain length keeps growing correctly.
+#   * the HIGH-INDEX FAST-RESUME path — a REAL server process boots against a
+#                      .chain_head pointer that CLAIMS a ~300k-receipt chain while
+#                      only a few recent tail files physically remain on disk
+#                      (mirroring a long-lived store whose older shards were
+#                      cold-archived). It proves the process reaches Ready via the
+#                      "Rehydrated from head pointer" log line, resumes at the
+#                      full claimed chain_index/length, keeps an EMPTY live window
+#                      and bounded RSS, and crosses Ready WITHIN A TIME BUDGET —
+#                      i.e. boot cost is independent of the (300k) chain length, so
+#                      it would NOT have OOM'd / timed out under the old full-load.
+#                      The chain_index==claimed assertion is the deterministic
+#                      catch: a regression that scanned/loaded the chain would
+#                      derive the index from the few on-disk files, never 300k.
 #
 # The in-memory COUNT bound is the deterministic catch: a regression that loads
 # the whole chain makes len(_receipts) == N >> MAX_IN_MEMORY and fails here
@@ -237,6 +250,66 @@ def _seed_child(store, count):
     print(json.dumps({"seeded": count}))
 
 
+# ── child: seed a SMALL tail + a head pointer claiming a HUGE chain ─────────────
+def _seed_high_index_child(store, high_index, real_files):
+    """Simulate a server that has persisted ~`high_index` receipts (e.g. 300k)
+    WITHOUT writing 300k files. Writes only `real_files` faithful TAIL receipts —
+    the most-recent ones, chain indices high_index-real_files .. high_index-1, in
+    their natural shard buckets — plus a .chain_head pointer that CLAIMS
+    chain_index == high_index and count == high_index.
+
+    This mirrors a real long-lived store whose older shards have been
+    cold-archived/offloaded (the documented `archive-shards` path) so only recent
+    receipts remain on the hot volume while the head pointer still records the
+    full chain length. A correct server fast-resumes from the pointer at
+    high_index in O(1) time and memory; a regression that scans/loads the chain
+    would derive chain_index from the few files on disk (~real_files, never
+    high_index) and fail the guard."""
+    os.environ["SZL_RECEIPT_STORE"] = store
+    server = _load_server()
+
+    base = 1_700_000_000
+    start = max(0, high_index - real_files)
+    prev_hash = server.GENESIS
+    tail_hash = server.GENESIS
+    for i in range(start, high_index):
+        created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(base + i))
+        payload = base64.b64encode(
+            json.dumps({"action": "deploy", "subject": f"synthetic-{i}",
+                        "ts": created, "pad": "x" * 160}).encode()
+        ).decode()
+        envelope = {
+            "payloadType": "application/vnd.szl.receipt+json",
+            "payload": payload,
+            "signatures": [{"keyid": "synthetic", "sig": base64.b64encode(
+                (b"s" * 64)).decode()}],
+        }
+        record = {
+            "id": "",
+            "created_at": created,
+            "timestamp": created,
+            "valid": True,
+            "envelope": envelope,
+            "chain": {"prev_hash": prev_hash, "chain_index": i},
+        }
+        rid = server.hashlib.sha256(
+            json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        record["id"] = rid
+        record["chain"]["hash"] = server._receipt_hash(record)
+        prev_hash = record["chain"]["hash"]
+        tail_hash = record["chain"]["hash"]
+        dest = server._store_path_for(rid, i)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "w") as f:
+            json.dump(record, f)
+    # The pointer CLAIMS the FULL chain length even though only `real_files`
+    # receipts physically remain (older shards cold-archived). count == high_index.
+    server._write_head_pointer(high_index, tail_hash, count=high_index)
+    print(json.dumps({"seeded_files": high_index - start,
+                      "claimed_index": high_index, "claimed_count": high_index}))
+
+
 # ── child: rehydrate once and report bounded-memory metrics ─────────────────────
 def _rehydrate_child(store):
     """Boot-equivalent: import the server (which reads the store path from env),
@@ -434,6 +507,100 @@ def _check_append(store, n, append_n, max_in_mem, ceiling):
     return fails
 
 
+# ── high-index fast-resume: real server boots against a ~300k head pointer ──────
+def _check_fast_resume_high_index(store, high_index, ceiling, budget_secs):
+    """Boot a REAL server process against a store whose .chain_head claims
+    `high_index` (~300k) receipts while only a few tail files physically remain,
+    and prove the process reaches Ready FAST and FLAT:
+      * the boot log shows the "Rehydrated from head pointer" (fast/O(1)) path;
+      * /metrics resumes at the FULL claimed chain_index and chain_length
+        (a scan/load of the on-disk files could never yield `high_index`);
+      * the live in-memory window starts EMPTY (no history loaded);
+      * the process reaches /healthz within a wall-clock time budget — boot cost
+        is independent of the claimed chain length;
+      * server peak RSS stays under the chart-derived ceiling.
+    No signing key needed — the server boots unsigned and this path never POSTs."""
+    print(f"\n== HIGH-INDEX FAST RESUME (real server boots against a .chain_head "
+          f"claiming {high_index} receipts) ==")
+    port = 8138
+    env = dict(os.environ)
+    env.update({"SZL_RECEIPT_STORE": store, "SZL_PORT": str(port)})
+    workdir = tempfile.mkdtemp(prefix="szl-fast-resume-")
+    logpath = os.path.join(workdir, "server.log")
+    logf = open(logpath, "w")
+    fails = 0
+    proc = None
+    try:
+        t0 = time.time()
+        proc = subprocess.Popen([sys.executable, SERVER_PATH], env=env,
+                                stdout=logf, stderr=subprocess.STDOUT)
+        healthy = _wait_health(port)
+        boot_secs = time.time() - t0
+        logf.flush()
+        log_text = open(logpath).read()
+        if not healthy:
+            print("::error::receipts server never became healthy on the "
+                  "high-index store")
+            print(log_text)
+            return 1
+
+        window = _get_json(port, "/receipts")
+        metrics = _get_text(port, "/metrics")
+        chain_index = chain_len = None
+        for line in metrics.splitlines():
+            if line.startswith("szl_chain_index "):
+                chain_index = int(line.split()[1])
+            elif line.startswith("szl_chain_length "):
+                chain_len = int(line.split()[1])
+        hwm = _vmhwm_mib(proc.pid)
+
+        print(f"  boot -> ready = {boot_secs:.2f}s (budget {budget_secs:g}s)")
+        print(f"  szl_chain_index = {chain_index}  szl_chain_length = {chain_len}  "
+              f"(claimed {high_index})")
+        print(f"  /receipts window = {len(window)}   server VmHWM = {hwm} MiB")
+
+        if not _assert("Rehydrated from head pointer" in log_text,
+                       "boot took the FAST 'Rehydrated from head pointer' path "
+                       "(O(1) resume, no store scan)"):
+            fails += 1
+            for ln in log_text.splitlines():
+                if "Rehydrated" in ln:
+                    print(f"      boot log says: {ln}")
+        if not _assert(chain_index == high_index,
+                       f"chain_index resumed from the pointer ({chain_index} == "
+                       f"{high_index}) — a scan/load of the on-disk files could "
+                       f"never yield {high_index}"):
+            fails += 1
+        if not _assert(chain_len == high_index,
+                       f"chain_length reflects the full claimed history "
+                       f"({chain_len} == {high_index})"):
+            fails += 1
+        if not _assert(len(window) == 0,
+                       "live window starts EMPTY (O(1) resume; no history loaded "
+                       "into RAM)"):
+            fails += 1
+        if not _assert(boot_secs <= budget_secs,
+                       f"reached Ready within the time budget ({boot_secs:.2f}s "
+                       f"<= {budget_secs:g}s) — boot cost is independent of the "
+                       f"{high_index}-receipt chain length"):
+            fails += 1
+        if hwm is not None and not _assert(
+                hwm <= ceiling,
+                f"server peak RSS {hwm} MiB <= {ceiling} MiB ceiling "
+                f"(well under the {CHART_LIMIT_MIB:g}Mi chart limit)"):
+            fails += 1
+    finally:
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except Exception:
+                proc.kill()
+        logf.close()
+        shutil.rmtree(workdir, ignore_errors=True)
+    return fails
+
+
 def main():
     global CHART_LIMIT_MIB
     # Derive the production ceiling from the chart (fails loud on any problem) so
@@ -504,6 +671,36 @@ def main():
     finally:
         shutil.rmtree(store, ignore_errors=True)
 
+    # HIGH-INDEX FAST-RESUME path — a REAL server boots against a .chain_head
+    # claiming a ~300k-receipt chain while only a few tail files remain on disk
+    # (cold-archived history), and must reach Ready via the fast head-pointer
+    # path at the FULL claimed index, with an empty window, bounded RSS, and
+    # within a wall-clock time budget. This is the direct large-history boot
+    # proof: it would have OOM'd / been slow under the old whole-chain load, and
+    # the chain_index==claimed assertion deterministically catches any regression
+    # back to a scan (which could only ever derive the small on-disk file count).
+    high_index = int(os.environ.get("GUARD_HIGH_INDEX", "300000"))
+    high_files = int(os.environ.get("GUARD_HIGH_INDEX_FILES", "50"))
+    budget_secs = float(os.environ.get("GUARD_FAST_BOOT_BUDGET_SECS", "20"))
+    if high_files >= high_index:
+        print(f"::error::test misconfigured: GUARD_HIGH_INDEX_FILES ({high_files}) "
+              f"must be < GUARD_HIGH_INDEX ({high_index}) so the pointer claims "
+              f"more than the files on disk")
+        return 1
+    high_store = tempfile.mkdtemp(prefix="szl-mem-guard-hi-")
+    try:
+        t0 = time.time()
+        seeded_hi = _run_child("seed_high", high_store,
+                               {"GUARD_HIGH_INDEX": str(high_index),
+                                "GUARD_HIGH_INDEX_FILES": str(high_files)})
+        print(f"\nSeeded {seeded_hi['seeded_files']} tail receipt file(s) + a "
+              f".chain_head claiming {seeded_hi['claimed_index']} receipts in "
+              f"{time.time() - t0:.1f}s into {high_store}")
+        total_fail += _check_fast_resume_high_index(
+            high_store, high_index, ceiling, budget_secs)
+    finally:
+        shutil.rmtree(high_store, ignore_errors=True)
+
     print()
     if total_fail:
         print(f"::error::receipts memory guard FAILED ({total_fail} assertion(s)). "
@@ -521,5 +718,12 @@ if __name__ == "__main__":
         sys.exit(0)
     if len(sys.argv) >= 3 and sys.argv[1] == "rehydrate":
         _rehydrate_child(sys.argv[2])
+        sys.exit(0)
+    if len(sys.argv) >= 3 and sys.argv[1] == "seed_high":
+        _seed_high_index_child(
+            sys.argv[2],
+            int(os.environ.get("GUARD_HIGH_INDEX", "300000")),
+            int(os.environ.get("GUARD_HIGH_INDEX_FILES", "50")),
+        )
         sys.exit(0)
     sys.exit(main())

@@ -387,6 +387,16 @@ jobs:
     # correct, and peak RSS stays well under the 512Mi chart limit. A refactor
     # that reintroduces a whole-chain load makes len(_receipts) == 20000 >>
     # MAX_IN_MEMORY and fails here.
+    #
+    # It ALSO boots a REAL server against a .chain_head pointer that CLAIMS a
+    # ~300k-receipt chain while only a few recent tail files remain on disk (a
+    # long-lived store whose older shards were cold-archived), and asserts the
+    # process reaches Ready via the fast "Rehydrated from head pointer" path at
+    # the FULL claimed chain_index/length, with an empty live window, bounded RSS,
+    # and within a wall-clock TIME budget — i.e. boot cost is independent of the
+    # chain length (it would have OOM'd / been slow under the old full-load). The
+    # chain_index==300k assertion deterministically catches a regression back to a
+    # scan, which could only ever derive the small on-disk file count.
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
