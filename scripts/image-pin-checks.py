@@ -34,7 +34,7 @@
 #   image-pin-checks.py classify-manifest       <manifest.json>
 #   image-pin-checks.py verify-fixture-digest   <manifest.json> --expect sha256:..
 #   image-pin-checks.py start-routes-bundle     [--root DIR]
-#   image-pin-checks.py chart-zarf-digest-match [--root DIR]
+#   image-pin-checks.py chart-zarf-digest-match [--root DIR] [--strict] [--allow CHART]...
 #
 # Each subcommand exits 0 when its invariant holds and 1 (printing a GitHub
 # ::error annotation) when it is regressed.
@@ -265,10 +265,26 @@ def start_routes_bundle(root):
 # and assert its `images:` list pins the BYTE-IDENTICAL digest for the same
 # repository. If they drift — chart pins digest X, zarf pins Y (or tag-only) — the
 # deploy-time Zarf agent rewrite cannot match the baked image (airgap
-# ImagePullBackOff). Conservative: a chart with no zarf wrapper, or a wrapper that
-# does not reference that repository at all, is SKIPPED (cannot prove a
-# contradiction); only a real digest mismatch fails.
-def chart_zarf_digest_match(root):
+# ImagePullBackOff). A chart with no zarf wrapper, or a wrapper that does not
+# reference that repository at all, has no zarf digest to contradict, so it is an
+# ORPHAN: reported (::warning::) by default and a hard failure under --strict
+# unless allowlisted. Only a real digest mismatch fails unconditionally.
+def _orphan_allowed(repo, vf, cdir, root, allow):
+    """True if a known-aspirational chart is explicitly allowlisted. An allow
+    entry matches the orphan's image repository, the values.yaml path, the chart
+    directory (both relative to --root), or the chart directory's basename."""
+    if not allow:
+        return False
+    candidates = {
+        repo,
+        os.path.relpath(vf, root),
+        os.path.relpath(cdir, root),
+        os.path.basename(cdir),
+    }
+    return bool(candidates & {a.rstrip("/") for a in allow})
+
+
+def chart_zarf_digest_match(root, strict=False, allow=None):
     # repo -> (digest, values_path) for every chart image block that pins a digest,
     # keyed by the chart directory so we can join on the zarf localPath.
     chart_pins = {}  # chart_dir -> {repo: (digest, values_path)}
@@ -297,6 +313,7 @@ def chart_zarf_digest_match(root):
 
     fail = False
     checked = 0
+    reconciled = set()  # (chart_dir, repo) a wrapping zarf package actually bakes
     for zpath in zarf_files:
         if not os.path.isfile(zpath):
             continue
@@ -323,8 +340,9 @@ def chart_zarf_digest_match(root):
                 for repo, (cdigest, vf) in pins.items():
                     if repo not in zarf_repo_digest:
                         # zarf does not bake this repo at all -> cannot reconcile
-                        # (chart may use a side image not vendored into this pkg).
+                        # here; it stays an orphan candidate (surfaced below).
                         continue
+                    reconciled.add((cdir, repo))
                     zdigest = zarf_repo_digest[repo]
                     checked += 1
                     if zdigest == "":
@@ -350,17 +368,50 @@ def chart_zarf_digest_match(root):
                             % (cdigest, zdigest, repo, vf, zpath)
                         )
 
-    if fail:
+    # ── orphan inventory ─────────────────────────────────────────────────────────
+    # A chart image.digest that NO wrapping zarf package bakes was silently skipped
+    # before, so a regression that drops the zarf images: entry (leaving the chart
+    # digest) was downgraded to UNVERIFIABLE instead of caught. Surface every such
+    # orphan: report-only (::warning::) by default so intentionally-aspirational
+    # charts stay green, hard FAIL under --strict unless the chart is allowlisted.
+    orphans = []
+    for cdir, repos in chart_pins.items():
+        for repo, (cdigest, vf) in repos.items():
+            if (cdir, repo) not in reconciled:
+                orphans.append((vf, repo, cdigest, cdir))
+    orphan_fail = False
+    for vf, repo, cdigest, cdir in sorted(orphans):
+        allowed = _orphan_allowed(repo, vf, cdir, root, allow)
+        if strict and not allowed:
+            err(
+                "orphan chart digest: %s pins image.digest %s for %s but NO zarf "
+                "package bakes that repository — a later drift here would be "
+                "invisible (silently downgraded to UNVERIFIABLE). Pin the same "
+                "digest in a wrapping zarf images: list, or allowlist this chart "
+                "with --allow if it is intentionally aspirational." % (vf, cdigest, repo)
+            )
+            orphan_fail = True
+        else:
+            print(
+                "::warning::orphan chart digest%s: %s pins %s for %s with no "
+                "wrapping zarf package — not reconciled by chart-zarf-digest-match"
+                % (" (allowlisted)" if allowed else "", vf, cdigest, repo)
+            )
+    if orphans:
+        print(
+            "Found %d orphan chart digest(s) with no wrapping zarf package (%s)."
+            % (len(orphans), "strict" if strict else "report-only")
+        )
+
+    if fail or orphan_fail:
         return 1
-    if checked == 0:
-        # Charts pin digests but none is baked by a wrapping zarf package — the
-        # classify pass (collect-pins) still covers them; nothing to reconcile.
+    if checked:
+        print("OK: all %d chart/zarf digest pair(s) byte-match" % checked)
+    elif not orphans:
         print(
             "OK: chart digest(s) present but none is baked by a wrapping zarf "
             "package — no chart/zarf pair to reconcile"
         )
-        return 0
-    print("OK: all %d chart/zarf digest pair(s) byte-match" % checked)
     return 0
 
 
@@ -392,6 +443,22 @@ def main():
         help="chart image.digest must byte-match the wrapping zarf images: digest",
     )
     p4.add_argument("--root", default=".", help="repo root (default: .)")
+    p4.add_argument(
+        "--strict",
+        action="store_true",
+        help="fail (not just warn) on an orphan chart image.digest that no zarf "
+        "package bakes, unless the chart is allowlisted via --allow",
+    )
+    p4.add_argument(
+        "--allow",
+        action="append",
+        default=[],
+        metavar="CHART",
+        help="allowlist a known-aspirational chart so --strict tolerates its "
+        "orphan digest; matches the image repository, the values.yaml path, the "
+        "chart directory (both relative to --root), or the chart dir name. "
+        "Repeatable.",
+    )
 
     args = ap.parse_args()
     if args.cmd == "collect-pins":
@@ -403,7 +470,7 @@ def main():
     if args.cmd == "start-routes-bundle":
         return start_routes_bundle(args.root)
     if args.cmd == "chart-zarf-digest-match":
-        return chart_zarf_digest_match(args.root)
+        return chart_zarf_digest_match(args.root, args.strict, args.allow)
     ap.error("unknown command")
 
 
