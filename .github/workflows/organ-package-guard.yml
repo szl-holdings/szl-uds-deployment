@@ -32,6 +32,15 @@
 #
 # Converting an organ to chart-based is a deliberate upgrade: when it happens, give
 # that organ a chart-based guard (like a11oy's) and update this one.
+#
+# TAMPER-PROOFING: the checker is itself code — a commented-out, weakened, or
+# vacuously-passing check would leave CI green while guarding nothing. Mirroring
+# the repo's other guard self-tests (e.g. teardown-guard.yml), the `self-test` job
+# below feeds .github/scripts/organ_package_check.py deliberately-BROKEN fixtures
+# (flip-to-chart, image digest drift, dropped @sha256: pin, dropped from the
+# bundle) and asserts the checker FAILS on each, plus PASSES on a known-good
+# fixture. The real matrix guard `needs: self-test`, so a neutered check blocks the
+# build before it can wave a regression through.
 
 name: Organ Package Guard
 
@@ -44,7 +53,9 @@ on:
       - "packages/rosie/**"
       - "bundles/szl-uds-bundle/uds-bundle.yaml"
       - ".github/scripts/organ_package_check.py"
+      - ".github/scripts/test_organ_package_check.py"
       - ".github/workflows/organ-package-guard.yml"
+      - ".github/workflows/guard-scaffold.yml"
   push:
     branches: [main]
     paths:
@@ -54,15 +65,27 @@ on:
       - "packages/rosie/**"
       - "bundles/szl-uds-bundle/uds-bundle.yaml"
       - ".github/scripts/organ_package_check.py"
+      - ".github/scripts/test_organ_package_check.py"
       - ".github/workflows/organ-package-guard.yml"
+      - ".github/workflows/guard-scaffold.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  # Negative-fixture self-test: proves each check still FAILS on bad input (i.e.
+  # is not silently passing). The real guard below `needs:` this, so a regressed or
+  # neutered check blocks the build before it can wave a regression through.
+  self-test:
+    uses: ./.github/workflows/guard-scaffold.yml
+    with:
+      setup: python3 -m pip install --quiet pyyaml
+      test-command: python3 .github/scripts/test_organ_package_check.py
+
   organ-package-guard:
     name: ${{ matrix.organ }} packaging shape (manifests-based + bundle member + image parity)
+    needs: self-test
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
