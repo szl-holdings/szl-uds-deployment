@@ -107,6 +107,8 @@ tasks:
           echo "All required tools found."
 
       - description: "GATE: cosign verify the PUBLISHED bundle signature (keyless Fulcio/Rekor) — LOUD fail"
+        shell:
+          linux: bash
         cmd: |
           set -uo pipefail
           echo "== cosign verify ${BUNDLE_REF} =="
@@ -169,6 +171,8 @@ tasks:
             --no-progress
 
       - description: "PULL the published OCI bundle to a local tarball (the customer fetch path)"
+        shell:
+          linux: bash
         cmd: |
           set -euo pipefail
           mkdir -p "${BUILD_TMPDIR}"
@@ -191,6 +195,8 @@ tasks:
           echo "Pulled bundle tarball: ${PULLED}"
 
       - description: "Deploy ONLY the szl-${ORGAN} member FROM THE PULLED PUBLISHED BUNDLE"
+        shell:
+          linux: bash
         cmd: |
           set -euo pipefail
           PULLED=$(ls -t "${BUILD_TMPDIR}"/uds-bundle-szl-uds-bundle-*.tar.zst 2>/dev/null | head -1)
