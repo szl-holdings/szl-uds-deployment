@@ -1,7 +1,7 @@
 {
   "name": "szl-governance",
   "version": "0.5.0",
-  "description": "SZL Holdings governance Pepr capability — a11oy/killinchu receipt-gate admission control",
+  "description": "SZL Holdings governance Pepr capability \u2014 a11oy/killinchu receipt-gate admission control",
   "keywords": [
     "pepr",
     "kubernetes",
@@ -19,16 +19,16 @@
   },
   "main": "pepr.ts",
   "scripts": {
-    "k3d-setup": "npx --yes pepr@latest -- crd",
-    "build": "npx --yes pepr@latest build",
-    "format": "npx --yes pepr@latest format",
-    "format:check": "npx --yes pepr@latest format --validate-only",
-    "deploy": "npx --yes pepr@latest deploy"
+    "k3d-setup": "npx --yes pepr@1.2.1 -- crd",
+    "build": "npx --yes pepr@1.2.1 build",
+    "format": "npx --yes pepr@1.2.1 format",
+    "format:check": "npx --yes pepr@1.2.1 format --validate-only",
+    "deploy": "npx --yes pepr@1.2.1 deploy"
   },
   "pepr": {
     "uuid": "szl-governance-001",
     "name": "szl-governance",
-    "description": "SZL receipt gate — validates the a11oy YUYAY-gate receipt annotation on a11oy/killinchu workloads",
+    "description": "SZL receipt gate \u2014 validates the a11oy YUYAY-gate receipt annotation on a11oy/killinchu workloads",
     "onError": "reject",
     "webhookTimeout": 10,
     "customLabels": {
@@ -56,7 +56,7 @@
     "pepr": "1.2.1"
   },
   "devDependencies": {
-    "typescript": "6.0.3",
+    "typescript": "^5.8.3",
     "@types/node": "25.9.2"
   }
 }
