@@ -1,0 +1,154 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# Verify Receipt Signing — szl-uds-deployment
+#
+# Wires the receipt signing/custody checks that were previously run by hand on
+# the box into CI, so a future edit can't silently break the receipt chain or
+# leak a key into the chart. No cluster and no network are required.
+#
+# What runs on every PR/push that touches the signing surface:
+#   1. scripts/dsse_scheme_regression_test.py  — pins signer <-> verifier to
+#      Ed25519-over-canonical-DSSE-PAE; proves the legacy HMAC verifier and a
+#      dropped-PAE signature are rejected.
+#   2. scripts/verify_receipts_ed25519.py --self-test — generates a FRESH signed,
+#      hash-chained set of receipts with an ephemeral key and verifies them
+#      end-to-end (public key only), then proves tampering / wrong-key are caught.
+#   3. helm lint + helm template charts/szl-receipts  — the chart must render.
+#   4. No-key-material guard — fails if any private key / PEM is baked into the
+#      chart (the chart must never carry signing key material).
+#   5. Key-custody gates (ADAPTIVE) — when the chart exposes signing.backend
+#      (file/vault) and the SealedSecret/Vault custody values, this asserts:
+#        * signing.backend=file  renders,
+#        * signing.backend=vault WITHOUT signing.vault.address FAILS,
+#        * signing.sealedSecret with an EMPTY encryptedKey FAILS,
+#        * signing.backend=vault WITH an address renders.
+#      Until that custody work lands in the chart these steps log a clear SKIP
+#      (the chart currently signs from a pre-provisioned Secret only), so this
+#      workflow is green today and extends its coverage automatically.
+#
+# The build fails if any of the above regresses.
+
+name: Verify Receipt Signing
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "scripts/dsse_scheme_regression_test.py"
+      - "scripts/verify_receipts_ed25519.py"
+      - "scripts/verify_receipts.sh"
+      - "charts/szl-receipts/**"
+      - ".github/workflows/verify-receipt-signing.yml"
+  push:
+    branches: [main, master]
+    paths:
+      - "scripts/dsse_scheme_regression_test.py"
+      - "scripts/verify_receipts_ed25519.py"
+      - "scripts/verify_receipts.sh"
+      - "charts/szl-receipts/**"
+      - ".github/workflows/verify-receipt-signing.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-signing:
+    name: Verify receipt signing
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install cryptography (Ed25519)
+        run: pip install cryptography
+
+      - name: DSSE scheme regression (signer <-> verifier pinned to Ed25519/PAE)
+        run: python3 scripts/dsse_scheme_regression_test.py
+
+      - name: Independent Ed25519 verify against a freshly generated chain
+        run: python3 scripts/verify_receipts_ed25519.py --self-test --count 4
+
+      - name: Install Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: v3.14.0
+
+      - name: helm lint — charts/szl-receipts
+        run: helm lint charts/szl-receipts/ --strict
+
+      - name: helm template — default render must succeed
+        run: helm template r charts/szl-receipts/ > /dev/null && echo "helm template OK"
+
+      - name: Guard — chart must NOT bake any signing key material
+        # The chart signs from a Secret the operator provisions out-of-band; it
+        # must never carry a private key / PEM. A leaked key in the chart is the
+        # exact failure this gate prevents.
+        run: |
+          set -euo pipefail
+          if grep -RInE -- "-----BEGIN (OPENSSH |EC |RSA |)PRIVATE KEY-----" charts/szl-receipts/; then
+            echo "FAIL: a private key is embedded in charts/szl-receipts/"
+            exit 1
+          fi
+          # A rendered Secret carrying ed25519.pem key bytes would also be a leak.
+          if helm template r charts/szl-receipts/ \
+              | grep -iE "ed25519\.pem:\s+\S" ; then
+            echo "FAIL: rendered manifests embed Ed25519 key material"
+            exit 1
+          fi
+          echo "OK: no signing key material baked into the chart"
+
+      - name: Detect key-custody (signing.backend) support in the chart
+        id: custody
+        run: |
+          set -euo pipefail
+          if grep -RqsE "signing\.backend|\.Values\.signing\.vault|\.Values\.signing\.sealedSecret" charts/szl-receipts/; then
+            echo "supported=true" >> "$GITHUB_OUTPUT"
+            echo "Chart exposes key-custody backends — running custody gate checks."
+          else
+            echo "supported=false" >> "$GITHUB_OUTPUT"
+            echo "SKIP: chart has no signing.backend custody toggle yet"
+            echo "      (it signs from a pre-provisioned Secret only). The custody"
+            echo "      gate checks below will activate automatically once the"
+            echo "      Vault/SealedSecret backend lands in the chart."
+          fi
+
+      - name: Key-custody gates — file backend renders
+        if: steps.custody.outputs.supported == 'true'
+        run: |
+          set -euo pipefail
+          helm template r charts/szl-receipts/ --set signing.backend=file > /dev/null
+          echo "OK: signing.backend=file renders"
+
+      - name: Key-custody gate — vault backend WITHOUT address must FAIL
+        if: steps.custody.outputs.supported == 'true'
+        run: |
+          set -euo pipefail
+          if helm template r charts/szl-receipts/ \
+              --set signing.backend=vault \
+              --set signing.vault.address="" > /dev/null 2>&1; then
+            echo "FAIL: vault backend rendered without signing.vault.address (gate did not fire)"
+            exit 1
+          fi
+          echo "OK: vault backend without an address correctly failed the render"
+
+      - name: Key-custody gate — empty sealedSecret.encryptedKey must FAIL
+        if: steps.custody.outputs.supported == 'true'
+        run: |
+          set -euo pipefail
+          if helm template r charts/szl-receipts/ \
+              --set signing.sealedSecret.enabled=true \
+              --set signing.sealedSecret.encryptedKey="" > /dev/null 2>&1; then
+            echo "FAIL: empty signing.sealedSecret.encryptedKey rendered (gate did not fire)"
+            exit 1
+          fi
+          echo "OK: empty sealedSecret.encryptedKey correctly failed the render"
+
+      - name: Key-custody — vault backend WITH address renders
+        if: steps.custody.outputs.supported == 'true'
+        run: |
+          set -euo pipefail
+          helm template r charts/szl-receipts/ \
+            --set signing.backend=vault \
+            --set signing.vault.address="http://vault.vault.svc.cluster.local:8200" > /dev/null
+          echo "OK: signing.backend=vault with an address renders"
