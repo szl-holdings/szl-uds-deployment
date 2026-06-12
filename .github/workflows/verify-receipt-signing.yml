@@ -137,7 +137,7 @@ jobs:
         run: |
           set -euo pipefail
           if helm template r charts/szl-receipts/ \
-              --set signing.backend=sealedSecret \
+              --set signing.sealedSecret.enabled=true \
               --set signing.sealedSecret.encryptedKey="" > /dev/null 2>&1; then
             echo "FAIL: empty signing.sealedSecret.encryptedKey rendered (gate did not fire)"
             exit 1
