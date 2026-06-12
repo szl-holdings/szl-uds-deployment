@@ -102,7 +102,7 @@ assert_edge() {
 # Per-watcher fresh state dir so prev-state == OK and the edge fires.
 mkstate() { local d="$WORK/state/$1"; mkdir -p "$d/log"; printf '%s' "$d"; }
 
-echo "== driving 6 watcher OK->ALERT edges via a capture stub (no real channel) =="
+echo "== driving 7 watcher OK->ALERT edges via a capture stub (no real channel) =="
 
 # ---- 1. a11oy-uptime-check : unresolvable host -> DOWN -----------------------
 (
@@ -170,12 +170,42 @@ echo "== driving 6 watcher OK->ALERT edges via a capture stub (no real channel) 
   assert_edge "receipt-chain-watch" "$SBIN/receipt-chain-watch"
 ) || true
 
+# ---- 7. a11oy-contracting-tool-watch : image bakes an EMPTY module -----------
+(
+  s="$(mkstate contracting)"
+  cstubs="$WORK/cstubs"; mkdir -p "$cstubs"
+  cat > "$cstubs/docker" <<'DSTUB'
+#!/usr/bin/env bash
+# stub docker: the image EXISTS, but 'run --rm --entrypoint cat <img> <file>'
+# yields NOTHING -> md5 of empty == d41d8cd9... -> the dropped-module regression.
+case "${1:-}" in
+  image) exit 0 ;;   # docker image inspect <img>  -> present
+  run)   exit 0 ;;   # docker run --rm --entrypoint cat <img> <file> -> empty
+esac
+exit 0
+DSTUB
+  cat > "$cstubs/curl" <<'CSTUB'
+#!/usr/bin/env bash
+# stub curl: serve a VALID envelope (200) so the ALERT can ONLY come from the
+# image-integrity leg (the real catch), never the HTTP leg.
+printf '%s\n%s' '{"areas":[],"summary":{}}' '200'
+CSTUB
+  chmod +x "$cstubs/docker" "$cstubs/curl"
+  export PATH="$cstubs:$ORIG_PATH"
+  export CONTRACTING_NAMES="testorg"
+  export C_TESTORG_URL="https://test.invalid/contracting" C_TESTORG_IMAGE="testorg:local"
+  export GIT_FETCH=0
+  export STATE_DIR="$s" LOG_DIR="$s/log" LOG="$s/log/x.log" STATUS="$s/status.json" LAST_FILE="$s/last_status"
+  export CAPTURE_FILE="$WORK/cap.contracting" NOTIFY_CMD="$CAPTURE_STUB" ALERT_PREFIX="$PREFIX"
+  assert_edge "a11oy-contracting-tool-watch" "$SBIN/a11oy-contracting-tool-watch"
+) || true
+
 echo
 checks=$(wc -l < "$RESULTS" | tr -d ' ')
 fails=$(grep -cx fail "$RESULTS" || true)
-# 6 watchers x 2 assertions (fire edge + de-dup) = 12. A short count means a
+# 7 watchers x 2 assertions (fire edge + de-dup) = 14. A short count means a
 # subshell died before recording its result — treat that as a failure too.
-EXPECTED=12
+EXPECTED=14
 if [ "$checks" -ne "$EXPECTED" ]; then
   echo "  FAIL expected $EXPECTED assertions but only $checks ran (a watcher block aborted early)"
   fails=$((fails + (EXPECTED - checks)))

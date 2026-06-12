@@ -1,0 +1,109 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# a11oy-contracting-tool-watch-guard.yml — Guard the `a11oy-contracting-tool-watch`
+# box proof (the "a flagship tool module dropped out of an app rebuild" proof)
+# from silently regressing.
+#
+# a11oy-contracting-tool-watch (box-scripts/sbin/a11oy-contracting-tool-watch)
+# catches the exact failure that once shipped unnoticed: a cold rebuild baked an
+# EMPTY szl_contracting.py (md5 d41d8cd98f00b204e9800998ecf8427e) into a flagship
+# image while the served contracting endpoint kept returning 200. An endpoint
+# probe ALONE could not catch it — the real catch is comparing the md5 of the
+# module baked into <name>:local against the committed origin/main source and
+# refusing the empty-file md5 outright. Its value rests on a few fragile
+# invariants that produce NO visible symptom when broken:
+#   * it probes BOTH flagship endpoints (a11oy + killinchu) for 200 + a valid
+#     envelope (top-level `areas` list + `summary` object);
+#   * it extracts the module md5 BAKED INTO the image (docker run cat | md5sum),
+#     gated on docker being present + the image existing;
+#   * it REFUSES the empty-file md5 (EMPTY_MD5 = d41d8cd9...);
+#   * it COMPARES the baked-image md5 against the committed origin/main source;
+#   * it is EDGE-triggered (reads + writes a last_status state file, both edge
+#     guards, exactly two notify calls);
+#   * it NO-OPs (exit 0, no page) when docker is absent, an image is not built, or
+#     an endpoint is merely unreachable;
+#   * it stays WIRED into install.sh (copied + timer enabled) and documented in
+#     README.md, or a box rebuild silently ships without the proof.
+#
+# The check logic lives in scripts/a11oy-contracting-tool-watch-guard-checks.sh
+# (pure text/lint, no cluster, no docker). It was extracted from this workflow so
+# it can be UNIT TESTED: scripts/a11oy-contracting-tool-watch-guard-checks.test.sh
+# feeds each check a deliberately-BROKEN fixture and asserts the check FAILS, plus
+# asserts the pristine repo PASSES. That self-test runs as the `self-test` job
+# below, so a future edit that neuters a check (passing vacuously — green while
+# guarding nothing) is caught here.
+#
+# The asserted invariants:
+#   chk1  a11oy-contracting-tool-watch exists and parses clean (bash -n)
+#   chk2  probes both flagship endpoints for 200 + a valid areas[]/summary{} envelope
+#   chk3  extracts the md5 of the module baked into the image (docker run cat | md5sum)
+#   chk4  refuses the empty-file md5 (d41d8cd98f00b204e9800998ecf8427e)
+#   chk5  compares the baked-image md5 against committed origin/main source
+#   chk6  edge-triggered: reads+writes last_status, both edge guards, two notifies
+#   chk7  docker-absent / image-absent / endpoint-unreachable paths no-op
+#   chk8  wired into install.sh (script + units copied, timer enabled)
+#   chk9  documented in README.md (contracting-tool drop-out proof section)
+
+name: a11oy Contracting Tool Watch Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves each check
+  # still FAILS on bad input (i.e. is not silently passing). The guard job
+  # depends on it so a broken check blocks the build before it can wave a
+  # regression through.
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/a11oy-contracting-tool-watch-guard-checks.test.sh
+
+  guard:
+    name: Assert the contracting-tool drop-out proof is intact
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check 1 — a11oy-contracting-tool-watch exists and parses clean
+        run: bash scripts/a11oy-contracting-tool-watch-guard-checks.sh chk1 .
+
+      - name: Check 2 — probes both flagship endpoints for 200 + a valid envelope
+        run: bash scripts/a11oy-contracting-tool-watch-guard-checks.sh chk2 .
+
+      - name: Check 3 — extracts the md5 of the module baked into the image
+        run: bash scripts/a11oy-contracting-tool-watch-guard-checks.sh chk3 .
+
+      - name: Check 4 — refuses the empty-file md5 (d41d8cd9...)
+        run: bash scripts/a11oy-contracting-tool-watch-guard-checks.sh chk4 .
+
+      - name: Check 5 — compares the baked-image md5 against committed origin/main
+        run: bash scripts/a11oy-contracting-tool-watch-guard-checks.sh chk5 .
+
+      - name: Check 6 — edge-triggered (state file + exactly two notifies)
+        run: bash scripts/a11oy-contracting-tool-watch-guard-checks.sh chk6 .
+
+      - name: Check 7 — docker-absent / image-absent / endpoint-unreachable no-op
+        run: bash scripts/a11oy-contracting-tool-watch-guard-checks.sh chk7 .
+
+      - name: Check 8 — wired into install.sh (script + timer enabled)
+        run: bash scripts/a11oy-contracting-tool-watch-guard-checks.sh chk8 .
+
+      - name: Check 9 — documented in README.md
+        run: bash scripts/a11oy-contracting-tool-watch-guard-checks.sh chk9 .
+
+      - name: Contracting-tool drop-out proof is intact
+        run: echo "The a11oy-contracting-tool-watch contracting-tool drop-out proof is intact."

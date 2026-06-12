@@ -1,0 +1,15 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=Catch a flagship "tool" module (szl_contracting.py) silently dropping out of an app rebuild
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Optional private alert channel (ntfy/Telegram/webhook). The watcher runs in
+# log-only mode until the channel is restored; see install.sh / a11oy-uptime.
+EnvironmentFile=-/etc/a11oy-uptime.env
+Environment=NOTIFY_CMD=/usr/local/sbin/a11oy-uptime-notify
+Environment=NOTIFY_TITLE=a11oy contracting-tool drop
+ExecStart=/usr/local/sbin/a11oy-contracting-tool-watch

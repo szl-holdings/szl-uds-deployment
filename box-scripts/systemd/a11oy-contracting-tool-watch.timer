@@ -1,0 +1,13 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=Periodic check that flagship contracting tool modules stay baked into their app images
+
+[Timer]
+OnBootSec=7min
+OnUnitActiveSec=30min
+RandomizedDelaySec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

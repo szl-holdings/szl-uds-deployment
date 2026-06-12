@@ -975,3 +975,58 @@ The same anchor primitive is exposed directly by `scripts/verify_receipts.sh`:
 # Fail (exit 1) if the live chain has regressed below a durable checkpoint:
 SZL_ANCHOR_FILE=/path/to/checkpoint.json bash scripts/verify_receipts.sh
 ```
+
+
+---
+
+# `a11oy-contracting-tool-watch` — catch a flagship tool module dropping out of an app rebuild
+
+## The problem it solves
+
+A cold rebuild of a flagship once shipped an **empty** `szl_contracting.py`
+(md5 `d41d8cd98f00b204e9800998ecf8427e`) baked into the image with **no alert**.
+The served contracting endpoint still returned `200` (the route is resilient to
+an empty module), so an endpoint probe **alone** could not catch it. The real
+catch is comparing the md5 of the **contracting tool** module baked into the
+`<name>:local` image against the committed `origin/main` source, and refusing the
+empty-file md5 outright.
+
+## What it checks (per flagship — a11oy + killinchu)
+
+1. **HTTP envelope** — `https://a11oy.net/api/a11oy/v1/contracting` and
+   `https://killinchu.a11oy.net/api/killinchu/v1/contracting` return `200` with a
+   valid JSON envelope (top-level `areas` list + `summary` object).
+2. **Image integrity** — `md5(szl_contracting.py baked into <name>:local)` is
+   **not** the empty-file md5 **and** equals `md5(origin/main:szl_contracting.py)`.
+
+It is **edge-triggered** (pages once on OK→ALERT and once on RECOVERED via the
+`a11oy-uptime` relay) and **no-ops** (exit 0, no page) when it cannot judge
+trustworthily: docker absent, the `<name>:local` image not built (mid-rebuild),
+or an endpoint merely unreachable. An image that **exists** but bakes an
+empty/mismatched module always alerts.
+
+## Files
+
+- `box-scripts/sbin/a11oy-contracting-tool-watch` — the watcher
+- `box-scripts/systemd/a11oy-contracting-tool-watch.{service,timer}` — runs every 30 min
+- `scripts/a11oy-contracting-tool-watch-guard-checks.sh` (+ `.test.sh`) — CI guard + self-test
+- `.github/workflows/a11oy-contracting-tool-watch-guard.yml` — guards the proof from regressing
+
+## Reinstall
+
+Re-run `sudo ./install.sh` (installs the script + units and enables the timer),
+or manually:
+
+```sh
+install -m 0755 box-scripts/sbin/a11oy-contracting-tool-watch /usr/local/sbin/
+install -m 0644 box-scripts/systemd/a11oy-contracting-tool-watch.service /etc/systemd/system/
+install -m 0644 box-scripts/systemd/a11oy-contracting-tool-watch.timer   /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now a11oy-contracting-tool-watch.timer
+```
+
+## Verify (safe, reversible — isolated state + captured notifier)
+
+The OK→ALERT edge + de-dup is exercised offline (stub docker/curl) by
+`box-scripts/tests/watcher-edges.sh`. The guard's checks are self-tested by
+`scripts/a11oy-contracting-tool-watch-guard-checks.test.sh`.

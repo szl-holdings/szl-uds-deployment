@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+#
+# a11oy-contracting-tool-watch -- catch when a live "tool" module silently drops
+# out of a flagship's app rebuild on Stephen's box (167.233.50.75).
+#
+# WHY: a cold rebuild of killinchu once shipped an EMPTY szl_contracting.py (md5
+# d41d8cd98f00b204e9800998ecf8427e) baked into the image with NO alert. The
+# served contracting endpoint still returned 200 (the route is resilient to an
+# empty module), so an endpoint probe ALONE could not catch it. The real catch is
+# comparing the md5 of the module baked into the <name>:local image against the
+# committed origin/main source, and refusing the empty-file md5 outright.
+#
+# WHAT IT CHECKS, per flagship (a11oy + killinchu):
+#   1. HTTP: the public contracting endpoint returns 200 with a valid JSON
+#      envelope (top-level `areas` array + `summary` object).
+#   2. IMAGE INTEGRITY: md5(szl_contracting.py baked into <name>:local) is NOT
+#      the empty-file md5 AND equals md5(origin/main:szl_contracting.py).
+#
+# ALERTING: edge-triggered + de-duped via a last_status state file (pages exactly
+# once on OK->ALERT and once on RECOVERED) through the SAME notifier the other
+# box watchers use (NOTIFY_CMD -> a11oy-uptime-notify -> ntfy/Telegram/webhook
+# via the a11oy-uptime relay). Recurring alerts therefore reach the owner only,
+# by construction.
+#
+# NO-OP (exit 0, no page) when it cannot make a trustworthy judgement, so a box
+# without docker / a not-yet-built image / an endpoint that is merely unreachable
+# never turns into a paging storm:
+#   * the image judgement is gated on `command -v docker`;
+#   * a flagship's <name>:local image is absent (mid-rebuild / never built) ->
+#     that target's integrity leg is SKIPPED, not alerted;
+#   * the endpoint connection FAILS outright (transient network) -> the HTTP leg
+#     for that target is skipped (a reachable-but-bad response IS alerted).
+# An image that EXISTS but bakes an empty/mismatched module is the real
+# regression and ALWAYS alerts.
+#
+# Idempotent and safe on a short timer. Tunables are overridable via env (used by
+# the box-scripts self-test, which drives this with stub docker/curl/git).
+set -uo pipefail
+
+# ---- config (overridable via env for testing) -------------------------------
+NAMES="${CONTRACTING_NAMES:-a11oy killinchu}"
+IMG_FILE="${C_IMG_FILE:-/app/szl_contracting.py}"
+SRC_FILE="${C_SRC_FILE:-szl_contracting.py}"
+EMPTY_MD5="d41d8cd98f00b204e9800998ecf8427e"   # md5 of an empty/missing file
+HTTP_TIMEOUT="${HTTP_TIMEOUT:-20}"
+GIT_FETCH="${GIT_FETCH:-1}"   # best-effort refresh of origin/main before reading it
+
+STATE_DIR="${STATE_DIR:-/var/lib/a11oy-contracting-tool-watch}"
+LOG_DIR="${LOG_DIR:-/var/log/a11oy-contracting-tool-watch}"
+LOG="${LOG:-$LOG_DIR/watch.log}"
+STATUS="${STATUS:-$STATE_DIR/status.json}"
+LAST_FILE="${LAST_FILE:-$STATE_DIR/last_status}"
+NOTIFY_CMD="${NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
+NOTIFY_TITLE="${NOTIFY_TITLE:-a11oy contracting-tool drop}"
+ALERT_PREFIX="${ALERT_PREFIX:-}"
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null || true
+
+log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" >>"$LOG" 2>/dev/null || true; }
+
+# Indirect env lookup with a default: getenv_or VARNAME DEFAULT.
+getenv_or() { local v="${!1:-}"; if [ -n "$v" ]; then printf '%s' "$v"; else printf '%s' "$2"; fi; }
+
+# Minimal JSON string escaper for the status file.
+jstr() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+write_status() { # $1=state $2=reasons
+  printf '{"watch":"a11oy-contracting-tool-watch","checked_at":"%s","state":"%s","reasons":"%s"}\n' \
+    "$(date -u +%FT%TZ)" "$1" "$(jstr "$2")" >"$STATUS" 2>/dev/null || true
+}
+
+notify() {
+  local msg="$1"
+  export NOTIFY_TITLE
+  printf '%s%s\n' "$ALERT_PREFIX" "$msg" | "$NOTIFY_CMD" >/dev/null 2>&1 || true
+}
+
+reasons=""
+add_reason() { if [ -z "$reasons" ]; then reasons="$1"; else reasons="$reasons; $1"; fi; }
+
+# ---- per-flagship checks ----------------------------------------------------
+for n in $NAMES; do
+  key="$(printf '%s' "$n" | tr 'a-z-' 'A-Z_')"
+  url="$(getenv_or "C_${key}_URL" "")"
+  img="$(getenv_or "C_${key}_IMAGE" "")"
+  repo="$(getenv_or "C_${key}_REPO" "")"
+  case "$n" in
+    a11oy)
+      [ -n "$url" ]  || url="https://a11oy.net/api/a11oy/v1/contracting"
+      [ -n "$img" ]  || img="a11oy:local"
+      [ -n "$repo" ] || repo="/opt/szl/a11oy"
+      ;;
+    killinchu)
+      [ -n "$url" ]  || url="https://killinchu.a11oy.net/api/killinchu/v1/contracting"
+      [ -n "$img" ]  || img="killinchu:local"
+      [ -n "$repo" ] || repo="/opt/szl/killinchu"
+      ;;
+  esac
+
+  # --- 1. endpoint envelope (200 + areas[] + summary{}) ---
+  if [ -n "$url" ]; then
+    resp="$(curl -sS -m "$HTTP_TIMEOUT" -w $'\n%{http_code}' "$url" 2>/dev/null)"; crc=$?
+    if [ "$crc" -ne 0 ]; then
+      log "$n endpoint unreachable (curl rc=$crc) -- skipping HTTP leg"
+    else
+      code="${resp##*$'\n'}"; body="${resp%$'\n'*}"
+      if [ "$code" != "200" ]; then
+        add_reason "$n endpoint HTTP $code (expected 200) at $url"
+      elif ! printf '%s' "$body" | python3 -c 'import sys,json
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(3)
+sys.exit(0 if isinstance(d.get("areas"),list) and isinstance(d.get("summary"),dict) else 4)' 2>/dev/null; then
+        add_reason "$n endpoint 200 but invalid envelope (missing top-level \"areas\" list / \"summary\" object)"
+      fi
+    fi
+  fi
+
+  # --- 2. image module integrity (non-empty + md5 matches origin/main) ---
+  if command -v docker >/dev/null 2>&1; then
+    if ! docker image inspect "$img" >/dev/null 2>&1; then
+      log "$n image $img absent -- skipping integrity leg"
+    else
+      img_md5="$(docker run --rm --entrypoint cat "$img" "$IMG_FILE" 2>/dev/null | md5sum | awk '{print $1}')"
+      if [ "$img_md5" = "$EMPTY_MD5" ]; then
+        add_reason "$n image $img bakes an EMPTY/missing $IMG_FILE (md5 $EMPTY_MD5) -- the tool dropped out of the rebuild"
+      else
+        src_md5=""
+        if [ -n "$repo" ] && git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+          [ "$GIT_FETCH" = "1" ] && timeout 30 git -C "$repo" fetch -q origin main >/dev/null 2>&1 || true
+          src_md5="$(git -C "$repo" show "origin/main:$SRC_FILE" 2>/dev/null | md5sum | awk '{print $1}')"
+        fi
+        if [ -n "$src_md5" ] && [ "$src_md5" != "$EMPTY_MD5" ] && [ "$img_md5" != "$src_md5" ]; then
+          add_reason "$n image module md5 $img_md5 != committed origin/main $src_md5 (rebuild shipped a stale/divergent $SRC_FILE)"
+        fi
+      fi
+    fi
+  fi
+done
+
+# ---- edge-triggered, de-duped alerting --------------------------------------
+prev="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
+if [ -n "$reasons" ]; then
+  state="ALERT"
+  write_status "ALERT" "$reasons"
+  log "ALERT: $reasons"
+  if [ "$prev" != "ALERT" ]; then
+    notify "a11oy/killinchu contracting tool dropped out of an app rebuild: $reasons"
+  fi
+else
+  state="OK"
+  write_status "OK" "flagship contracting modules present, non-empty and md5-matched to origin/main; endpoints serve a valid envelope"
+  log "OK"
+  if [ "$prev" = "ALERT" ]; then
+    notify "RECOVERED: a11oy/killinchu contracting modules are intact again (image md5 matches origin/main, endpoints healthy)"
+  fi
+fi
+printf '%s' "$state" >"$LAST_FILE" 2>/dev/null || true
+exit 0
