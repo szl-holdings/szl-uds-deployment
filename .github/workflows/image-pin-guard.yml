@@ -226,9 +226,148 @@ jobs:
       - name: End-to-end pin-catching proof passed
         run: echo "Offline fixture classification gated this run; the live crane->classify drift check confirmed it (or was skipped on a proven Docker Hub outage)."
 
+  # ── 0c. End-to-end proof on a PRIVATE GHCR image (authenticated) ───────────
+  # pin-pipeline-e2e above only exercises the docker.io ANONYMOUS code path. The
+  # pins that matter in production — receipts-server + the 5 organ images — live
+  # on authenticated GHCR (ghcr.io/szl-holdings/...). The GHCR auth + header
+  # handling in `crane auth login` / `crane manifest` could regress (token/header
+  # bug) while the docker.io proof stays green, leaving the guard silently
+  # always-pass for the images it most needs to protect.
+  #
+  # So this job runs the SAME `crane manifest -> classify-manifest` pipeline
+  # against a REAL org-private GHCR image, authenticated with the workflow's repo
+  # GITHUB_TOKEN, and asserts the verdict:
+  #   * receipts-server's multi-arch OCI INDEX digest (the image is published via
+  #     buildx with SBOM/provenance attestations, so its tag digest is a genuine
+  #     manifest list — the exact "bad pin" zarf cannot package) MUST be rejected,
+  #   * its linux/amd64 CHILD digest (a correct single-platform pin) MUST be
+  #     accepted.
+  # The receipts-server image is built by receipts-server-image.yml in THIS repo,
+  # so the repo GITHUB_TOKEN has packages:read for it.
+  #
+  # Robustness: if the image is ABSENT (old tag pruned/retagged) or GHCR is
+  # unreachable, the job emits a ::warning:: and skips — a clear skip, never a
+  # false pass. But a DENIED response after authenticating IS the auth/header
+  # regression this job exists to catch, so that fails loudly.
+  ghcr-pin-pipeline-e2e:
+    name: Guard rejects a real multi-arch index pin on PRIVATE GHCR (authenticated)
+    runs-on: ubuntu-24.04
+    env:
+      CRANE_VERSION: v0.20.2
+      GHCR_REPO: ghcr.io/szl-holdings/szl-receipts-server
+      # The receipts-server:uds-v0.3.1 tag is a genuine multi-arch OCI INDEX
+      # (mediaType application/vnd.oci.image.index.v1+json) — the unbuildable
+      # "bad pin" — published to org-private GHCR by receipts-server-image.yml.
+      GHCR_INDEX_DIGEST: "sha256:3a5aedc1a2cbb99b12b357026e175e2e85e09fb764040c853bd16a084ef74fda"
+      # The linux/amd64 CHILD of that same index — a single-platform manifest,
+      # i.e. a CORRECT pin that the guard must accept.
+      GHCR_CHILD_DIGEST: "sha256:a9b124e30745ca088f860eee5c80463fe6895127c9daf5e1b0400434fb120b86"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Install crane + PyYAML
+        run: |
+          set -euo pipefail
+          curl -sSL \
+            "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin crane
+          crane version
+          python3 -m pip install --quiet pyyaml
+
+      # Same auth path the real image-pin-guard job uses: the repo-scoped
+      # GITHUB_TOKEN has packages:read on packages built in this repo
+      # (receipts-server-image.yml).
+      - name: Authenticate crane to GHCR
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Authenticated crane->classify against a real private GHCR image
+        run: |
+          set -uo pipefail
+
+          # Pull a digest with retry+backoff, classifying WHY a pull failed so we
+          # can tell apart: ABSENT (image pruned -> skip), DENIED (auth/header
+          # regression -> the failure we want to catch), and OUTAGE (transient
+          # network/registry -> skip). Prints exactly one status word on stdout.
+          pull() {
+            ref="$1"; out="$2"; attempt=1
+            while [ "$attempt" -le 5 ]; do
+              if crane manifest "$ref" > "$out" 2>/tmp/crane.err; then
+                echo OK; return 0
+              fi
+              if grep -qiE 'MANIFEST_UNKNOWN|NAME_UNKNOWN|not found|status code 404' /tmp/crane.err; then
+                echo ABSENT; return 0
+              fi
+              if grep -qiE 'UNAUTHORIZED|DENIED|forbidden|status code 401|status code 403' /tmp/crane.err; then
+                # Could be a brief blip; retry a couple times before declaring a
+                # genuine auth regression.
+                if [ "$attempt" -ge 3 ]; then echo DENIED; return 0; fi
+              fi
+              echo "::notice::crane manifest $ref failed (attempt $attempt); retrying..." >&2
+              cat /tmp/crane.err >&2 || true
+              sleep "$((attempt * 5))"
+              attempt="$((attempt + 1))"
+            done
+            echo OUTAGE; return 0
+          }
+
+          idx_ref="${GHCR_REPO}@${GHCR_INDEX_DIGEST}"
+          child_ref="${GHCR_REPO}@${GHCR_CHILD_DIGEST}"
+          status_idx="$(pull "$idx_ref" /tmp/ghcr-index.json)"
+          status_child="$(pull "$child_ref" /tmp/ghcr-child.json)"
+          echo "pull status: index=$status_idx child=$status_child"
+
+          # Auth/header regression: a private GHCR image must NOT come back DENIED
+          # once we authenticated with the repo GITHUB_TOKEN. That is exactly the
+          # token/header-handling regression this job exists to catch.
+          if [ "$status_idx" = "DENIED" ] || [ "$status_child" = "DENIED" ]; then
+            echo "::error::crane was DENIED reading the private GHCR image ${GHCR_REPO} after authenticating with the repo GITHUB_TOKEN. The GHCR auth/header path has regressed — the guard would silently stop protecting the org's private images."
+            exit 1
+          fi
+
+          # Robust to the image being absent (old tag pruned/retagged): skip with
+          # a clear warning, never a false pass.
+          if [ "$status_idx" = "ABSENT" ] && [ "$status_child" = "ABSENT" ]; then
+            echo "::warning::${GHCR_REPO} index+child digests are absent on GHCR (image pruned/retagged?). Skipping the authenticated GHCR negative-case proof — this is a SKIP, not a pass. Re-point GHCR_INDEX_DIGEST/GHCR_CHILD_DIGEST at a current multi-arch org image."
+            exit 0
+          fi
+          if [ "$status_idx" = "OUTAGE" ] || [ "$status_child" = "OUTAGE" ]; then
+            echo "::warning::GHCR unreachable after retries — skipping the authenticated GHCR negative-case proof (proven outage, not a code failure). The docker.io offline fixture proof already gated this workflow."
+            exit 0
+          fi
+
+          fail=0
+          # The multi-arch INDEX pin MUST be rejected.
+          if [ "$status_idx" = "OK" ]; then
+            if python3 scripts/image-pin-checks.py classify-manifest /tmp/ghcr-index.json; then
+              echo "::error::authenticated crane->classify FAILED to reject the multi-arch INDEX pin ${idx_ref} — the guard regressed to always-pass for private GHCR images."
+              fail=1
+            else
+              echo "OK: private GHCR index pin correctly REJECTED."
+            fi
+          else
+            echo "::warning::GHCR index digest not fetched (status=$status_idx) — skipping its assertion."
+          fi
+          # Its single-platform CHILD pin MUST be accepted.
+          if [ "$status_child" = "OK" ]; then
+            if ! python3 scripts/image-pin-checks.py classify-manifest /tmp/ghcr-child.json; then
+              echo "::error::authenticated crane->classify wrongly REJECTED the single-platform CHILD pin ${child_ref} — false positive on a correct private-registry pin."
+              fail=1
+            else
+              echo "OK: private GHCR child pin correctly ACCEPTED."
+            fi
+          else
+            echo "::warning::GHCR child digest not fetched (status=$status_child) — skipping its assertion."
+          fi
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "Authenticated GHCR crane->classify path confirmed: rejects the private index pin, accepts its amd64 child."
+
   image-pin-guard:
     name: Image pins are single-platform + bundle task wired
-    needs: [self-test, pin-pipeline-e2e]
+    needs: [self-test, pin-pipeline-e2e, ghcr-pin-pipeline-e2e]
     runs-on: ubuntu-24.04
     env:
       CRANE_VERSION: v0.20.2
