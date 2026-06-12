@@ -826,6 +826,106 @@ case and the healthy-silent case alongside the flood cases.
 
 ---
 
+# box-scripts — receipt-THROTTLE alarm (uds-szl-demo)
+
+`receipt-flood-watch` (part 9 above) pages when the receipt **chain** is already
+growing too fast — i.e. *after* a runaway producer's receipts have made it through
+the ingest cap and been signed/appended. **`receipt-throttle-watch`** is its
+**early-warning twin**: it watches the protective HTTP-429 *shed* path one layer
+earlier — at the ingest door, before the chain it would otherwise write — so a
+runaway source is **named the moment the rate-limiter starts shedding it**, not
+after the chain has ballooned (the failure mode behind the ~205,919-entry OOM
+incident).
+
+The receipts-server carries an ingest rate-limit (`SZL_INGEST_RATE_LIMIT` ~1/s,
+burst ~20) and exports `szl_receipts_throttled_total` — a counter of POST
+`/receipt` requests shed with HTTP 429. The chart's `SZLReceiptsIngestThrottling`
+PrometheusRule already watches that series, but the 2-vCPU box runs **no
+Prometheus** (it OOMs), so nothing on the box itself pages when the shed path
+heats up. This guard closes that gap exactly the way `receipt-flood-watch` does
+for the flood prometheusrule.
+
+Every 5 min it reads `szl_receipts_throttled_total` from the receipts-server
+`/metrics` endpoint (exec-ing `python3` inside the pod, since the slim image has
+no `curl`), persists the sample (count + epoch) per cluster, and on the next run
+computes the shed rate in **requests/min** over the inter-sample interval. If the
+rate is at/above `THROTTLE_PER_MIN` (default **10/min**) it raises an **ALERT**
+that **names the offending subject** — read from the `namespace/kind/name` of the
+most-recently-accepted receipts (the same runaway source also gets a fraction
+*through* the bucket), falling back to pepr's own `Throttling <subject>` log
+lines, then to a generic "inspect the producers" hint.
+
+- A counter **reset** (value goes *down*, e.g. pod restart) is treated as "no
+  throttling": the sample is re-baselined and the rate reported as 0 — never a
+  negative/false alarm.
+- The **first** run (no prior sample) just records a baseline and reports OK; a
+  rate needs two samples. A too-short interval (`MIN_INTERVAL_SECS`, default 60s)
+  is skipped rather than divided into a bogus huge rate.
+- Cluster stopped/unreachable, receipts module not deployed, or no Ready
+  receipts-server pod = a true **no-op** (exit 0, no alarm). A down sink is
+  `receipt-chain-watch`'s job to page — this guard does not double-page.
+
+It is **edge-triggered** + de-duped via
+`/var/lib/receipt-throttle-watch/<cluster>.last_status`: one push on the
+healthy->throttling edge, one on RECOVERED, never every cycle. Every run still
+appends `/var/log/receipt-throttle-watch/<cluster>.log` and writes
+`/var/lib/receipt-throttle-watch/<cluster>.status.json`, so a broken notifier can
+never hide sustained shedding. It reuses the shared push channel
+(`/usr/local/sbin/a11oy-uptime-notify` -> ntfy/Telegram/webhook in
+`/etc/a11oy-uptime.env`). Mirrors the `receipt-flood-watch` guard pattern,
+including the multi-cluster split below.
+
+## Files
+
+```
+sbin/
+  receipt-throttle-watch               # sample szl_receipts_throttled_total, alert on the edge when shed >= THROTTLE_PER_MIN/min, name the subject
+systemd/
+  receipt-throttle-watch.service       # oneshot: runs receipt-throttle-watch for the primary cluster (uds-szl-demo)
+  receipt-throttle-watch.timer         # 4 min after boot, then every 5 min
+  receipt-throttle-watch@.service      # oneshot, templated: CLUSTER=%i, EnvironmentFile=-/etc/receipt-throttle-watch/%i.env
+  receipt-throttle-watch@.timer        # 4 min after boot, then every 5 min
+etc/receipt-throttle-watch/
+  uds-tenant.env                       # sample per-cluster tunables (commented defaults)
+```
+
+## Multi-cluster
+
+The primary cluster (`uds-szl-demo`) is covered by `receipt-throttle-watch.timer`.
+Any additional cluster is covered by an instanced
+`receipt-throttle-watch@<cluster>.timer` that runs the SAME guard with `CLUSTER`
+set to the systemd instance name. Per-cluster tunables (`KUBECONFIG_FILE`, `RNS`,
+`RX_SELECTOR`, `RX_CONTAINER`, `METRICS_PORT`, `THROTTLE_PER_MIN`,
+`MIN_INTERVAL_SECS`) live in `/etc/receipt-throttle-watch/<cluster>.env`. The set
+of extra clusters mirrors `receipt-chain-watch` / `receipt-flood-watch`: override
+with `RECEIPT_WATCH_EXTRA_CLUSTERS="a b c" ./install.sh` (default `uds-tenant`).
+
+## Reinstall
+
+The top-level `./install.sh` installs + enables this guard (and its instanced
+per-cluster timers) along with the others. To (re)install just this guard manually:
+
+```bash
+sudo install -m 0755 sbin/receipt-throttle-watch /usr/local/sbin/receipt-throttle-watch
+sudo install -m 0644 systemd/receipt-throttle-watch.service  /etc/systemd/system/
+sudo install -m 0644 systemd/receipt-throttle-watch.timer    /etc/systemd/system/
+sudo install -m 0644 systemd/receipt-throttle-watch@.service /etc/systemd/system/
+sudo install -m 0644 systemd/receipt-throttle-watch@.timer   /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now receipt-throttle-watch.timer
+```
+
+## Verify (safe, reversible — isolated state + captured notifier)
+
+The OK->ALERT->RECOVERED edge + de-dup + subject naming is exercised offline (stub
+`kubectl`, no cluster) by `scripts/receipt-throttle-watch-selftest.sh` (29 checks),
+wired into CI as `.github/workflows/receipt-throttle-watch-selftest.yml`. On a live
+box, drive a real burst of POST `/receipt` requests so the rate-limiter sheds (HTTP
+429), point the watcher at an ISOLATED `STATE_DIR` + a capture `NOTIFY_CMD` so the
+team channel isn't paged, and confirm exactly one ALERT (naming the subject) on the
+edge and one RECOVERED once the burst stops.
+
+---
+
 # box-scripts (part 9) — a11oy keeps the SAME signing key across restarts (uds-szl-demo)
 
 `szl-signing-health-check` (installed alongside these) pages when the box's Vault

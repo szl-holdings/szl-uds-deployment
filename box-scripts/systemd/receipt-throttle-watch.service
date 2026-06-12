@@ -1,0 +1,9 @@
+[Unit]
+Description=Alarm when szl-receipts-server is SHEDDING POST /receipt traffic on uds-szl-demo (ingest rate limiter throttling a runaway source)
+Documentation=file:///usr/local/sbin/receipt-throttle-watch
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/receipt-throttle-watch

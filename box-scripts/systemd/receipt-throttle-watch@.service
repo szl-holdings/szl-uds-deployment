@@ -1,0 +1,13 @@
+[Unit]
+Description=Alarm when szl-receipts-server is SHEDDING POST /receipt traffic on cluster %i (ingest rate limiter throttling a runaway source)
+Documentation=file:///usr/local/sbin/receipt-throttle-watch
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Per-cluster tunables (KUBECONFIG_FILE, RNS, RX_SELECTOR, METRICS_PORT,
+# THROTTLE_PER_MIN, ...) live in /etc/receipt-throttle-watch/%i.env (optional).
+EnvironmentFile=-/etc/receipt-throttle-watch/%i.env
+Environment=CLUSTER=%i
+ExecStart=/usr/local/sbin/receipt-throttle-watch

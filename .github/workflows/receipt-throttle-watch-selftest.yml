@@ -1,0 +1,49 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# receipt-throttle-watch-selftest.yml — behavioural self-test for the
+# `receipt-throttle-watch` box alarm (box-scripts/sbin/receipt-throttle-watch),
+# the early-warning twin of receipt-flood-watch. It pages when the chain
+# authority (services/szl-receipts-server) is SHEDDING POST /receipt traffic —
+# i.e. its ingest token-bucket is actively throttling a runaway emitter and
+# returning HTTP 429, bumping szl_receipts_throttled_total. A capped flood does
+# NOT grow the chain fast (that is the point of the cap), so it slips under
+# receipt-flood-watch; this guard watches the throttle counter directly.
+#
+# Like receipt-flood-watch-selftest, this alarm's whole value is its RATE/EDGE
+# MATH: the shed/min computation off the counter, the counter-reset=>rate-0 guard
+# (pod restart), the baseline-only first run, the MIN_INTERVAL skip, the
+# cluster-absent no-op, the EXACTLY-ONE-notify-per-edge de-dup, and that the page
+# NAMES the offending subject. Those are only otherwise exercised by a live
+# drill — a drill is not CI. scripts/receipt-throttle-watch-selftest.sh DRIVES
+# the real script with a stubbed kubectl/k3d/metrics source (no cluster, no
+# network) and asserts:
+#   * ALERT when shed/min >= THROTTLE_PER_MIN, and the page names the subject
+#   * OK when below the threshold
+#   * rate 0 on a counter reset (count drops) — never a negative/false alarm
+#   * baseline-only on the first run (a rate needs two samples)
+#   * a true no-op (exit 0, UNKNOWN, no page) when the cluster is absent
+#   * exactly one page on each edge (OK->ALERT, RECOVERED), silent in between
+# so a future refactor that silently neuters the throttle-rate computation is a
+# red CI run instead of a hole that only shows up during the next real flood.
+
+name: Receipt Throttle Watch Self-test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    name: Drive receipt-throttle-watch with stubbed kubectl/metrics
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run behavioural self-test (throttle-rate alert actually fires)
+        run: bash scripts/receipt-throttle-watch-selftest.sh

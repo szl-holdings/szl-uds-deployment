@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+#
+# receipt-throttle-watch — alarm when the receipts-server is SHEDDING POST
+# /receipt traffic, i.e. its ingest rate limiter is actively throttling a
+# runaway emitter (box 167.233.50.75). This is the EARLY-WARNING twin of
+# receipt-flood-watch.
+#
+# WHY (the gap this closes): the chain authority `services/szl-receipts-server`
+# carries a token-bucket ingest cap (SZL_INGEST_RATE_LIMIT ~1/s, burst ~60) and
+# pepr carries a per-subject throttle. Together they CAP a runaway receipt
+# source so it can never balloon the chain or OOM the 2-vCPU box (the #626 OOM
+# was a ~2/sec keycloak reconcile mint-loop). But the caps shed the excess
+# SILENTLY — they bump `szl_receipts_throttled_total` and return HTTP 429, and
+# nothing pages. A future runaway source could therefore spin for hours, get
+# rate-limited the whole time, and nobody would notice until something else
+# broke. receipt-flood-watch only fires if the chain GROWS too fast — but a
+# capped flood does NOT grow fast (that is the whole point of the cap), so it
+# slips under that watcher. This guard watches the THROTTLE counter directly:
+# if `szl_receipts_throttled_total` is climbing sustainedly, a source is being
+# capped right now — page so an operator can find and stop it.
+#
+# WHAT IT DOES: samples the canonical `szl_receipts_throttled_total` counter
+# from the receipts-server `/metrics` endpoint (the same series Prometheus
+# scrapes), persists the sample (count + epoch) per cluster, and on the next run
+# computes the throttle rate in shed-requests/min over the inter-sample
+# interval. If the rate is at/above THROTTLE_PER_MIN it raises an ALERT and
+# names the offending subject/source so the operator can find the workload fast.
+#   - The /metrics value is read by exec-ing python3 INSIDE the receipts-server
+#     pod (the slim image has no curl) to fetch http://127.0.0.1:$METRICS_PORT.
+#   - A counter reset (value goes DOWN, e.g. the pod restarted) is treated as
+#     "no throttling": the sample is re-baselined and the rate is reported as 0
+#     (never a negative/false alarm).
+#   - The first run (no prior sample) just records a baseline and reports OK —
+#     a rate needs two samples.
+#
+# It is EDGE-triggered and de-duped via a state file: it fires the notifier only
+# on the healthy->throttling edge and once on RECOVERED, never every cycle
+# (honours the "recurring alerts = one ping" policy). Every run still appends to
+# the log + status file, so a broken notifier can never hide sustained shedding.
+#
+# Cluster intentionally stopped (k3d down) or receipts module not deployed = a
+# true no-op (exit 0, no alert) — we only alarm when the chain SHOULD be working.
+#
+# MULTI-CLUSTER: every cluster-specific input is a parameter (env override), not
+# a baked-in constant, so one script body watches any number of clusters
+# (CLUSTER / KUBECONFIG_FILE / RNS / RX_SELECTOR / RX_CONTAINER / METRICS_PORT).
+# State/log/status/sample files are namespaced by $CLUSTER so multiple instances
+# (one per cluster, driven by receipt-throttle-watch@<cluster>.timer) never
+# clobber each other's de-dup state. See receipt-throttle-watch@.service.
+#
+# NOTIFY: pipes the alert text on STDIN to NOTIFY_CMD (default the box's working
+# push channel /usr/local/sbin/a11oy-uptime-notify -> ntfy/Telegram/webhook,
+# channel in /etc/a11oy-uptime.env). This box has NO Gmail/nodemailer transport
+# and outbound TCP 465 is firewalled, so SMS/email is not used here (see memory
+# sms-alerts-on-hetzner.md / a11oy-uptime-channel-restore.md).
+#
+# Driven by receipt-throttle-watch.timer (uds-szl-demo) and
+# receipt-throttle-watch@<cluster>.timer (additional clusters), every 5 min.
+# Mirrors the receipt-flood-watch / receipt-chain-watch pattern.
+set -uo pipefail
+
+CLUSTER="${CLUSTER:-uds-szl-demo}"
+# Explicit kubeconfig override. When empty, resolve from the local k3d cluster
+# named $CLUSTER; when set, use it verbatim (for a non-local-k3d cluster).
+KUBECONFIG_FILE="${KUBECONFIG_FILE:-}"
+RNS="${RNS:-szl-receipts}"
+RX_SELECTOR="${RX_SELECTOR:-app.kubernetes.io/name=szl-receipts-server}"
+RX_CONTAINER="${RX_CONTAINER:-receipts-server}"
+# Port the server serves /metrics on inside the pod (server.py SZL_PORT default).
+METRICS_PORT="${METRICS_PORT:-8080}"
+# Path of the on-disk receipt store inside the pod (server.py SZL_RECEIPT_STORE
+# default). Used only to NAME the offending subject on an ALERT (best-effort).
+RECEIPT_STORE="${RECEIPT_STORE:-/data/receipts}"
+# pepr controller coordinates, used as a SECONDARY subject hint (best-effort).
+PNS="${PNS:-pepr-system}"
+PDEPLOY="${PDEPLOY:-pepr-szl}"
+SINCE="${SINCE:-10m}"
+
+# Throttle threshold: sustained shedding at/above this many requests/min is an
+# ALERT. Any sustained throttling means a source is being capped right now: the
+# server's ingest cap is ~1/s, so e.g. a 2/s runaway sheds ~60/min. Even a mild
+# ~1.2/s runaway sheds ~10/min. Default 10/min is comfortably above the brief,
+# self-clearing shedding a single large legitimate deploy burst can cause (a few
+# requests once the burst bucket empties) and well below a true runaway. Tune
+# via THROTTLE_PER_MIN.
+THROTTLE_PER_MIN="${THROTTLE_PER_MIN:-10}"
+# Ignore tiny inter-sample intervals (a manual back-to-back run divides a small
+# delta by a near-zero time and yields a huge bogus rate). Require at least this
+# many seconds since the last sample before computing a rate.
+MIN_INTERVAL_SECS="${MIN_INTERVAL_SECS:-60}"
+
+KREQ_TIMEOUT="${KREQ_TIMEOUT:-20s}"
+EXEC_TIMEOUT="${EXEC_TIMEOUT:-30s}"
+
+STATE_DIR="${STATE_DIR:-/var/lib/receipt-throttle-watch}"
+LOG_DIR="${LOG_DIR:-/var/log/receipt-throttle-watch}"
+# Per-cluster file names so concurrent instances stay isolated. Overridable.
+LAST_FILE="${LAST_FILE:-$STATE_DIR/$CLUSTER.last_status}"
+SAMPLE_FILE="${SAMPLE_FILE:-$STATE_DIR/$CLUSTER.sample}"
+STATUS="${STATUS:-$STATE_DIR/$CLUSTER.status.json}"
+LOG="${LOG:-$LOG_DIR/$CLUSTER.log}"
+
+# Notifier: stdin = message. Default to the box's working push channel.
+NOTIFY_CMD="${NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
+ALERT_PREFIX="${ALERT_PREFIX:-}"
+
+# Python on the BOX (not the pod) for arithmetic. Falls back to python.
+PY="${PY:-python3}"; command -v "$PY" >/dev/null 2>&1 || PY=python
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
+
+now_epoch() { date -u +%s; }
+log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$1" >>"$LOG" 2>/dev/null; }
+
+notify() {
+  # $1 = message. Fail-soft: log a warning if the notifier is missing/fails.
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed (alert was logged only)"
+}
+
+write_status() {
+  # $1 = overall (OK|ALERT|UNKNOWN)  $2 = reason
+  printf '{"overall":"%s","reason":"%s","checked_at":"%s","cluster":"%s"}\n' \
+    "$1" "$(printf '%s' "$2" | sed 's/"/\\"/g')" "$(date -u +%FT%TZ)" "$CLUSTER" \
+    >"$STATUS" 2>/dev/null
+}
+
+# identify_subject — best-effort: name the workload(s) most likely behind the
+# flood, so the operator can find it fast. A throttled (429) receipt is NOT
+# signed/appended, but the SAME runaway source also gets a fraction THROUGH the
+# token bucket, so the most-recently-accepted receipts reveal its subject
+# ("<namespace>/<kind>/<name>"). We read only the newest few files from the
+# highest on-disk shard(s) inside the pod (cheap, bounded), tally subjects, and
+# fall back to pepr's own `Throttling <subject>` log lines. Always prints
+# something ("unknown ..." if nothing identifiable) — never fails the run.
+identify_subject() {
+  local pod="$1" subj=""
+  subj="$(kubectl --request-timeout="$EXEC_TIMEOUT" -n "$RNS" exec "$pod" -c "$RX_CONTAINER" -- \
+    python3 -c "
+import os,json,base64,collections
+root=os.environ.get('SZL_RECEIPT_STORE','$RECEIPT_STORE')
+files=[]
+for dp,dn,fn in os.walk(root):
+    for f in fn:
+        if f.endswith('.json'): files.append(os.path.join(dp,f))
+files=sorted(files,key=lambda p: os.path.getmtime(p),reverse=True)[:40]
+c=collections.Counter()
+for f in files:
+    try:
+        rec=json.load(open(f))
+        pl=json.loads(base64.b64decode(rec.get('envelope',{}).get('payload','')).decode())
+        s=pl.get('subject')
+        if isinstance(s,dict):
+            key='%s/%s/%s'%(s.get('namespace') or '?',s.get('kind') or '?',s.get('name') or '?')
+        elif isinstance(s,str) and s:
+            key=s
+        else:
+            continue
+        c[key]+=1
+    except Exception: pass
+print('; '.join('%s(x%d)'%(s,n) for s,n in c.most_common(3)))
+" 2>/dev/null)"
+  subj="$(printf '%s' "$subj" | tr -d '\r' | head -c 300)"
+  if [ -n "$subj" ]; then printf 'recent accepted receipts dominated by %s' "$subj"; return 0; fi
+  # Secondary hint: pepr's own per-subject throttle log lines.
+  local pepr
+  pepr="$(kubectl --request-timeout="$EXEC_TIMEOUT" -n "$PNS" logs "deploy/$PDEPLOY" --since="$SINCE" 2>/dev/null \
+    | grep -Eo 'Throttling [^ ]+' | awk '{print $2}' | sort | uniq -c | sort -rn | head -3 \
+    | awk '{printf "%s(x%s) ", $2, $1}')"
+  pepr="$(printf '%s' "$pepr" | head -c 300)"
+  if [ -n "$pepr" ]; then printf 'pepr throttling subjects: %s' "$pepr"; return 0; fi
+  printf 'subject unknown — inspect POST /receipt producers in ns/%s (and pepr-szl logs)' "$RNS"
+}
+
+# ---- Resolve cluster; no-op if it is down (intentionally stopped) -----------
+if [ -n "$KUBECONFIG_FILE" ]; then
+  if [ ! -r "$KUBECONFIG_FILE" ]; then
+    log "INFO KUBECONFIG_FILE '$KUBECONFIG_FILE' unreadable — skip"; write_status UNKNOWN "kubeconfig unreadable"; exit 0
+  fi
+  export KUBECONFIG="$KUBECONFIG_FILE"
+else
+  KC="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" || { log "INFO cluster '$CLUSTER' absent — skip"; write_status UNKNOWN "cluster absent"; exit 0; }
+  export KUBECONFIG="$KC"
+fi
+kubectl --request-timeout="$KREQ_TIMEOUT" get --raw='/readyz' >/dev/null 2>&1 \
+  || { log "INFO cluster '$CLUSTER' not reachable — skip"; write_status UNKNOWN "cluster unreachable"; exit 0; }
+
+# Receipts module deployed at all? If not, there is nothing producing receipts —
+# no-op (don't alarm on a cluster without the receipts module installed).
+kubectl --request-timeout="$KREQ_TIMEOUT" -n "$RNS" get deploy szl-receipts-server >/dev/null 2>&1 \
+  || { log "INFO $RNS/szl-receipts-server absent — receipts module not deployed, skip"; write_status UNKNOWN "receipts module absent"; exit 0; }
+
+# ---- Find a Ready receipts-server pod ---------------------------------------
+pods_json="$(kubectl --request-timeout="$KREQ_TIMEOUT" -n "$RNS" get pods -l "$RX_SELECTOR" -o json 2>/dev/null)"
+pod="$(printf '%s' "$pods_json" | RX_CONTAINER="$RX_CONTAINER" "$PY" -c '
+import sys,json,os
+c=os.environ["RX_CONTAINER"]
+try: d=json.load(sys.stdin)
+except Exception: print(""); sys.exit()
+for p in d.get("items",[]):
+    for cs in (p.get("status",{}).get("containerStatuses") or []):
+        if cs.get("name")==c and cs.get("ready"):
+            print(p["metadata"]["name"]); sys.exit()
+print("")' 2>/dev/null)"
+
+if [ -z "$pod" ]; then
+  # No Ready pod = the sink is down; that is receipt-chain-watch's job to page.
+  # Here we just no-op (don't double-page) and don't disturb the sample baseline.
+  log "INFO no Ready '$RX_CONTAINER' pod in ns/$RNS — cannot sample throttle counter, skip"
+  write_status UNKNOWN "no ready receipts-server pod"
+  exit 0
+fi
+
+# ---- Read szl_receipts_throttled_total from the pod's own /metrics ----------
+# The slim image has no curl, so fetch with python3 inside the pod (mirrors the
+# Prometheus scrape). Robust to extra HELP/TYPE lines; takes the counter value.
+metrics="$(kubectl --request-timeout="$EXEC_TIMEOUT" -n "$RNS" exec "$pod" -c "$RX_CONTAINER" -- \
+  python3 -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:${METRICS_PORT}/metrics',timeout=10).read().decode())" 2>/dev/null)"
+
+cur="$(printf '%s\n' "$metrics" | awk '/^szl_receipts_throttled_total[ {]/ {print $2; exit} /^szl_receipts_throttled_total / {print $2; exit}')"
+# Normalise: must be a non-negative integer.
+case "$cur" in
+  ''|*[!0-9]*) log "INFO szl_receipts_throttled_total not readable from $pod (got '${cur:-<empty>}') — skip"; write_status UNKNOWN "throttle counter unreadable"; exit 0 ;;
+esac
+
+nowts="$(now_epoch)"
+
+# ---- Compare against the previous sample to compute requests/min ------------
+prev_count=""; prev_ts=""
+if [ -r "$SAMPLE_FILE" ]; then
+  read -r prev_count prev_ts < "$SAMPLE_FILE" 2>/dev/null || { prev_count=""; prev_ts=""; }
+fi
+
+# Always update the sample for the next run.
+printf '%s %s\n' "$cur" "$nowts" > "$SAMPLE_FILE" 2>/dev/null
+
+# First run / unreadable prior sample: just baseline, report OK.
+case "$prev_count" in ''|*[!0-9]*) prev_count=""; esac
+case "$prev_ts" in ''|*[!0-9]*) prev_ts=""; esac
+if [ -z "$prev_count" ] || [ -z "$prev_ts" ]; then
+  write_status OK "baselined throttled_total=$cur (need 2 samples for a rate)"
+  log "STATE OK baseline count=$cur (no prior sample)"
+  # Treat baseline as OK for the edge state too; if we were ALERT, recover.
+  prev="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
+  if [ "$prev" = "ALERT" ]; then
+    notify "RECOVERED: receipt-throttle watcher re-baselined on $CLUSTER (throttled_total=$cur); ingest throttling rate back under threshold."
+    log "EDGE ALERT->OK recovered (re-baseline), notified"
+  fi
+  echo OK >"$LAST_FILE" 2>/dev/null
+  exit 0
+fi
+
+# Elapsed too short → don't compute a misleading rate this cycle.
+elapsed=$(( nowts - prev_ts ))
+if [ "$elapsed" -lt "$MIN_INTERVAL_SECS" ] 2>/dev/null; then
+  write_status OK "interval ${elapsed}s < ${MIN_INTERVAL_SECS}s; throttled_total=$cur (rate not computed)"
+  log "STATE OK interval ${elapsed}s too short for a rate (count=$cur prev=$prev_count)"
+  exit 0
+fi
+
+# Compute requests/min (float) on the box. A reset (cur < prev) => rate 0.
+rate="$("$PY" -c "
+cur=$cur; prev=$prev_count; el=$elapsed
+d=cur-prev
+print('%.2f' % ((d/el*60.0) if (d>0 and el>0) else 0.0))
+" 2>/dev/null)"
+case "$rate" in ''|*[!0-9.]*) rate="0.00" ;; esac
+
+over="$("$PY" -c "print(1 if float('$rate') >= float('$THROTTLE_PER_MIN') else 0)" 2>/dev/null)"
+[ "$over" = "1" ] || over=0
+
+# ---- Decide + edge-trigger --------------------------------------------------
+prev_state="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
+
+if [ "$over" = "1" ]; then
+  reason="receipts-server throttling ${rate} POST /receipt/min (>= ${THROTTLE_PER_MIN}/min threshold) over ${elapsed}s: szl_receipts_throttled_total $prev_count -> $cur"
+  write_status ALERT "$reason"
+  log "STATE ALERT rate=${rate}/min count=$cur prev=$prev_count elapsed=${elapsed}s :: $reason"
+  if [ "$prev_state" != "ALERT" ]; then
+    who="$(identify_subject "$pod")"
+    notify "ALERT: receipt ingest THROTTLING on $CLUSTER — szl-receipts-server is shedding ${rate} POST /receipt/min with HTTP 429 (threshold ${THROTTLE_PER_MIN}/min) over ${elapsed}s (szl_receipts_throttled_total $prev_count -> $cur). A source is being rate-limited right now: $who. The cap is protecting the chain/box, but the runaway should be stopped — check producers + the pepr per-subject throttle + SZL_INGEST_RATE_LIMIT in $RNS."
+    log "EDGE OK->ALERT notified :: $who"
+  else
+    log "DEDUP still ALERT — no re-notify"
+  fi
+  echo ALERT >"$LAST_FILE" 2>/dev/null
+else
+  write_status OK "throttling ${rate} POST /receipt/min (< ${THROTTLE_PER_MIN}/min) over ${elapsed}s; throttled_total=$cur"
+  log "STATE OK rate=${rate}/min count=$cur prev=$prev_count elapsed=${elapsed}s"
+  if [ "$prev_state" = "ALERT" ]; then
+    notify "RECOVERED: receipt ingest throttling back to normal on $CLUSTER (${rate} shed/min, < ${THROTTLE_PER_MIN}/min threshold; szl_receipts_throttled_total=$cur). The runaway source has stopped or slowed below the cap."
+    log "EDGE ALERT->OK recovered, notified"
+  fi
+  echo OK >"$LAST_FILE" 2>/dev/null
+fi
+
+exit 0

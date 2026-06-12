@@ -1,0 +1,12 @@
+[Unit]
+Description=Run receipt-throttle-watch every 5 minutes (uds-szl-demo: detect sustained ingest throttling / shed POST /receipt traffic)
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=receipt-throttle-watch.service
+
+[Install]
+WantedBy=timers.target

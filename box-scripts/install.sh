@@ -43,6 +43,7 @@ install -m 0755 "$here/sbin/szl-core-rightsize"        /usr/local/sbin/szl-core-
 install -m 0755 "$here/sbin/istiod-fit-strategy"       /usr/local/sbin/istiod-fit-strategy
 install -m 0755 "$here/sbin/receipt-chain-watch"       /usr/local/sbin/receipt-chain-watch
 install -m 0755 "$here/sbin/receipt-flood-watch"       /usr/local/sbin/receipt-flood-watch
+install -m 0755 "$here/sbin/receipt-throttle-watch"    /usr/local/sbin/receipt-throttle-watch
 install -m 0755 "$here/sbin/szl-receipts-retention"    /usr/local/sbin/szl-receipts-retention
 install -m 0755 "$here/sbin/szl-receipts-cold-offsite" /usr/local/sbin/szl-receipts-cold-offsite
 install -m 0755 "$here/sbin/szl-ns-scratch"            /usr/local/sbin/szl-ns-scratch
@@ -79,6 +80,10 @@ install -m 0644 "$here/systemd/receipt-flood-watch.service" /etc/systemd/system/
 install -m 0644 "$here/systemd/receipt-flood-watch.timer"   /etc/systemd/system/receipt-flood-watch.timer
 install -m 0644 "$here/systemd/receipt-flood-watch@.service" /etc/systemd/system/receipt-flood-watch@.service
 install -m 0644 "$here/systemd/receipt-flood-watch@.timer"   /etc/systemd/system/receipt-flood-watch@.timer
+install -m 0644 "$here/systemd/receipt-throttle-watch.service" /etc/systemd/system/receipt-throttle-watch.service
+install -m 0644 "$here/systemd/receipt-throttle-watch.timer"   /etc/systemd/system/receipt-throttle-watch.timer
+install -m 0644 "$here/systemd/receipt-throttle-watch@.service" /etc/systemd/system/receipt-throttle-watch@.service
+install -m 0644 "$here/systemd/receipt-throttle-watch@.timer"   /etc/systemd/system/receipt-throttle-watch@.timer
 install -m 0644 "$here/systemd/szl-receipts-retention.service" /etc/systemd/system/szl-receipts-retention.service
 install -m 0644 "$here/systemd/szl-receipts-retention.timer"   /etc/systemd/system/szl-receipts-retention.timer
 install -m 0644 "$here/systemd/szl-receipts-cold-offsite.service" /etc/systemd/system/szl-receipts-cold-offsite.service
@@ -294,6 +299,7 @@ fi
 # extra clusters with RECEIPT_WATCH_EXTRA_CLUSTERS="a b c" ./install.sh.
 install -d -m 0755 /etc/receipt-chain-watch
 install -d -m 0755 /etc/receipt-flood-watch
+install -d -m 0755 /etc/receipt-throttle-watch
 read -r -a receipt_extra_clusters <<< "${RECEIPT_WATCH_EXTRA_CLUSTERS:-uds-tenant}"
 for c in "${receipt_extra_clusters[@]}"; do
   [ -n "$c" ] || continue
@@ -317,6 +323,17 @@ for c in "${receipt_extra_clusters[@]}"; do
       chmod 0644 "$floodf"
     fi
     echo "[install] seeded $floodf"
+  fi
+  # Companion throttle watcher for the same extra cluster.
+  throttlef="/etc/receipt-throttle-watch/${c}.env"
+  if [ ! -e "$throttlef" ]; then
+    if [ -f "$here/etc/receipt-throttle-watch/${c}.env" ]; then
+      install -m 0644 "$here/etc/receipt-throttle-watch/${c}.env" "$throttlef"
+    else
+      printf '# receipt-throttle-watch tunables for cluster %s (see box-scripts/README.md).\n#KUBECONFIG_FILE=\n#RNS=szl-receipts\n#RX_SELECTOR=app.kubernetes.io/name=szl-receipts-server\n#RX_CONTAINER=receipts-server\n#METRICS_PORT=8080\n#THROTTLE_PER_MIN=10\n#MIN_INTERVAL_SECS=60\n' "$c" > "$throttlef"
+      chmod 0644 "$throttlef"
+    fi
+    echo "[install] seeded $throttlef"
   fi
 done
 
@@ -384,10 +401,12 @@ systemctl enable --now szl-core-rightsize.timer
 systemctl enable --now istiod-fit-strategy.timer
 systemctl enable --now receipt-chain-watch.timer
 systemctl enable --now receipt-flood-watch.timer
+systemctl enable --now receipt-throttle-watch.timer
 for c in "${receipt_extra_clusters[@]}"; do
   [ -n "$c" ] || continue
   systemctl enable --now "receipt-chain-watch@${c}.timer"
   systemctl enable --now "receipt-flood-watch@${c}.timer"
+  systemctl enable --now "receipt-throttle-watch@${c}.timer"
 done
 systemctl enable --now szl-receipts-retention.timer
 systemctl enable --now szl-receipts-cold-offsite.timer
@@ -413,10 +432,12 @@ systemctl enable --now szl-receipt-checkpoint.timer
 [ -x /usr/local/sbin/istiod-fit-strategy ] && /usr/local/sbin/istiod-fit-strategy || true
 [ -x /usr/local/sbin/receipt-chain-watch ]  && /usr/local/sbin/receipt-chain-watch   || true
 [ -x /usr/local/sbin/receipt-flood-watch ]  && /usr/local/sbin/receipt-flood-watch   || true
+[ -x /usr/local/sbin/receipt-throttle-watch ] && /usr/local/sbin/receipt-throttle-watch || true
 for c in "${receipt_extra_clusters[@]}"; do
   [ -n "$c" ] || continue
   systemctl start "receipt-chain-watch@${c}.service" || true
   systemctl start "receipt-flood-watch@${c}.service" || true
+  systemctl start "receipt-throttle-watch@${c}.service" || true
 done
 # Run retention once now (idempotent no-op if the cluster is down or nothing is
 # sealed to archive).
