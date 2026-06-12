@@ -87,8 +87,8 @@ includes:
   - test: ./tasks/test.yaml
   - demo: ./tasks/demo.yaml
   - smoke: ./tasks/smoke.yaml
-  - prove-organs: ./tasks/prove-organs.yaml
-  - prove-bundle: ./tasks/prove-bundle.yaml
+  - prove-organs-impl: ./tasks/prove-organs.yaml
+  - prove-bundle-impl: ./tasks/prove-bundle.yaml
 
 tasks:
   # ── Cold smoke entry point ────────────────────────────────────────────────
@@ -110,7 +110,7 @@ tasks:
   - name: prove-organs
     description: "Prove ONE organ (--set ORGAN=...) deploys individually on a throwaway k3d cluster and reaches Available"
     actions:
-      - task: prove-organs:prove
+      - task: prove-organs-impl:prove
 
   # ── Published-bundle customer-install proof ───────────────────────────────
   # `uds run prove-bundle --set ORGAN=<organ>`: prove a CUSTOMER can install the
@@ -124,7 +124,7 @@ tasks:
   - name: prove-bundle
     description: "Prove the PUBLISHED bundle installs (--set ORGAN=...): cosign-verify, pull, deploy ONE member on a clean cluster, reach Available"
     actions:
-      - task: prove-bundle:prove
+      - task: prove-bundle-impl:prove
 
   # ── Primary entry point ───────────────────────────────────────────────────
   - name: start
