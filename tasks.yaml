@@ -396,8 +396,17 @@ tasks:
       - description: "Create k3d test cluster"
         cmd: |
           k3d cluster create "${CLUSTER_NAME}-test" --wait
-      - description: "Zarf init"
+      - description: "Zarf init (pin init package from OCI + retry; bare `zarf init` flakes on the GH-release fetch)"
         cmd: |
+          set -euo pipefail
+          ZARF_VER="$(zarf version 2>/dev/null | tr -d 'v' || echo 0.77.0)"
+          # Explicitly pull the matching init package from GHCR (retry on transient
+          # network failure) so `zarf init` resolves it locally instead of relying
+          # on the flaky auto-download that produced 'zarf-init package not found'.
+          for i in 1 2 3; do
+            zarf package pull "oci://ghcr.io/zarf-dev/packages/init:v${ZARF_VER}" --confirm && break
+            echo "zarf init package pull attempt $i failed; retrying in 10s..."; sleep 10
+          done
           zarf init --confirm
       - description: "Create and deploy szl-receipts Zarf package"
         cmd: |
@@ -412,8 +421,14 @@ tasks:
       - description: "Create k3d upgrade-test cluster"
         cmd: |
           k3d cluster create "${CLUSTER_NAME}-upgrade" --wait
-      - description: "Zarf init"
+      - description: "Zarf init (pin init package from OCI + retry; bare `zarf init` flakes on the GH-release fetch)"
         cmd: |
+          set -euo pipefail
+          ZARF_VER="$(zarf version 2>/dev/null | tr -d 'v' || echo 0.77.0)"
+          for i in 1 2 3; do
+            zarf package pull "oci://ghcr.io/zarf-dev/packages/init:v${ZARF_VER}" --confirm && break
+            echo "zarf init package pull attempt $i failed; retrying in 10s..."; sleep 10
+          done
           zarf init --confirm
       - description: "Deploy the published baseline release from OCI (MUST succeed — no silent skip)"
         cmd: |
