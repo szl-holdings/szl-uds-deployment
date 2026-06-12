@@ -1,0 +1,67 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# contracting-env-guard — no-cluster guard protecting the founder's confirmed
+# Contracting Readiness org-fact env vars from silently reverting. The two code
+# surfaces that map SZL_CONTRACTING_* (+ legacy A11OY_ORG_* aliases) ->
+# `confirmed`/`needs_founder_input` live in OTHER public szl-holdings repos, so a
+# push here cannot see a regression there: this guard checks both repos out and
+# asserts the contract, and runs weekly to catch cross-repo drift.
+#
+# See box-scripts/contracting-env.README.md for the variable contract.
+
+name: contracting-env-guard
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/contracting-env-checks.py
+      - scripts/contracting-env-checks.test.py
+      - .github/workflows/contracting-env-guard.yml
+      - box-scripts/contracting-env.README.md
+  pull_request:
+    paths:
+      - scripts/contracting-env-checks.py
+      - scripts/contracting-env-checks.test.py
+      - .github/workflows/contracting-env-guard.yml
+      - box-scripts/contracting-env.README.md
+  schedule:
+    # Weekly: the protected surfaces live in szl-holdings/a11oy + killinchu, so
+    # an edit there does not trigger this repo's push/PR events.
+    - cron: "23 7 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Guard self-test (negative fixtures must fail)
+        run: python3 scripts/contracting-env-checks.test.py
+
+  guard:
+    needs: self-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repo (the checker)
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Checkout szl-holdings/a11oy (a11oy inline route surface)
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: szl-holdings/a11oy
+          path: _src/a11oy
+          persist-credentials: false
+      - name: Checkout szl-holdings/killinchu (canonical module surface)
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: szl-holdings/killinchu
+          path: _src/killinchu
+          persist-credentials: false
+      - name: a11oy serve.py — canonical vars + legacy aliases + confirm/absent flip
+        run: python3 scripts/contracting-env-checks.py a11oy _src/a11oy/serve.py
+      - name: killinchu szl_contracting.py — canonical vars + confirm/absent flip
+        run: python3 scripts/contracting-env-checks.py canonical _src/killinchu/szl_contracting.py
