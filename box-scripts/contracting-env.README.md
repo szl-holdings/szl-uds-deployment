@@ -48,3 +48,30 @@ name is unset (canonical wins): `A11OY_ORG_UEI`, `A11OY_ORG_CAGE`,
 The canonical `SZL_CONTRACTING_*` names are the env-var → `confirmed` mapping in
 `szl_contracting.py` (`_ORG` / `_ORG_ENV`) used by killinchu and by a11oy's
 inline route alike.
+
+> **Note:** only **4 of the 9** canonical vars have a paired legacy alias
+> (`UEI`, `CAGE`, `EMPLOYEES`←`HEADCOUNT`, `US_OWNERSHIP_PCT`←`OWNERSHIP`).
+> `A11OY_ORG_LEGAL_NAME` is a standalone legacy name with no canonical pair, and
+> the remaining canonical vars (`SAM_STATUS`, `SAM_EXPIRES`, `SBC_CONTROL_ID`,
+> `LEGAL_FORM`, `FORPROFIT_US`) have no alias. In every alias tuple the canonical
+> name is listed **first**, so a value set under the canonical var always wins.
+
+## CI guard against silent reverts
+
+`.github/workflows/contracting-env-guard.yml` (no cluster required) protects this
+contract from regressing on either surface. It runs `scripts/contracting-env-checks.py`,
+which asserts that **both** surfaces — the a11oy `serve.py` inline `_ct_org` route
+and the canonical `szl_contracting.py` module — still:
+
+- read **all 9** canonical `SZL_CONTRACTING_*` vars,
+- (a11oy) read the **5 legacy aliases** with the canonical name listed first, and
+- map a **present** value → `confirmed` and an **absent** value →
+  `needs_founder_input`.
+
+Because the two surfaces live in separate repos (`szl-holdings/a11oy` and
+`szl-holdings/killinchu`), a push here cannot observe a regression there, so the
+guard checks both repos out and also runs on a **weekly schedule** to catch
+cross-repo drift. `scripts/contracting-env-checks.test.py` is a self-test with
+negative fixtures (renamed var, dropped alias, reversed alias pair, ungated
+`confirmed`, lost present→confirmed mapping, removed honest default) that gates
+the checker before it runs against the live surfaces.
