@@ -739,3 +739,227 @@ jobs:
       - name: Clean up the cluster (always)
         if: always()
         run: k3d cluster delete uds-szl-demo 2>/dev/null || true
+
+  # ── Receipt archival cold-restart proof (real cluster, dispatch-only) ─────────
+  receipts-archive-cold-restart-proof:
+    name: Receipts Archive Cold-Restart Proof
+    runs-on: ubuntu-24.04
+    # The offline scripts/receipts_sharding_guard.py drives archive_sealed_shards
+    # + restore + verify_store IN ONE PROCESS against a throwaway temp dir. It can
+    # prove the archive/restore MATH (sha256 + Ed25519 + chain link) but it can
+    # NEVER prove the property that actually matters in production: that an
+    # archived chain survives a real pod COLD-RESTART with a mounted RWO PVC —
+    # i.e. that after `archive-shards --delete` deletes the sealed buckets and the
+    # pod is destroyed + rescheduled, (a) the re-attached PVC still verifies, (b)
+    # the chain head is reloaded from the persisted .chain_head pointer (a fresh
+    # POST continues at the next index, NOT genesis), and (c) the cold tarballs
+    # written to the PVC are still readable + re-verifiable after the restart.
+    # A regression in PVC persistence, the .chain_head reload, the cold-dir path
+    # (writing cold/ outside the mount), or restore-after-restart would sail
+    # through the offline guard yet silently lose archived governance receipts on
+    # the first real pod reschedule. This job reproduces exactly that on k3d.
+    #
+    # workflow_dispatch only (mirrors test-install / teardown-busy-proof) so it
+    # never burns runner minutes / spins a cluster on every PR.
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install UDS CLI
+        uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1 (v1.0.1)
+        with:
+          version: v0.31.0
+
+      - name: Install Zarf
+        run: |
+          curl -sL "https://github.com/zarf-dev/zarf/releases/download/v0.77.0/zarf_v0.77.0_Linux_amd64" \
+            -o /usr/local/bin/zarf && chmod +x /usr/local/bin/zarf
+          zarf version
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+      - name: Install kubectl
+        run: |
+          curl -sLO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+          kubectl version --client
+
+      # Shrink the on-disk shard size BEFORE packaging so the deployment is
+      # born-small-shard. The zarf package exposes no shard-size variable, and
+      # editing the live env after deploy would trigger a RollingUpdate that
+      # deadlocks on the RWO PVC (new pod cannot mount until the old releases) —
+      # so we set it at build time. shard=5 means a handful of POSTed receipts
+      # seals multiple buckets, making archival deterministic and fast.
+      - name: Shrink receipt shard size for the proof (receiptShardSize=5)
+        run: |
+          sed -i 's/^  receiptShardSize: .*/  receiptShardSize: 5/' charts/szl-receipts/values.yaml
+          grep -n 'receiptShardSize:' charts/szl-receipts/values.yaml
+
+      # ── Real-cluster deploy: UDS Core + the canonical szl-receipts package ───────
+      # Mirrors receipts-signing-gate.yml: UDS Core provides the operator CRDs the
+      # package's UDS Package / Exemption CRs need, and admits the root keygen hook.
+      - name: Deploy UDS Core (k3d-core-slim-dev)
+        run: |
+          uds deploy oci://ghcr.io/defenseunicorns/bundles/k3d-core-slim-dev:1.5.0 \
+            --confirm --no-progress
+
+      - name: Build szl-receipts-server image into local Docker
+        run: |
+          docker build -t ghcr.io/szl-holdings/szl-receipts-server:uds-v0.4.0 \
+            services/szl-receipts-server
+
+      - name: Build + deploy the szl-receipts Zarf package
+        run: |
+          zarf package create packages/szl-receipts \
+            --flavor upstream \
+            --set DOMAIN=uds.dev \
+            --confirm --no-progress
+          zarf package deploy zarf-package-szl-receipts-*.tar.zst \
+            --confirm --no-progress
+
+      # ── Seed > shard_size receipts, then archive the sealed shards ────────────────
+      - name: Seed receipts and archive sealed shards (--delete)
+        run: |
+          set -euo pipefail
+          NS=szl-receipts
+          SVC=szl-receipts-server
+          DEPLOY=szl-receipts-server
+          CTR=receipts-server
+          kx() { kubectl -n "$NS" exec deploy/"$DEPLOY" -c "$CTR" -- "$@"; }
+
+          echo "── Wait for the deployed server to be Available ───────────────────"
+          kubectl -n "$NS" rollout status deployment/"$DEPLOY" --timeout=180s
+
+          # Confirm the small shard size actually took — otherwise nothing seals
+          # and the whole proof is meaningless.
+          SHARD="$(kx printenv SZL_RECEIPT_SHARD_SIZE)"
+          echo "SZL_RECEIPT_SHARD_SIZE in pod: $SHARD"
+          [ "$SHARD" = "5" ] || { echo "::error::shard size override did not take (got '$SHARD', want 5)"; exit 1; }
+
+          echo "── Port-forward + POST 12 receipts (spans 3 buckets at shard=5) ────"
+          kubectl -n "$NS" port-forward "svc/$SVC" 18080:8080 >/tmp/pf.log 2>&1 &
+          PF=$!
+          trap 'kill $PF 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            curl -sf http://localhost:18080/pubkey >/dev/null 2>&1 && break
+            sleep 1
+          done
+          for i in $(seq 1 12); do
+            RESP="$(curl -sf -X POST http://localhost:18080/receipt \
+              -H 'Content-Type: application/json' \
+              -d "{\"kind\":\"archive-proof\",\"actor\":\"archive-cold-restart-proof\",\"detail\":\"seed $i\"}")"
+            echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('valid') is True else 1)" \
+              || { echo "::error::POST receipt $i did not return valid:true: $RESP"; exit 1; }
+          done
+          kill $PF 2>/dev/null || true; trap - EXIT; sleep 1
+
+          echo "── Shard buckets on disk (expect 00000000, 00000001, 00000002) ────"
+          kx ls -1 /data/receipts/shards
+          NB="$(kx sh -c 'ls -1 /data/receipts/shards | wc -l' | tr -d '[:space:]')"
+          [ "$NB" -ge 3 ] || { echo "::error::expected >=3 shard buckets, got $NB"; exit 1; }
+
+          echo "── verify-store BEFORE archive (full chain must verify) ────────────"
+          set +e; OUT="$(kx python3 /app/server.py verify-store)"; RC=$?; set -e
+          echo "$OUT"
+          [ "$RC" -eq 0 ] || { echo "::error::verify-store chain_ok=false BEFORE archive"; exit 1; }
+          echo "$OUT" | grep -q '"total": 12' || { echo "::error::expected total 12 before archive"; exit 1; }
+
+          echo "── archive-shards --delete (seal+offload buckets below the tail) ───"
+          set +e; OUT="$(kx python3 /app/server.py archive-shards --delete)"; RC=$?; set -e
+          echo "$OUT"
+          [ "$RC" -eq 0 ] || { echo "::error::archive-shards --delete failed (error or a bucket failed verify)"; exit 1; }
+          echo "$OUT" | grep -q '"00000000"' && echo "$OUT" | grep -q '"00000001"' \
+            || { echo "::error::expected sealed buckets 00000000+00000001 to be archived"; exit 1; }
+
+          echo "── Sealed buckets gone from live store; cold tarballs on the PVC ──"
+          if kx sh -c 'test -d /data/receipts/shards/00000000'; then
+            echo "::error::bucket 00000000 still present in live store after --delete"; exit 1
+          fi
+          kx sh -c 'test -f /data/receipts/cold/00000000.tar.gz' \
+            || { echo "::error::cold tarball /data/receipts/cold/00000000.tar.gz missing"; exit 1; }
+          kx sh -c 'test -f /data/receipts/cold/00000001.tar.gz' \
+            || { echo "::error::cold tarball /data/receipts/cold/00000001.tar.gz missing"; exit 1; }
+
+          echo "── verify-store AFTER archive (remaining live tail must verify) ────"
+          set +e; OUT="$(kx python3 /app/server.py verify-store)"; RC=$?; set -e
+          echo "$OUT"
+          [ "$RC" -eq 0 ] || { echo "::error::verify-store chain_ok=false AFTER archive --delete"; exit 1; }
+
+          # Persist the chain head pointer for the cross-restart reload assertion.
+          kx cat /data/receipts/.chain_head > /tmp/pre_head.json
+          echo "pre-restart .chain_head: $(cat /tmp/pre_head.json)"
+
+      # ── Cold-restart the pod (RWO PVC release + re-attach) and re-prove ───────────
+      - name: Cold-restart the pod and prove chain + archived shards survive
+        run: |
+          set -euo pipefail
+          NS=szl-receipts
+          SVC=szl-receipts-server
+          DEPLOY=szl-receipts-server
+          CTR=receipts-server
+          kx() { kubectl -n "$NS" exec deploy/"$DEPLOY" -c "$CTR" -- "$@"; }
+
+          PRE_INDEX="$(python3 -c "import json;print(json.load(open('/tmp/pre_head.json'))['chain_index'])")"
+          PRE_HEAD="$(python3 -c "import json;print(json.load(open('/tmp/pre_head.json'))['chain_head'])")"
+          echo "pre-restart chain_index=$PRE_INDEX chain_head=$PRE_HEAD"
+
+          echo "── Cold restart: scale to 0 (release the RWO PVC), then back to 1 ──"
+          kubectl -n "$NS" scale deploy/"$DEPLOY" --replicas=0
+          kubectl -n "$NS" wait --for=delete pod \
+            -l app.kubernetes.io/name=szl-receipts-server --timeout=180s || true
+          kubectl -n "$NS" scale deploy/"$DEPLOY" --replicas=1
+          kubectl -n "$NS" rollout status deployment/"$DEPLOY" --timeout=180s
+          kubectl -n "$NS" get pods -o wide
+
+          echo "── (a) verify-store after restart: re-attached PVC must verify ────"
+          set +e; OUT="$(kx python3 /app/server.py verify-store)"; RC=$?; set -e
+          echo "$OUT"
+          [ "$RC" -eq 0 ] || { echo "::error::chain_ok=false AFTER cold restart — PVC did not re-attach cleanly or chain corrupted"; exit 1; }
+
+          echo "── (b) head reload: a fresh POST must continue from .chain_head ────"
+          kubectl -n "$NS" port-forward "svc/$SVC" 18080:8080 >/tmp/pf2.log 2>&1 &
+          PF=$!
+          trap 'kill $PF 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            curl -sf http://localhost:18080/pubkey >/dev/null 2>&1 && break
+            sleep 1
+          done
+          RESP="$(curl -sf -X POST http://localhost:18080/receipt \
+            -H 'Content-Type: application/json' \
+            -d '{"kind":"archive-proof","actor":"archive-cold-restart-proof","detail":"post-restart"}')"
+          echo "post-restart receipt: $RESP"
+          kill $PF 2>/dev/null || true; trap - EXIT; sleep 1
+          RESP="$RESP" PRE_INDEX="$PRE_INDEX" PRE_HEAD="$PRE_HEAD" python3 - <<'PY'
+          import json, os, sys
+          d = json.loads(os.environ["RESP"])
+          exp_idx = int(os.environ["PRE_INDEX"]); exp_prev = os.environ["PRE_HEAD"]
+          ch = d.get("chain") or {}
+          if d.get("valid") is not True:
+              sys.stderr.write("FATAL: post-restart POST not valid:true: %r\n" % (d,)); sys.exit(1)
+          if ch.get("chain_index") != exp_idx:
+              sys.stderr.write("FATAL: chain_index=%r after restart, expected %d — .chain_head was NOT reloaded (reset to genesis?)\n" % (ch.get("chain_index"), exp_idx)); sys.exit(1)
+          if ch.get("prev_hash") != exp_prev:
+              sys.stderr.write("FATAL: prev_hash=%r != reloaded .chain_head %r — the chain forked across the restart\n" % (ch.get("prev_hash"), exp_prev)); sys.exit(1)
+          print("OK: head reloaded from .chain_head (continued at index %d)." % exp_idx)
+          PY
+
+          echo "── (c) archived-shard readability: restore the cold tarballs ───────"
+          set +e; OUT="$(kx python3 /app/server.py restore-shards)"; RC=$?; set -e
+          echo "$OUT"
+          [ "$RC" -eq 0 ] || { echo "::error::restore-shards failed after restart — archived cold tarballs unreadable / failed re-verify"; exit 1; }
+          echo "$OUT" | grep -q '"00000000"' && echo "$OUT" | grep -q '"00000001"' \
+            || { echo "::error::restore did not re-open both archived buckets after restart"; exit 1; }
+
+          echo "── (d) final verify-store: full chain re-stitched (13 receipts) ────"
+          set +e; OUT="$(kx python3 /app/server.py verify-store)"; RC=$?; set -e
+          echo "$OUT"
+          [ "$RC" -eq 0 ] || { echo "::error::final verify-store chain_ok=false after restore"; exit 1; }
+          echo "$OUT" | grep -q '"total": 13' \
+            || { echo "::error::expected total 13 (12 seeded + 1 post-restart) after restore"; exit 1; }
+          echo "PROVEN: archive --delete survives a real pod cold-restart with a mounted PVC."
+
+      - name: Clean up the cluster (always)
+        if: always()
+        run: k3d cluster delete --all 2>/dev/null || true
