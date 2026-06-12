@@ -486,22 +486,55 @@ jobs:
     # The text-level teardown-guard.yml only proves the `uds run teardown` task
     # still REFERENCES the idle-check gate + FORCE override and that
     # scripts/idle-check.sh parses. It cannot prove the gate actually refuses a
-    # teardown while a deploy is in flight: a regression in idle-check.sh's
+    # teardown while work is in flight: a regression in idle-check.sh's
     # rollout-state logic (e.g. always reporting "idle") would sail through the
     # text guard yet silently re-open the original hazard — one agent's blind
     # teardown destroying a sibling's in-flight deploy on the shared k3d cluster.
     #
-    # This job closes that gap on a REAL throwaway k3d cluster: it puts an
-    # in-flight (never-Ready) deploy on the cluster, then asserts the three
-    # behaviours that matter:
-    #   1. `uds run idle-check` reports BUSY (exit non-zero),
+    # scripts/idle-check.sh treats FOUR distinct situations as BUSY (see its
+    # header): (1) a pod that is not Running-and-fully-Ready, (2) a Deployment
+    # mid-rollout (READY / UP-TO-DATE / AVAILABLE disagree), (3) a ReplicaSet
+    # created within IDLE_WINDOW_MINUTES, and (4) a live deploy process. A
+    # regression in ANY one of them re-opens the hazard, so each must be proven on
+    # a REAL cluster — not just the not-Ready case. This job runs once per busy
+    # condition (matrix), and for each one puts ONLY that condition on a fresh
+    # throwaway cluster, then asserts the three behaviours that matter:
+    #   1. `uds run idle-check` reports BUSY (exit non-zero) and NAMES the workload,
     #   2. `uds run teardown` (no FORCE) REFUSES and leaves the cluster intact,
     #   3. `uds run teardown --set FORCE=true` succeeds and deletes the cluster.
     # If a regression lets a busy cluster be torn down, step 1 or 2 fails loud.
     #
+    # Isolation per case (so a regression in one condition can't hide behind
+    # another):
+    #   * not-ready   — an unschedulable (Pending) pod; the not-Ready signal.
+    #   * mid-rollout — a Deployment held un-Available via minReadySeconds while
+    #                   its pod is Running-and-Ready; run with IDLE_WINDOW_MINUTES=0
+    #                   so the fresh-ReplicaSet signal is DISABLED and only the
+    #                   rollout-lag (condition 2) can trip.
+    #   * recent-rs   — a fully-settled Deployment (pod Ready, Available, counts
+    #                   agree) so the ONLY remaining signal is its freshly-created
+    #                   ReplicaSet within IDLE_WINDOW_MINUTES (condition 3).
+    # (Condition 4 — a live deploy PROCESS — is exercised by the real deploy gates
+    # test-install / receipts-signing-gate and is not reproducible as a standalone
+    # cluster state, so it is intentionally out of scope for this cluster-state
+    # proof.)
+    #
     # workflow_dispatch only (mirrors test-install) to avoid burning runner
     # minutes / spinning a cluster on every PR.
     if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: not-ready
+            workload: inflight-deploy
+            window: "10"
+          - case: mid-rollout
+            workload: midrollout-deploy
+            window: "0"
+          - case: recent-rs
+            workload: recentrs-deploy
+            window: "10"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
@@ -525,15 +558,16 @@ jobs:
           kubectl cluster-info
           k3d cluster list
 
-      - name: Put an in-flight (never-Ready) deploy on the cluster
+      - name: Put the '${{ matrix.case }}' busy condition on the cluster
         run: |
-          # A Deployment whose single pod can never schedule (an impossible CPU
-          # request) stays Pending forever. That is an unambiguous in-flight
-          # signal the rollout-state logic must catch: the pod is not
-          # Running-and-Ready, the Deployment never reaches Available, and its
-          # ReplicaSet is freshly created. We do NOT rely on an image pull, so
-          # the busy state is deterministic and immediate.
-          kubectl apply -f - << 'YAML'
+          set -eu
+          case "${{ matrix.case }}" in
+            not-ready)
+              # A Deployment whose single pod can never schedule (an impossible CPU
+              # request) stays Pending forever — an unambiguous in-flight signal:
+              # the pod is not Running-and-Ready (condition 1). No image pull is
+              # relied on, so the busy state is deterministic and immediate.
+              kubectl apply -f - << 'YAML'
           apiVersion: apps/v1
           kind: Deployment
           metadata:
@@ -556,46 +590,124 @@ jobs:
                       requests:
                         cpu: "1000"
           YAML
-          # Wait for the API server to create the ReplicaSet + Pod objects so
-          # idle-check observes the in-flight state (the pod stays Pending).
-          phase=""
-          for _ in $(seq 1 30); do
-            phase=$(kubectl get pods -l app=inflight-deploy \
-              -o jsonpath='{.items[0].status.phase}' 2>/dev/null || true)
-            [ -n "$phase" ] && break
-            sleep 1
-          done
-          echo "inflight-deploy pod phase: ${phase:-<none>}"
-          kubectl get deploy,rs,pods -l app=inflight-deploy
+              # Wait for the API server to create the ReplicaSet + Pod objects so
+              # idle-check observes the in-flight state (the pod stays Pending).
+              phase=""
+              for _ in $(seq 1 30); do
+                phase=$(kubectl get pods -l app=inflight-deploy \
+                  -o jsonpath='{.items[0].status.phase}' 2>/dev/null || true)
+                [ -n "$phase" ] && break
+                sleep 1
+              done
+              echo "inflight-deploy pod phase: ${phase:-<none>}"
+              ;;
+            mid-rollout)
+              # Let the system Deployments settle first so the ONLY mid-rollout
+              # Deployment on the cluster is ours (keeps condition 2 isolated).
+              kubectl wait --for=condition=Available deploy --all -n kube-system \
+                --timeout=180s || true
+              # minReadySeconds holds the Deployment un-Available even though its
+              # pod becomes Running-and-Ready: READY=1/1 but AVAILABLE=0 →
+              # READY/UP-TO-DATE/AVAILABLE disagree (condition 2) while NO pod is
+              # not-Ready (condition 1 stays clean). With IDLE_WINDOW_MINUTES=0 the
+              # fresh-ReplicaSet signal is off, so only the rollout-lag can trip.
+              kubectl apply -f - << 'YAML'
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: midrollout-deploy
+            namespace: default
+          spec:
+            replicas: 1
+            minReadySeconds: 600
+            selector:
+              matchLabels:
+                app: midrollout-deploy
+            template:
+              metadata:
+                labels:
+                  app: midrollout-deploy
+              spec:
+                containers:
+                  - name: pause
+                    image: registry.k8s.io/pause:3.9
+          YAML
+              # Wait until the pod is Running-and-Ready (readyReplicas==1) so
+              # condition 1 is clean; availableReplicas stays 0 for minReadySeconds.
+              rr=""
+              for _ in $(seq 1 60); do
+                rr=$(kubectl get deploy midrollout-deploy \
+                  -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)
+                [ "$rr" = "1" ] && break
+                sleep 2
+              done
+              echo "midrollout-deploy readyReplicas=${rr:-0}"
+              ;;
+            recent-rs)
+              # A fully-settled Deployment: pod Running-and-Ready, Available, and
+              # READY/UP-TO-DATE/AVAILABLE all agree — so conditions 1 and 2 are
+              # clean. The ONLY busy signal left is its ReplicaSet, created within
+              # IDLE_WINDOW_MINUTES (condition 3). Settle the system Deployments too
+              # so nothing else trips conditions 1/2 and mask a condition-3 regression.
+              kubectl wait --for=condition=Available deploy --all -n kube-system \
+                --timeout=180s || true
+              kubectl apply -f - << 'YAML'
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: recentrs-deploy
+            namespace: default
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: recentrs-deploy
+            template:
+              metadata:
+                labels:
+                  app: recentrs-deploy
+              spec:
+                containers:
+                  - name: pause
+                    image: registry.k8s.io/pause:3.9
+          YAML
+              kubectl rollout status deploy/recentrs-deploy --timeout=120s
+              ;;
+            *)
+              echo "::error::unknown matrix case '${{ matrix.case }}'"
+              exit 1
+              ;;
+          esac
+          kubectl get deploy,rs,pods -l app=${{ matrix.workload }} || true
 
-      - name: idle-check MUST report BUSY
+      - name: idle-check MUST report BUSY for the '${{ matrix.case }}' condition
         run: |
           set +e
-          OUT=$(uds run idle-check 2>&1); RC=$?
+          OUT=$(uds run idle-check --set IDLE_WINDOW_MINUTES=${{ matrix.window }} 2>&1); RC=$?
           set -e
           echo "$OUT"
           if [ "$RC" -eq 0 ]; then
-            echo "::error::idle-check reported IDLE while an in-flight deploy is on the cluster — the rollout-state gate is broken (always-idle regression?)"
+            echo "::error::idle-check reported IDLE for the '${{ matrix.case }}' busy condition — the rollout-state gate is broken for this case (always-idle regression?)"
             exit 1
           fi
           if ! echo "$OUT" | grep -q "BUSY"; then
             echo "::error::idle-check exited non-zero but never printed BUSY — unexpected failure, not the gate"
             exit 1
           fi
-          if ! echo "$OUT" | grep -q "inflight-deploy"; then
-            echo "::error::idle-check reported BUSY but did not name the in-flight workload — it may be tripping on something other than the deploy it must catch"
+          if ! echo "$OUT" | grep -q "${{ matrix.workload }}"; then
+            echo "::error::idle-check reported BUSY but did not name the '${{ matrix.workload }}' workload — it may be tripping on something other than the '${{ matrix.case }}' condition it must catch"
             exit 1
           fi
-          echo "OK: idle-check correctly reports BUSY and names the in-flight deploy."
+          echo "OK: idle-check correctly reports BUSY for the '${{ matrix.case }}' condition and names ${{ matrix.workload }}."
 
       - name: teardown WITHOUT FORCE must REFUSE and leave the cluster intact
         run: |
           set +e
-          OUT=$(uds run teardown 2>&1); RC=$?
+          OUT=$(uds run teardown --set IDLE_WINDOW_MINUTES=${{ matrix.window }} 2>&1); RC=$?
           set -e
           echo "$OUT"
           if [ "$RC" -eq 0 ]; then
-            echo "::error::teardown SUCCEEDED on a busy cluster without FORCE — the safety gate failed to block a destructive teardown"
+            echo "::error::teardown SUCCEEDED on a busy ('${{ matrix.case }}') cluster without FORCE — the safety gate failed to block a destructive teardown"
             exit 1
           fi
           if ! echo "$OUT" | grep -q "Refusing to destroy"; then
@@ -608,7 +720,7 @@ jobs:
             echo "::error::cluster 'uds-szl-demo' was deleted despite the refusal — teardown destroyed work it claimed to refuse"
             exit 1
           fi
-          echo "OK: teardown refused and the cluster is intact."
+          echo "OK: teardown refused for the '${{ matrix.case }}' condition and the cluster is intact."
 
       - name: teardown --set FORCE=true must succeed and delete the cluster
         run: |
