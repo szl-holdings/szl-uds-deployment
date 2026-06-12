@@ -69,6 +69,17 @@ jobs:
       - name: helm template — dry run render
         run: helm template test-release charts/szl-receipts/ > /dev/null && echo "helm template OK"
 
+      - name: Vault egress routing guard — self-test (negative fixtures)
+        # Lock in the routing guard's OWN behavior FIRST, before the guard step
+        # below trusts it on the real render. This renders the committed
+        # values-vault.yaml overlay correctly (asserts ACCEPTED) and with three
+        # deliberate misroutes — wrong port, wrong namespace, wrong remoteSelector
+        # (asserts each is REJECTED). If the routing check ever silently regressed
+        # into a no-op, the misroute cases would pass and this step would go red.
+        # Mirrors the negative-fixture self-tests the other guards in this repo
+        # carry (teardown-guard.yml, zarf-action-var-guard.yml).
+        run: bash scripts/vault-egress-routing-checks.test.sh
+
       - name: helm template — Vault custody preset guard
         # Guards charts/szl-receipts/values-vault.yaml (the committed Vault-custody
         # overlay that replaced the hand-applied `kubectl set env` flow). The other
@@ -147,40 +158,18 @@ jobs:
           # by name and pass — yet the receipts pod could read Vault's env values but be
           # network-blocked from actually reaching Vault at runtime (the same class of
           # silent signing failure that Task #384 guarded the env *values* against).
-          # Pin the rendered egress to the committed charts/szl-receipts/values-vault.yaml
-          # overlay: port 8200, remoteNamespace vault, and the
-          # `app.kubernetes.io/name: vault` remoteSelector. A wrong port or selector in
-          # values-vault.yaml now fails CI loudly.
-          assert_in() {  # $1 = label, $2 = file, $3 = grep -E pattern
-            if grep -qE -- "$3" "$2"; then
-              echo "  ok   $1"
-            else
-              echo "  FAIL $1  (missing pattern: $3)"
-              fail=1
-            fi
-          }
-
-          # Scope the K8s NetworkPolicy asserts to the rendered
-          # szl-receipts-allow-egress-vault document (from its metadata name up to the
-          # next YAML separator) so a stray match elsewhere in the render — e.g. another
-          # policy's port — cannot mask a misroute.
-          awk '
-            inblk && /^---/ {exit}
-            /name: szl-receipts-allow-egress-vault/{inblk=1}
-            inblk {print}
-          ' /tmp/vault-render.yaml > /tmp/vault-egress-np.yaml
-          assert_in "vault NetworkPolicy remoteNamespace=vault"                 /tmp/vault-egress-np.yaml 'kubernetes.io/metadata.name: vault$'
-          assert_in "vault NetworkPolicy remoteSelector app.kubernetes.io/name=vault" /tmp/vault-egress-np.yaml 'app.kubernetes.io/name: vault$'
-          assert_in "vault NetworkPolicy port=8200"                             /tmp/vault-egress-np.yaml 'port: 8200$'
-
-          # Scope the UDS Package asserts to the Vault Transit allow rule (its
-          # description line is unique) so the OTel / Pepr allow rules can't satisfy
-          # these. The 7 lines preceding the description are the full egress entry
-          # (direction/selector/remoteNamespace/remoteSelector/port).
-          grep -B7 -- 'description: "Vault Transit' /tmp/vault-render.yaml > /tmp/vault-egress-uds.yaml
-          assert_in "UDS Package vault egress remoteNamespace=vault"                 /tmp/vault-egress-uds.yaml 'remoteNamespace: vault$'
-          assert_in "UDS Package vault egress remoteSelector app.kubernetes.io/name=vault" /tmp/vault-egress-uds.yaml 'app.kubernetes.io/name: vault$'
-          assert_in "UDS Package vault egress port=8200"                             /tmp/vault-egress-uds.yaml 'port: 8200$'
+          # The routing assertions live in scripts/vault-egress-routing-checks.sh so
+          # they can be reused AND self-tested against deliberately misrouted renders
+          # (scripts/vault-egress-routing-checks.test.sh, run in the step above), which
+          # proves the routing check itself can never silently regress into a no-op.
+          # It pins the rendered egress to the committed values-vault.yaml overlay:
+          # port 8200, remoteNamespace vault, app.kubernetes.io/name: vault selector —
+          # for BOTH the K8s NetworkPolicy and the UDS Package allow rule.
+          if bash scripts/vault-egress-routing-checks.sh /tmp/vault-render.yaml; then
+            : # script printed per-assertion ok lines
+          else
+            fail=1
+          fi
 
           if [ "$fail" -ne 0 ]; then
             echo "Vault-custody preset render is missing required pieces (see FAIL lines)." >&2
