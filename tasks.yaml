@@ -397,6 +397,7 @@ tasks:
         cmd: |
           k3d cluster create "${CLUSTER_NAME}-test" --wait
       - description: "Zarf init (pin init package from OCI + retry; bare `zarf init` flakes on the GH-release fetch)"
+        maxTotalSeconds: 900
         cmd: |
           set -euo pipefail
           ZARF_VER="$(zarf version 2>/dev/null | tr -d 'v' || echo 0.77.0)"
@@ -422,6 +423,7 @@ tasks:
         cmd: |
           k3d cluster create "${CLUSTER_NAME}-upgrade" --wait
       - description: "Zarf init (pin init package from OCI + retry; bare `zarf init` flakes on the GH-release fetch)"
+        maxTotalSeconds: 900
         cmd: |
           set -euo pipefail
           ZARF_VER="$(zarf version 2>/dev/null | tr -d 'v' || echo 0.77.0)"
