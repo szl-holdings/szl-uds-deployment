@@ -1,0 +1,61 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# szl-core-rightsize-e2e-guard.yml — Guard the szl-core-rightsize self-heal
+# watcher (the box timer that keeps the shared UDS-core admission components
+# single-replica + no-surge on the 2-vCPU uds-szl-demo node) from silently
+# regressing.
+#
+# box-scripts/sbin/szl-core-rightsize is a SELF-HEALING patcher whose behaviour
+# produces NO visible symptom when broken until a real core redeploy quietly
+# strands szl-receipts in Pending:
+#   * on the drift edge it `kubectl patch`es each target Deployment back to
+#     replicas=1 (+ maxSurge=0/maxUnavailable=1 for RollingUpdate targets);
+#   * it is a TRUE no-op once every target already conforms (no API writes);
+#   * it skips a target that is absent and no-ops when the cluster is down.
+# The only prior coverage was a static grep.
+#
+# scripts/szl-core-rightsize-e2e-guard.sh RUNS the real script end-to-end against
+# fake k3d/kubectl (no cluster, no root, host untouched) and asserts it patches
+# exactly what it should and nothing else. scripts/szl-core-rightsize-e2e-guard.test.sh
+# is a negative-fixture self-test that mutates a COPY of the watcher and asserts
+# the guard FAILS on each, so the guard can't pass vacuously; it runs as the
+# `self-test` job the guard job depends on.
+
+name: szl-core-rightsize e2e Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    name: Self-test the guard (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/szl-core-rightsize-e2e-guard.test.sh
+
+  guard:
+    name: Drive szl-core-rightsize end-to-end
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Watcher parses clean (bash -n)
+        run: bash -n box-scripts/sbin/szl-core-rightsize
+
+      - name: Self-heal behaves correctly against a fake cluster
+        run: bash scripts/szl-core-rightsize-e2e-guard.sh
+
+      - name: szl-core-rightsize self-heal is intact
+        run: echo "The szl-core-rightsize drift-repair / idempotent-no-op / skip-absent paths are intact."

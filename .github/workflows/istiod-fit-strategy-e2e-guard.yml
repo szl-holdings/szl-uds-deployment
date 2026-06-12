@@ -1,0 +1,60 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# istiod-fit-strategy-e2e-guard.yml — Guard the istiod-fit-strategy self-heal
+# watcher (the box timer that keeps istiod's rolling-update strategy and HPA
+# fittable on the 2-vCPU uds-szl-demo node) from silently regressing.
+#
+# box-scripts/sbin/istiod-fit-strategy is a SELF-HEALING patcher with two
+# independent repairs whose behaviour produces NO visible symptom when broken
+# until a real control-plane upgrade or autoscale event hangs on a permanently
+# Pending istiod:
+#   * rolling-update strategy: patch maxSurge!=0 back to maxSurge=0/maxUnavailable=1;
+#   * HPA scale-up: clamp the istiod HPA back to maxReplicas=1.
+# Each repair is idempotent and skipped if its target is absent; the only prior
+# coverage was a static grep.
+#
+# scripts/istiod-fit-strategy-e2e-guard.sh RUNS the real script end-to-end against
+# fake k3d/kubectl (no cluster, no root) and asserts it patches exactly what it
+# should and nothing else. scripts/istiod-fit-strategy-e2e-guard.test.sh is a
+# negative-fixture self-test that mutates a COPY of the watcher and asserts the
+# guard FAILS on each, so the guard can't pass vacuously; it runs as the
+# `self-test` job the guard job depends on.
+
+name: istiod-fit-strategy e2e Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    name: Self-test the guard (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/istiod-fit-strategy-e2e-guard.test.sh
+
+  guard:
+    name: Drive istiod-fit-strategy end-to-end
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Watcher parses clean (bash -n)
+        run: bash -n box-scripts/sbin/istiod-fit-strategy
+
+      - name: Self-heal behaves correctly against a fake cluster
+        run: bash scripts/istiod-fit-strategy-e2e-guard.sh
+
+      - name: istiod-fit-strategy self-heal is intact
+        run: echo "The istiod-fit-strategy strategy-repair / HPA-repair / idempotent-no-op paths are intact."

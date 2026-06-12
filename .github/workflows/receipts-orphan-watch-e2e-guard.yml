@@ -1,0 +1,62 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# receipts-orphan-watch-e2e-guard.yml — Guard the szl-receipts-orphan-watch
+# edge-alert watcher (the box timer that pages when a namespace runs a
+# receipts-server Deployment owned by nothing — an orphan that signs nothing and
+# burns CPU on the 2-vCPU node) from silently regressing.
+#
+# box-scripts/sbin/szl-receipts-orphan-watch rides on behaviour that has NO
+# visible symptom when broken until a real orphan goes unalerted (or a stopped
+# cluster turns into a paging storm):
+#   * EDGE alert on OK->ALERT, de-duped on a persisting orphan, RECOVERED when it
+#     clears;
+#   * a Helm-owned receipts-server namespace must NOT be flagged;
+#   * FAIL-SAFE: cluster absent/unreachable OR an ownership probe erroring =
+#     status UNKNOWN, no page, last_status untouched.
+# The existing receipts-orphan-watch-guard-checks.sh is a static text check.
+#
+# scripts/receipts-orphan-watch-e2e-guard.sh RUNS the real watcher end-to-end
+# against fake k3d/kubectl/helm (no cluster, no root, never deletes anything) and
+# asserts the actual alert/de-dup/RECOVERED/fail-safe behaviour.
+# scripts/receipts-orphan-watch-e2e-guard.test.sh is a negative-fixture self-test
+# that mutates a COPY of the watcher and asserts the guard FAILS on each, so the
+# guard can't pass vacuously; it runs as the `self-test` job the guard depends on.
+
+name: receipts-orphan-watch e2e Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    name: Self-test the guard (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/receipts-orphan-watch-e2e-guard.test.sh
+
+  guard:
+    name: Drive szl-receipts-orphan-watch end-to-end
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Watcher parses clean (bash -n)
+        run: bash -n box-scripts/sbin/szl-receipts-orphan-watch
+
+      - name: Alert / de-dup / RECOVERED / fail-safe behave correctly
+        run: bash scripts/receipts-orphan-watch-e2e-guard.sh
+
+      - name: szl-receipts-orphan-watch alerting is intact
+        run: echo "The szl-receipts-orphan-watch edge-alert, de-dup, RECOVERED and fail-safe paths are intact."
