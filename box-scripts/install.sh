@@ -60,6 +60,7 @@ install -m 0755 "$here/sbin/szl-receipts-orphan-watch" /usr/local/sbin/szl-recei
 install -m 0755 "$here/sbin/vault-auto-unseal"          /usr/local/sbin/vault-auto-unseal
 install -m 0755 "$here/sbin/vault-keystore-offbox-backup" /usr/local/sbin/vault-keystore-offbox-backup
 install -m 0755 "$here/sbin/authelia-rotate-demo"      /usr/local/sbin/authelia-rotate-demo
+install -m 0755 "$here/sbin/szl-receipt-checkpoint"     /usr/local/sbin/szl-receipt-checkpoint
 
 echo "[install] copying systemd units to /etc/systemd/system ..."
 install -m 0644 "$here/systemd/a11oy-coexist.service"        /etc/systemd/system/a11oy-coexist.service
@@ -106,6 +107,8 @@ install -m 0644 "$here/systemd/vault-keystore-offbox-backup.service" /etc/system
 install -m 0644 "$here/systemd/vault-keystore-offbox-backup.timer"   /etc/systemd/system/vault-keystore-offbox-backup.timer
 install -m 0644 "$here/systemd/authelia-rotate-demo.service" /etc/systemd/system/authelia-rotate-demo.service
 install -m 0644 "$here/systemd/authelia-rotate-demo.timer"   /etc/systemd/system/authelia-rotate-demo.timer
+install -m 0644 "$here/systemd/szl-receipt-checkpoint.service" /etc/systemd/system/szl-receipt-checkpoint.service
+install -m 0644 "$here/systemd/szl-receipt-checkpoint.timer"   /etc/systemd/system/szl-receipt-checkpoint.timer
 
 # The uptime/DNS watchers read their push-notification channel from
 # /etc/a11oy-uptime.env. That channel is a PRIVATE secret (an ntfy topic, etc.)
@@ -151,6 +154,30 @@ NTFY_PRIORITY=high
 EOF
   chmod 600 /etc/szl-alert-relay.env
   echo "[install] seeded /etc/szl-alert-relay.env with a fresh RELAY_TOKEN"
+fi
+
+# The szl-receipt-checkpoint job writes a TAMPER-EVIDENT checkpoint of the live
+# receipt-log chain head to the dedicated `receipts-checkpoint` branch — a branch
+# the receipts-server pod has NO token for (that is the point). The org GitHub
+# token is a PRIVATE secret and is NEVER committed to git. Seed a commented-out
+# stub if absent so the file exists and the operator knows where the token lives;
+# never clobber a hand-filled one. Until a token is set the daily job still RUNS
+# and VERIFIES the live chain every cycle (fail-soft) — it just cannot read or
+# advance the durable anchor.
+if [ ! -e /etc/szl-receipt-checkpoint.env ]; then
+  cat > /etc/szl-receipt-checkpoint.env <<'EOF'
+# szl-receipt-checkpoint config (PRIVATE - keep OUT of git).
+# Org GitHub token (owner) used to read/advance the durable receipt-log
+# checkpoint on the dedicated `receipts-checkpoint` branch. Until set, the daily
+# checkpoint job verifies the live chain but cannot read/write the anchor.
+#SZL_GITHUB_TOKEN=ghp_XXXXXXXXXXXXXXXXXXXX
+# Optional overrides (defaults already target the live box):
+#SZL_CHECKPOINT_REPO=szl-holdings/szl-uds-deployment
+#SZL_CHECKPOINT_BRANCH=receipts-checkpoint
+#SZL_CHECKPOINT_PATH=receipts/checkpoint.json
+EOF
+  chmod 600 /etc/szl-receipt-checkpoint.env
+  echo "[install] seeded commented-out /etc/szl-receipt-checkpoint.env (checkpoint anchor read/write disabled until a token is set)"
 fi
 
 
@@ -374,6 +401,7 @@ systemctl enable --now szl-alert-relay-watch.timer
 systemctl enable --now szl-signing-health-check.timer
 systemctl enable --now a11oy-signing-key-watch.timer
 systemctl enable --now szl-receipts-orphan-watch.timer
+systemctl enable --now szl-receipt-checkpoint.timer
 
 # Bring the cluster guards into a conformant state right now (idempotent no-ops
 # if the cluster is down or already conformant).

@@ -32,8 +32,19 @@
 #     bash scripts/verify_receipts.sh
 #
 # Exit codes:
-#   0 — all receipts verified (signature + chain link)
-#   1 — at least one verification failed or server/key unreachable
+#   0 — all receipts verified (signature + chain link) AND, if an anchor is
+#       supplied, the live chain is at or above the durable checkpoint
+#   1 — at least one verification failed, server/key unreachable, OR the live
+#       chain regressed below the durable checkpoint (see "Durable-checkpoint
+#       mode" below)
+#
+# Durable-checkpoint mode (opt-in; no-op unless one of these is set):
+#   SZL_ANCHOR_FILE=/path/checkpoint.json   {chain_index, head_hash} anchor
+#   SZL_MIN_CHAIN_INDEX=<n>                  explicit live-head index floor
+#   SZL_EXPECTED_HEAD_HASH=<hex>             expected hash at the checkpoint index
+#   Fails (exit 1) if the live head index falls below the checkpoint
+#   (truncation/rollback) or a windowed checkpointed receipt's hash changed
+#   (tamper). Used by the box `szl-receipt-checkpoint` timer.
 
 set -euo pipefail
 
@@ -188,6 +199,117 @@ if fail_count > 0:
 sys.exit(0 if fail_count == 0 else 1)
 PYEOF
 
+
+# ── Step 2b: Durable-checkpoint / anchor regression check (additive, opt-in) ──
+# Asserts the LIVE chain has not regressed BELOW a durable, pod-unwritable
+# checkpoint of the chain head (the "tamper-proof receipt-log checkpoint").
+#
+# Gated ENTIRELY on the anchor inputs below — when NONE are set this block is a
+# pure no-op, so existing callers (receipts-e2e, the DSSE regression test,
+# `uds run demo:verify`) behave EXACTLY as before:
+#   SZL_ANCHOR_FILE        path to a checkpoint JSON {chain_index, head_hash}
+#                          (head_hash alias: "hash") — the durable anchor.
+#   SZL_MIN_CHAIN_INDEX    explicit floor for the live head chain_index (stands
+#                          in for / raises the anchor's chain_index).
+#   SZL_EXPECTED_HEAD_HASH explicit expected hash for the checkpointed index.
+#
+# GET /receipts returns a most-recent WINDOW (capped MAX_IN_MEMORY) but the head
+# (highest chain_index) is ALWAYS present, so this checks:
+#   * TRUNCATION/ROLLBACK  live head chain_index < checkpoint index → FAIL
+#     ("the live chain fell below the last checkpoint").
+#   * TAMPER/REWRITE       if the checkpointed receipt is still in the window,
+#     its stored hash must equal the checkpoint head_hash → else FAIL.
+ANCHOR_RC=0
+if [ -n "${SZL_ANCHOR_FILE:-}" ] || [ -n "${SZL_MIN_CHAIN_INDEX:-}" ] || [ -n "${SZL_EXPECTED_HEAD_HASH:-}" ]; then
+  echo ""
+  echo "── Durable checkpoint / anchor regression check ───────────────────"
+  RECEIPTS_JSON="${RECEIPTS_JSON}" \
+  SZL_ANCHOR_FILE="${SZL_ANCHOR_FILE:-}" \
+  SZL_MIN_CHAIN_INDEX="${SZL_MIN_CHAIN_INDEX:-}" \
+  SZL_EXPECTED_HEAD_HASH="${SZL_EXPECTED_HEAD_HASH:-}" \
+  python3 - << 'ANCHOREOF' || ANCHOR_RC=$?
+import os, sys, json
+
+receipts = json.loads(os.environ["RECEIPTS_JSON"])
+
+# Live head = the highest chain_index present in the returned window (the server
+# always includes the head). by_index lets us hash-check the anchored receipt if
+# it is still inside the window.
+live_idx = None
+live_head = None
+by_index = {}
+for r in receipts:
+    c = r.get("chain") or {}
+    ci = c.get("chain_index")
+    if ci is None:
+        continue
+    ci = int(ci)
+    by_index[ci] = c.get("hash")
+    if live_idx is None or ci > live_idx:
+        live_idx, live_head = ci, c.get("hash")
+if live_idx is None:
+    live_idx = -1
+
+anchor_idx = None
+anchor_head = None
+af = os.environ.get("SZL_ANCHOR_FILE", "")
+if af:
+    try:
+        with open(af) as fh:
+            a = json.load(fh)
+        anchor_idx = int(a["chain_index"])
+        anchor_head = a.get("head_hash") or a.get("hash")
+    except Exception as e:
+        print(f"  x anchor file {af!r} unreadable: {e}")
+        sys.exit(1)
+
+mci = os.environ.get("SZL_MIN_CHAIN_INDEX", "")
+if mci != "":
+    anchor_idx = int(mci) if anchor_idx is None else max(anchor_idx, int(mci))
+
+ehh = os.environ.get("SZL_EXPECTED_HEAD_HASH", "")
+if ehh:
+    anchor_head = ehh
+
+failures = []
+if anchor_idx is not None:
+    print(f"  durable checkpoint chain_index={anchor_idx}  live head chain_index={live_idx}")
+    if live_idx < anchor_idx:
+        failures.append(
+            f"TRUNCATION/ROLLBACK: live head index {live_idx} is BELOW the durable "
+            f"checkpoint index {anchor_idx} - the chain has shrunk."
+        )
+
+if anchor_head:
+    at = anchor_idx if anchor_idx is not None else live_idx
+    if at in by_index:
+        if by_index[at] != anchor_head:
+            failures.append(
+                f"TAMPER: receipt at chain_index {at} has hash "
+                f"{str(by_index[at])[:16]} but the checkpoint recorded "
+                f"{str(anchor_head)[:16]}"
+            )
+        else:
+            print(f"  ok checkpointed head hash at index {at} is unchanged")
+    elif anchor_idx is not None and live_idx == anchor_idx and live_head != anchor_head:
+        failures.append(
+            f"TAMPER: live head hash {str(live_head)[:16]} != checkpoint "
+            f"{str(anchor_head)[:16]} at index {anchor_idx}"
+        )
+
+if failures:
+    print("  x DURABLE-CHECKPOINT REGRESSION:")
+    for f in failures:
+        print(f"     - {f}")
+    sys.exit(1)
+print("  ok live chain is at or above the durable checkpoint; no regression.")
+sys.exit(0)
+ANCHOREOF
+  if [ "${ANCHOR_RC}" -ne 0 ]; then
+    echo "  Durable-checkpoint regression detected (exit ${ANCHOR_RC})."
+  fi
+fi
+
 # ── Step 3: Show K8s annotations (best-effort; skipped in offline file mode) ───
 if [ -z "${CHAIN_FILE}" ]; then
   echo ""
@@ -198,10 +320,14 @@ if [ -z "${CHAIN_FILE}" ]; then
 fi
 
 echo ""
-if [ "${VERIFY_RC}" -eq 0 ]; then
+FINAL_RC="${VERIFY_RC}"
+if [ "${ANCHOR_RC:-0}" -ne 0 ]; then
+  FINAL_RC=1
+fi
+if [ "${VERIFY_RC}" -eq 0 ] && [ "${ANCHOR_RC:-0}" -eq 0 ]; then
   echo "Verification complete — all receipts verified (Ed25519 + hash chain)."
 else
-  echo "Verification complete — one or more receipts did not verify (exit ${VERIFY_RC})."
+  echo "Verification complete — FAILED (per-receipt exit ${VERIFY_RC}, durable-checkpoint exit ${ANCHOR_RC:-0})."
 fi
 
-exit "${VERIFY_RC}"
+exit "${FINAL_RC}"

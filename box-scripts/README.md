@@ -903,3 +903,75 @@ STATE_DIR=/tmp/askw/state LOG_DIR=/tmp/askw/log NOTIFY_CMD=/bin/cat \
   ALERT_PREFIX="[TEST] " /usr/local/sbin/a11oy-signing-key-watch
 rm -rf /tmp/askw
 ```
+
+---
+
+# box-scripts (part 10) — tamper-proof receipt-log checkpoint (uds-szl-demo)
+
+`szl-receipt-checkpoint` records a **tamper-evident checkpoint of the live
+receipt-log chain head** to a location the `szl-receipts-server` pod cannot
+rewrite, then re-verifies the live chain against that durable anchor and pages if
+the live chain ever **falls below the last checkpoint** (truncation/rollback) or
+a checkpointed receipt's hash changes (tamper).
+
+## Why
+
+The receipts-server signs every deploy receipt into an append-only, hash-linked
+chain — but that chain lives in the pod's own storage. A compromised or buggy
+server could truncate it and re-sign a shorter chain with the same key. Copying
+the chain head **off the pod**, to a store the pod has no credentials for, makes
+that detectable: the chain can grow, but it can never silently shrink.
+
+## Cadence
+
+Runs **daily** via `szl-receipt-checkpoint.timer`
+(`OnCalendar=daily`, `Persistent=true`, plus `OnBootSec=10min`).
+
+## Storage
+
+The durable anchor is a JSON file in **this same GitHub repo**, on a
+**dedicated branch** distinct from the in-repo receipt-baseline workstream on
+`main`:
+
+| Field   | Value                                   |
+| ------- | --------------------------------------- |
+| Repo    | `szl-holdings/szl-uds-deployment`       |
+| Branch  | `receipts-checkpoint`                   |
+| Path    | `receipts/checkpoint.json`              |
+| Content | `{ schema, repo, chain_index, head_hash, checkpointed_at, note }` |
+
+The receipts-server pod has **no token** for this branch — the org GitHub token
+lives **only** in the root-`0600` box env file `/etc/szl-receipt-checkpoint.env`,
+seeded (commented-out) by `install.sh`. The anchor only ever advances
+**monotonically** (a healthy, higher chain head); it is never lowered.
+
+## What it does each cycle
+
+1. No-op (exit 0, no page) if the cluster is absent/unreachable or the receipts
+   module is not deployed.
+2. Self-verify the live chain with `scripts/verify_receipts.sh` — **refuses to
+   checkpoint** a chain that does not verify.
+3. Read the previous anchor (`receipts/checkpoint.json` on `receipts-checkpoint`)
+   and re-run `verify_receipts.sh` with `SZL_ANCHOR_FILE=<anchor>` to assert the
+   live head has not fallen below it (truncation) and the checkpointed receipt's
+   hash is unchanged (tamper). Either condition pages once (edge-triggered).
+4. If healthy and the live head is ahead of the anchor, advance
+   `receipts/checkpoint.json` to the new head (fail-soft if the token is absent).
+
+## Manual / safe run
+
+```bash
+systemctl is-enabled szl-receipt-checkpoint.timer
+# Dry, isolated, captured-notifier run (no team page, isolated edge-state):
+rm -rf /tmp/src; mkdir -p /tmp/src
+SZL_STATE_DIR=/tmp/src SZL_NOTIFY_CMD=/bin/cat \
+  /usr/local/sbin/szl-receipt-checkpoint
+rm -rf /tmp/src
+```
+
+The same anchor primitive is exposed directly by `scripts/verify_receipts.sh`:
+
+```bash
+# Fail (exit 1) if the live chain has regressed below a durable checkpoint:
+SZL_ANCHOR_FILE=/path/to/checkpoint.json bash scripts/verify_receipts.sh
+```

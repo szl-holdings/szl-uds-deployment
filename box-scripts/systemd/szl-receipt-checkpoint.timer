@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily tamper-proof checkpoint of the receipt-log chain head (off-pod, monotonic anchor) + regression re-verify
+
+[Timer]
+OnBootSec=10min
+OnCalendar=daily
+AccuracySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

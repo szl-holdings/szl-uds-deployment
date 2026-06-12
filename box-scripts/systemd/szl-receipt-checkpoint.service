@@ -1,0 +1,10 @@
+[Unit]
+Description=Record a tamper-evident checkpoint of the live receipt-log chain head to a pod-unwritable git branch, and re-verify the live chain against it
+Documentation=file:///usr/local/sbin/szl-receipt-checkpoint
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/szl-receipt-checkpoint.env
+ExecStart=/usr/local/sbin/szl-receipt-checkpoint

@@ -1,0 +1,87 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# szl-receipt-checkpoint-guard.yml — Guard the `szl-receipt-checkpoint` box job
+# (the tamper-proof receipt-log checkpoint + regression re-verify) from silently
+# regressing.
+#
+# szl-receipt-checkpoint (box-scripts/sbin/szl-receipt-checkpoint) runs daily and
+# copies the live receipt-log chain HEAD off the pod onto a dedicated git branch
+# the receipts-server pod cannot rewrite, then re-verifies the live chain against
+# that durable anchor and pages if the live chain ever falls BELOW the last
+# checkpoint (truncation/rollback) or a checkpointed receipt's hash changed
+# (tamper). Its value rests on fragile invariants that produce NO visible symptom
+# when broken until a real rollback goes unalerted:
+#   * self-verifies the live chain before checkpointing;
+#   * regression-checks the live chain against the durable anchor;
+#   * is EDGE-triggered (state file + exactly two notify calls);
+#   * NO-OPs when the cluster is absent/unreachable or the module is not deployed;
+#   * writes a DISTINCT checkpoint filename on a DEDICATED branch and advances
+#     the anchor MONOTONICALLY;
+#   * stays WIRED into install.sh and documented in README.md;
+#   * verify_receipts.sh still honors SZL_ANCHOR_FILE.
+#
+# The check logic lives in scripts/szl-receipt-checkpoint-guard-checks.sh (pure
+# text/lint, no cluster), extracted so it can be UNIT TESTED:
+# scripts/szl-receipt-checkpoint-guard-checks.test.sh feeds each check a
+# deliberately-BROKEN fixture and asserts the check FAILS, plus asserts the
+# pristine repo PASSES. That self-test runs as the `self-test` job below.
+
+name: SZL Receipt Checkpoint Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/szl-receipt-checkpoint-guard-checks.test.sh
+
+  guard:
+    name: Assert the tamper-proof receipt-checkpoint job is intact
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check 1 — szl-receipt-checkpoint exists and parses clean
+        run: bash scripts/szl-receipt-checkpoint-guard-checks.sh chk1 .
+
+      - name: Check 2 — self-verifies the live chain before checkpointing
+        run: bash scripts/szl-receipt-checkpoint-guard-checks.sh chk2 .
+
+      - name: Check 3 — regression-checks the live chain against the durable anchor
+        run: bash scripts/szl-receipt-checkpoint-guard-checks.sh chk3 .
+
+      - name: Check 4 — edge-triggered (state file + exactly two notifies)
+        run: bash scripts/szl-receipt-checkpoint-guard-checks.sh chk4 .
+
+      - name: Check 5 — cluster-absent / unreachable / module-absent no-op
+        run: bash scripts/szl-receipt-checkpoint-guard-checks.sh chk5 .
+
+      - name: Check 6 — distinct checkpoint.json, dedicated branch, monotonic advance
+        run: bash scripts/szl-receipt-checkpoint-guard-checks.sh chk6 .
+
+      - name: Check 7 — wired into install.sh (script + timer enabled + env seeded)
+        run: bash scripts/szl-receipt-checkpoint-guard-checks.sh chk7 .
+
+      - name: Check 8 — documented in README.md (cadence + storage)
+        run: bash scripts/szl-receipt-checkpoint-guard-checks.sh chk8 .
+
+      - name: Check 9 — verify_receipts.sh honors SZL_ANCHOR_FILE
+        run: bash scripts/szl-receipt-checkpoint-guard-checks.sh chk9 .
+
+      - name: Tamper-proof receipt-checkpoint job is intact
+        run: echo "The szl-receipt-checkpoint tamper-proof checkpoint job is intact."

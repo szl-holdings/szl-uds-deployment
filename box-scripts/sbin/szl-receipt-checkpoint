@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# szl-receipt-checkpoint — record a TAMPER-EVIDENT checkpoint of the live
+# receipt-log chain head to a location the receipts-server pod CANNOT rewrite.
+#
+# WHY THIS EXISTS
+# The szl-receipts-server signs every deploy receipt into an append-only,
+# hash-linked chain. But the chain lives in the pod's own storage: a compromised
+# or buggy server could truncate or rewrite it and re-sign a shorter chain with
+# the same key. To make that detectable we periodically copy the chain HEAD
+# (chain_index + head hash) OFF the pod, into a dedicated git branch the pod has
+# no credentials or network path to touch, and then re-verify the LIVE chain
+# against that durable anchor. If the live chain ever falls BELOW the last
+# checkpoint (truncation/rollback) or a checkpointed receipt's hash changes
+# (tamper), we page — the chain cannot silently shrink unnoticed.
+#
+# CADENCE & STORAGE  (see box-scripts/README.md for the operator narrative)
+#   * Runs DAILY via szl-receipt-checkpoint.timer (OnCalendar=daily, persistent).
+#   * Durable store: the GitHub repo szl-holdings/szl-uds-deployment, on the
+#     DEDICATED branch `receipts-checkpoint`, file `receipts/checkpoint.json`.
+#     This is DISTINCT from the in-repo receipt-baseline workstream on main, and
+#     the receipts-server pod has no token for it (write creds live ONLY in the
+#     root-0600 box env file below) — so the pod cannot rewrite its own anchor.
+#   * The anchor only ever advances MONOTONICALLY (a healthy, higher chain head);
+#     it is never lowered.
+#
+# Safety properties (mirrors the other box watch-alarms):
+#   * NO-OP (exit 0, no page) when the cluster is absent/unreachable or the
+#     receipts module is not deployed — a stopped k3d never pages.
+#   * EDGE-triggered: pages exactly ONCE on OK->ALERT and once on RECOVERED.
+#   * FAIL-SOFT on the durable store: a missing token or a transient GitHub error
+#     is logged, never paged; verification still runs every cycle.
+#
+# Config via environment (all optional; defaults target the live box):
+#   SZL_CLUSTER SZL_NAMESPACE SZL_SVC SZL_DEPLOY SZL_LOCAL_PORT
+#   SZL_CHECKPOINT_REPO SZL_CHECKPOINT_BRANCH SZL_CHECKPOINT_PATH
+#   SZL_VERIFY_SH SZL_STATE_DIR SZL_NOTIFY_CMD SZL_CHECKPOINT_ENV
+# The token (SZL_GITHUB_TOKEN / GITHUB_TOKEN) is sourced from SZL_CHECKPOINT_ENV
+# (/etc/szl-receipt-checkpoint.env, root:root 0600) — NEVER from the repo.
+
+set -uo pipefail
+
+CLUSTER="${SZL_CLUSTER:-uds-szl-demo}"
+NS="${SZL_NAMESPACE:-szl-receipts}"
+SVC="${SZL_SVC:-szl-receipts-server}"
+DEPLOY="${SZL_DEPLOY:-szl-receipts-server}"
+LOCAL_PORT="${SZL_LOCAL_PORT:-19999}"
+REPO="${SZL_CHECKPOINT_REPO:-szl-holdings/szl-uds-deployment}"
+BRANCH="${SZL_CHECKPOINT_BRANCH:-receipts-checkpoint}"
+CKPT_PATH="${SZL_CHECKPOINT_PATH:-receipts/checkpoint.json}"
+VERIFY_SH="${SZL_VERIFY_SH:-/opt/szl/szl-uds-deployment/scripts/verify_receipts.sh}"
+STATE_DIR="${SZL_STATE_DIR:-/var/lib/szl-receipt-checkpoint}"
+LAST_FILE="${STATE_DIR}/last_status"
+NOTIFY_CMD="${SZL_NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
+ENV_FILE="${SZL_CHECKPOINT_ENV:-/etc/szl-receipt-checkpoint.env}"
+
+# Load token + any overrides from the root-only env file (never committed).
+# shellcheck disable=SC1090
+[ -r "$ENV_FILE" ] && . "$ENV_FILE" || true
+GH_TOKEN="${SZL_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
+
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+
+log() { echo "[szl-receipt-checkpoint] $*"; }
+
+# notify SUBJECT BODY — page via the shared uptime notifier (best-effort).
+notify() {
+  local subject="$1" body="$2"
+  if [ -x "$NOTIFY_CMD" ]; then
+    "$NOTIFY_CMD" "$subject" "$body" || true
+  else
+    log "NOTIFY (no $NOTIFY_CMD): $subject — $body"
+  fi
+}
+
+# commit_checkpoint — write {chain_index, head_hash, ...} to the DEDICATED branch
+# via the GitHub Contents API (the receipts-server pod has no path to do this).
+# Returns non-zero on any API failure (caller treats it as a soft warning).
+commit_checkpoint() {
+  local payload ts b64 body main_sha
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  payload="$(python3 - "$LIVE_IDX" "$LIVE_HEAD" "$ts" "$REPO" << 'PYEOF'
+import sys, json
+idx, head, ts, repo = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+print(json.dumps({
+    "schema": "szl-receipts-checkpoint/v1",
+    "repo": repo,
+    "chain_index": int(idx),
+    "head_hash": head,
+    "checkpointed_at": ts,
+    "note": ("Tamper-evident checkpoint of the live receipt-log chain head, "
+             "written by the box szl-receipt-checkpoint timer to a branch the "
+             "receipts-server pod cannot rewrite."),
+}, indent=2) + "\n")
+PYEOF
+)"
+  # Ensure the dedicated branch exists (create it from main if missing).
+  if ! curl -sf -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+       "https://api.github.com/repos/${REPO}/git/ref/heads/${BRANCH}" >/dev/null 2>&1; then
+    main_sha="$(curl -sf -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+       "https://api.github.com/repos/${REPO}/git/ref/heads/main" \
+       | python3 -c 'import sys,json;print(json.load(sys.stdin)["object"]["sha"])' 2>/dev/null || echo "")"
+    [ -z "$main_sha" ] && return 1
+    curl -sf -X POST -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+       "https://api.github.com/repos/${REPO}/git/refs" \
+       -d "$(MAIN_SHA="$main_sha" BR="$BRANCH" python3 -c 'import os,json;print(json.dumps({"ref":"refs/heads/"+os.environ["BR"],"sha":os.environ["MAIN_SHA"]}))')" \
+       >/dev/null 2>&1 || return 1
+  fi
+  b64="$(printf '%s' "$payload" | base64 | tr -d '\n')"
+  body="$(B64="$b64" SHA="$ANCHOR_SHA" BR="$BRANCH" IDX="$LIVE_IDX" python3 -c '
+import os, json
+d = {"message": "chore(receipts): checkpoint chain head at index " + os.environ["IDX"],
+     "content": os.environ["B64"], "branch": os.environ["BR"]}
+if os.environ.get("SHA"): d["sha"] = os.environ["SHA"]
+print(json.dumps(d))')"
+  curl -sf -X PUT -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+     "https://api.github.com/repos/${REPO}/contents/${CKPT_PATH}" -d "$body" >/dev/null 2>&1 || return 1
+  log "durable checkpoint advanced to chain_index=${LIVE_IDX} on ${REPO}@${BRANCH}:${CKPT_PATH}"
+  return 0
+}
+
+# ── Cluster resolve — absent / unreachable / module-absent are silent NO-OPs ──
+command -v kubectl >/dev/null 2>&1 || { log "kubectl not found — no-op"; exit 0; }
+if command -v k3d >/dev/null 2>&1; then
+  KCFG="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" || { log "cluster $CLUSTER absent — no-op"; exit 0; }
+  export KUBECONFIG="$KCFG"
+fi
+kubectl get --raw='/readyz' >/dev/null 2>&1 || { log "cluster unreachable — no-op"; exit 0; }
+kubectl get deploy "$DEPLOY" -n "$NS" >/dev/null 2>&1 || { log "receipts module ($DEPLOY) absent — no-op"; exit 0; }
+
+# ── Port-forward + fetch the live chain ──────────────────────────────────────
+PF_PID=""
+cleanup() { [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true; }
+trap cleanup EXIT
+
+kubectl port-forward "svc/${SVC}" "${LOCAL_PORT}:8080" -n "$NS" >/dev/null 2>&1 &
+PF_PID=$!
+sleep 3
+BASE="http://localhost:${LOCAL_PORT}"
+
+RECEIPTS_JSON="$(curl -sf "${BASE}/receipts" 2>/dev/null)" || RECEIPTS_JSON=""
+if [ -z "$RECEIPTS_JSON" ]; then
+  # Sink health is owned by the receipt-chain-watch alarm; a transient fetch
+  # miss here is a no-op so we don't double-page.
+  log "could not fetch /receipts (sink unhealthy?) — no-op"
+  exit 0
+fi
+
+reasons=""
+add_reason() { reasons="${reasons}${reasons:+; }$1"; }
+
+# ── 1) Self-verify the LIVE chain (refuse to checkpoint a failing chain) ──────
+if [ -f "$VERIFY_SH" ]; then
+  if ! SZL_RECEIPTS_URL="$BASE" bash "$VERIFY_SH" >/tmp/szl-ckpt-verify.log 2>&1; then
+    add_reason "live receipt chain failed Ed25519/hash-chain verify (refusing to checkpoint)"
+  fi
+else
+  log "verify script $VERIFY_SH not found — skipping live self-verify"
+fi
+
+# ── 2) Compute the live head (highest chain_index + its hash) ────────────────
+HEAD_JSON="$(RECEIPTS_JSON="$RECEIPTS_JSON" python3 - << 'PYEOF'
+import os, json
+rs = json.loads(os.environ["RECEIPTS_JSON"])
+idx = None; head = None; n = 0
+for r in rs:
+    c = r.get("chain") or {}
+    ci = c.get("chain_index")
+    if ci is None:
+        continue
+    ci = int(ci); n += 1
+    if idx is None or ci > idx:
+        idx, head = ci, c.get("hash")
+print(json.dumps({"chain_index": idx if idx is not None else -1,
+                  "head_hash": head, "window_count": n}))
+PYEOF
+)"
+LIVE_IDX="$(echo "$HEAD_JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin)["chain_index"])')"
+LIVE_HEAD="$(echo "$HEAD_JSON" | python3 -c 'import sys,json;print(json.load(sys.stdin)["head_hash"] or "")')"
+
+# ── 3) Fetch the durable anchor from the pod-unwritable branch + regress-check ─
+ANCHOR_TMP="$(mktemp)"
+ANCHOR_SHA=""
+ANCHOR_IDX=-1
+if [ -n "$GH_TOKEN" ]; then
+  resp="$(curl -sf -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+       "https://api.github.com/repos/${REPO}/contents/${CKPT_PATH}?ref=${BRANCH}" 2>/dev/null || echo "")"
+  if [ -n "$resp" ]; then
+    echo "$resp" | python3 -c 'import sys,json,base64;d=json.load(sys.stdin);sys.stdout.write(base64.b64decode(d["content"]).decode())' >"$ANCHOR_TMP" 2>/dev/null || :
+    ANCHOR_SHA="$(echo "$resp" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("sha",""))' 2>/dev/null || echo "")"
+    if [ -s "$ANCHOR_TMP" ]; then
+      ANCHOR_IDX="$(AF="$ANCHOR_TMP" python3 -c 'import os,json;print(int(json.load(open(os.environ["AF"]))["chain_index"]))' 2>/dev/null || echo -1)"
+      if [ -f "$VERIFY_SH" ]; then
+        if ! SZL_RECEIPTS_URL="$BASE" SZL_ANCHOR_FILE="$ANCHOR_TMP" bash "$VERIFY_SH" >/tmp/szl-ckpt-anchor.log 2>&1; then
+          add_reason "live chain regressed below durable checkpoint (live idx ${LIVE_IDX} < anchor idx ${ANCHOR_IDX}) or head tampered"
+        fi
+      fi
+    fi
+  fi
+else
+  log "no GitHub token ($ENV_FILE) — durable read/write disabled this run (fail-soft)"
+fi
+
+# ── 4) Edge-triggered alerting (exactly one page per OK->ALERT / RECOVERED) ───
+prev="OK"
+[ -f "$LAST_FILE" ] && prev="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
+
+if [ -n "$reasons" ]; then
+  echo "ALERT" >"$LAST_FILE"
+  if [ "$prev" != "ALERT" ]; then
+    notify "SZL receipt checkpoint: INTEGRITY ALERT" "The live receipt chain failed durable-checkpoint verification: ${reasons}. Checkpoint NOT advanced. repo=${REPO} branch=${BRANCH} live_idx=${LIVE_IDX} anchor_idx=${ANCHOR_IDX}."
+  fi
+  log "ALERT: ${reasons}"
+  rm -f "$ANCHOR_TMP" 2>/dev/null || true
+  exit 1
+fi
+
+# Healthy: advance the durable checkpoint MONOTONICALLY (never write a lower idx).
+if [ -n "$GH_TOKEN" ] && [ "$LIVE_IDX" -ge 0 ]; then
+  if [ "$LIVE_IDX" -gt "$ANCHOR_IDX" ]; then
+    commit_checkpoint || log "WARN: durable checkpoint commit failed (fail-soft; retry next cycle)"
+  else
+    log "live idx ${LIVE_IDX} not ahead of anchor ${ANCHOR_IDX} — nothing to advance"
+  fi
+fi
+
+echo "OK" >"$LAST_FILE"
+if [ "$prev" = "ALERT" ]; then
+  notify "SZL receipt checkpoint: RECOVERED" "The live receipt chain verifies against the durable checkpoint again. repo=${REPO} branch=${BRANCH} live_idx=${LIVE_IDX}."
+fi
+log "OK: live head idx=${LIVE_IDX} verified; durable checkpoint at idx>=${ANCHOR_IDX}."
+rm -f "$ANCHOR_TMP" 2>/dev/null || true
+exit 0
