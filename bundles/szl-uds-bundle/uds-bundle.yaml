@@ -37,7 +37,7 @@ metadata:
     killinchu (receipt/transport courier), and rosie (governed decision fabric)
     composed into one deployable UDS bundle. All 5 member images are live and
     cosign-signed on ghcr.io.
-  version: "0.2.0"
+  version: "0.3.0"
   authors: "SZL Holdings <eng@szlholdings.com>"
   url: "https://github.com/szl-holdings/szl-uds-deployment"
 
@@ -54,19 +54,19 @@ packages:
   # ── sentra — cyber-resilience runtime (fail-closed Safety Gate) ──────────
   - name: szl-sentra
     path: ../../packages/sentra
-    ref: "0.2.0"
+    ref: "0.3.0"
 
   # ── amaru — convergent data-sync + attestation runtime ───────────────────
   - name: szl-amaru
     path: ../../packages/amaru
-    ref: "0.2.0"
+    ref: "0.3.0"
 
   # ── killinchu — receipt/transport courier organ ──────────────────────────
   - name: szl-killinchu
     path: ../../packages/killinchu
-    ref: "0.2.0"
+    ref: "0.3.0"
 
   # ── rosie — governed decision fabric + observability dashboard ────────────
   - name: szl-rosie
     path: ../../packages/rosie
-    ref: "0.2.0"
+    ref: "0.3.0"
