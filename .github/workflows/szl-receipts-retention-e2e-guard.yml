@@ -1,0 +1,75 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# szl-receipts-retention-e2e-guard.yml — Guard the szl-receipts-retention daily
+# auto-trim job (the box timer that runs `server.py verify-store` +
+# `archive-shards --delete` so the live receipts PVC stays bounded on its own)
+# from silently regressing the data-level safety it exists to provide.
+#
+# The existing scripts/szl-receipts-retention-guard-checks.sh drives the runner
+# under a mocked kubectl, but feeds it CANNED verify-store / archive-shards JSON
+# (server.py never runs) — so it proves the runner's control flow but CANNOT
+# prove the store actually shrinks, that archived buckets actually land in the
+# cold dir, that the TAIL bucket is never deleted, or that a post-archive
+# verify-store still reports chain_ok=true.
+#
+# scripts/szl-receipts-retention-e2e-guard.sh closes that gap: it SEEDS a real
+# signed receipt store (ephemeral Ed25519 key, several small shard buckets +
+# a tail), mocks kubectl so `exec … -- <cmd>` runs the REAL server.py against the
+# real store, runs the REAL runner end-to-end, and asserts the observable result
+# (store shrank, cold dir populated, tail survived, no false page, post-archive
+# verify-store chain_ok=true), plus a cluster-down no-op and a tampered-bucket
+# ALERT-without-deletion path.
+#
+# scripts/szl-receipts-retention-e2e-guard.test.sh is a negative-fixture
+# self-test: it points the guard at deliberately-broken copies of server.py
+# (tail guard removed / per-bucket verify gate removed) and asserts the guard
+# FAILS on each (plus passes pristine), so the guard can't pass vacuously. It
+# runs as the `self-test` job the guard depends on.
+#
+# Both jobs `pip install cryptography` — the seeder builds a REAL Ed25519-signed
+# store, so unsigned receipts (no cryptography) would make verify-store report
+# chain_ok=false and the whole premise collapse.
+
+name: szl-receipts-retention e2e Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    name: Self-test the guard (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Install cryptography (real Ed25519 signing for the seeded store)
+        run: python3 -m pip install --user cryptography
+      - name: Run negative-fixture self-test
+        run: bash scripts/szl-receipts-retention-e2e-guard.test.sh
+
+  guard:
+    name: Drive szl-receipts-retention end-to-end
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Install cryptography (real Ed25519 signing for the seeded store)
+        run: python3 -m pip install --user cryptography
+
+      - name: Runner parses clean (bash -n)
+        run: bash -n box-scripts/sbin/szl-receipts-retention
+
+      - name: Store shrinks / cold dir lands / tail survives / chain_ok / no-op behave correctly
+        run: bash scripts/szl-receipts-retention-e2e-guard.sh
+
+      - name: szl-receipts-retention auto-trim is intact
+        run: echo "The szl-receipts-retention store-shrink, cold-offload, tail-protection, chain_ok and cluster-down no-op paths are intact."

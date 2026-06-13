@@ -113,9 +113,22 @@ write_status() {
 
 # json_get FILE EXPR — print a value from JSON on stdin file via python.
 # EXPR is python indexing on the parsed object named d, e.g. d["chain_ok"].
+#
+# server.py's CLI prints its JSON report to stdout, but the SAME process also
+# logs "[INFO|WARN|ERROR|DEBUG] <ts> ..." lines to stdout via its shared log()
+# helper (e.g. archive-shards emits one "[INFO] ... [archive] sealed bucket ..."
+# line PER bucket before the trailing JSON report). A naive json.load() of that
+# captured stdout therefore throws — which would silently blank out archived[] /
+# skipped_failed_verify[], so the runner would never offload the cold tarballs
+# off the PVC and never page on a tampered/skipped bucket. Strip those log lines
+# before parsing so the JSON report is read robustly regardless of log noise.
 json_get() {
-  "$PY" -c 'import sys,json
-try: d=json.load(open(sys.argv[1]))
+  "$PY" -c 'import sys,json,re
+try: raw=open(sys.argv[1]).read()
+except Exception: sys.exit(3)
+body="\n".join(ln for ln in raw.splitlines()
+               if not re.match(r"^\[(DEBUG|INFO|WARN|ERROR)\] ", ln))
+try: d=json.loads(body)
 except Exception: sys.exit(3)
 try: print(eval(sys.argv[2]))
 except Exception: sys.exit(4)' "$1" "$2" 2>/dev/null
