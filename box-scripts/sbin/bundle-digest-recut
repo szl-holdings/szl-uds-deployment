@@ -1,0 +1,341 @@
+#!/usr/bin/env bash
+#
+# bundle-digest-recut - HEAL the gap that bundle-digest-watch only ALARMS on:
+# when a LOCALLY-BUILT airgap deploy tarball on the box (167.233.50.75) bakes a
+# STALE szl-receipts image digest, automatically re-cut the receipts package +
+# UDS bundle so the new source-pinned digest is baked into the deployable
+# artifact - then VERIFY the re-cut actually took.
+#
+# WHY: scripts/pin-receipts-image-digest.sh repins the SOURCE digest (zarf.yaml,
+# packages/szl-receipts/zarf.yaml, charts/szl-receipts/values.yaml) and the
+# published/signed zarf package is re-cut by CI, but the box's LOCAL airgap
+# tarballs
+#   - uds-bundle-szl-receipts-bundle-<arch>-<ver>.tar.zst
+#   - packages/szl-receipts/zarf-package-szl-receipts-<arch>-<ver>.tar.zst
+# keep baking whatever digest was current when they were last built. A same-tag
+# image rebuild re-mints a NEW digest; bundle-digest-watch turns that silent
+# drift into a push alert but STILL leaves a human to run `uds run bundle`. This
+# healer closes the loop: detect the same drift, run the receipts-only re-cut,
+# and verify the new digest is now present (and the old one gone) - WITHOUT
+# bumping the package metadata.version (the image tag is independent of the
+# bundle version; a repin must not bump 0.4.0).
+#
+# WHAT IT DOES each cycle:
+#   1. Extract the source-pinned digest (packages/szl-receipts/zarf.yaml).
+#   2. List every built target tarball and check it carries that digest.
+#   3. If ALL carry it -> no-op (RECOVERED edge if it had been alerting).
+#   4. If ANY is stale -> (subject to the safety gates below) run the
+#      receipts-only re-cut - the exact `uds run bundle` receipts steps minus the
+#      a11oy pre-build (a11oy is NOT a member of the szl-receipts-bundle):
+#        zarf package create packages/szl-receipts --flavor <FLAVOR> ...
+#        uds create . --skip-signature-validation --confirm ...
+#   5. VERIFY: each rebuilt tarball now contains the NEW pinned digest, the
+#      pre-recut (OLD) digest is gone, and metadata.version is UNCHANGED.
+#
+# SAFETY (mirrors the box safe-healer doctrine - auto-maintenance-pass):
+#   * RECUT_MODE=report          -> detect + page the re-cut command, never build.
+#   * BUNDLE_RECUT_ENABLED=0     -> kill switch (env), behaves like report mode.
+#   * KILL_FILE present          -> kill switch (touch /etc/bundle-digest-recut.disabled).
+#   * MIN_FREE_GB disk pre-flight-> REFUSE to build (and page) when free disk on
+#                                   the repo filesystem is below the threshold, so
+#                                   a heavy `uds create` can never fill the box.
+#   * flock                      -> never two re-cuts at once / overlap a manual build.
+# Every run appends to an ndjson ledger + status.json + a log so a broken
+# notifier can never hide a heal, a block, or a failure. Edge-triggered paging
+# (last_status) keeps a recurring BLOCKED/FAILED state to a single ping, while a
+# successful heal always pings once (it is a real change worth reporting).
+#
+# Driven by bundle-digest-recut.timer. Companion to (not a replacement for)
+# bundle-digest-watch: the watch keeps paging if this healer is disabled/blocked.
+# Full procedure: box-scripts/bundle-digest-recut.README.md
+set -uo pipefail
+
+REPO="${REPO:-/opt/szl/szl-uds-deployment}"
+# Source-of-truth pin lives in the szl-receipts zarf package manifest.
+SRC_ZARF="${SRC_ZARF:-$REPO/packages/szl-receipts/zarf.yaml}"
+IMAGE_RE="${IMAGE_RE:-szl-receipts-server}"
+# Built tarballs to inspect/re-cut (space-separated globs, relative to REPO).
+TARBALL_GLOBS="${TARBALL_GLOBS:-uds-bundle-szl-receipts-bundle-*-*.tar.zst packages/szl-receipts/zarf-package-szl-receipts-*-*.tar.zst}"
+
+# ── Re-cut knobs (mirror the `uds run bundle` receipts-only steps) ───────────
+# FLAVOR must match the bundle's szl-receipts member ref suffix (0.4.0-upstream),
+# or `uds create` fails "no such file" (incident #75). BUILD_TMPDIR stays a
+# repo-local dir so the ingest lands on the big filesystem, not a small /tmp.
+FLAVOR="${FLAVOR:-upstream}"
+BUILD_TMPDIR="${BUILD_TMPDIR:-.uds-build-tmp}"
+PRUNE_BUILD_TMP="${PRUNE_BUILD_TMP:-1}"        # rm -rf the ingest dir after build
+# Files whose metadata.version must NEVER change across a re-cut (a repin bumps
+# the image tag, never the bundle/package version).
+VERSION_FILES="${VERSION_FILES:-uds-bundle.yaml packages/szl-receipts/zarf.yaml}"
+
+# ── Safety gates ────────────────────────────────────────────────────────────
+RECUT_MODE="${RECUT_MODE:-apply}"              # apply | report
+ENABLED="${BUNDLE_RECUT_ENABLED:-1}"           # 0 = kill switch
+KILL_FILE="${KILL_FILE:-/etc/bundle-digest-recut.disabled}"
+MIN_FREE_GB="${MIN_FREE_GB:-12}"               # refuse to build below this
+LOCK_FILE="${LOCK_FILE:-/var/lock/bundle-digest-recut.lock}"
+
+STATE_DIR="${STATE_DIR:-/var/lib/bundle-digest-recut}"
+LOG_DIR="${LOG_DIR:-/var/log/bundle-digest-recut}"
+LAST_FILE="${LAST_FILE:-$STATE_DIR/last_status}"
+STATUS="${STATUS:-$STATE_DIR/status.json}"
+LEDGER="${LEDGER:-$STATE_DIR/recut-ledger.ndjson}"
+LOG="${LOG:-$LOG_DIR/bundle-digest-recut.log}"
+
+# Notifier: stdin = message. Default to the box working push channel.
+NOTIFY_CMD="${NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
+ALERT_PREFIX="${ALERT_PREFIX:-}"
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
+
+log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$1" >>"$LOG" 2>/dev/null; }
+
+notify() {
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed (alert was logged only)"
+}
+
+ledger() {
+  # $1 = event  $2 = detail
+  printf '{"ts":"%s","event":"%s","detail":"%s"}\n' \
+    "$(date -u +%FT%TZ)" "$1" "$(printf '%s' "${2:-}" | sed 's/"/\\"/g')" \
+    >>"$LEDGER" 2>/dev/null
+}
+
+write_status() {
+  # $1 = overall (OK|HEALED|BLOCKED|DISABLED|FAILED|UNKNOWN)  $2 = reason
+  # $3 = pinned digest (optional)  $4 = mode
+  printf '{"overall":"%s","reason":"%s","pinned_digest":"%s","mode":"%s","checked_at":"%s"}\n' \
+    "$1" "$(printf '%s' "$2" | sed 's/"/\\"/g')" "${3:-}" "${4:-$RECUT_MODE}" "$(date -u +%FT%TZ)" \
+    >"$STATUS" 2>/dev/null
+}
+
+# notify_edge STATE MESSAGE - page once per distinct non-OK state (de-dup a
+# recurring BLOCKED/FAILED) but record the new state. A successful heal is paged
+# unconditionally by the caller (it is a real change, not a recurring condition).
+notify_edge() {
+  local state="$1" msg="$2" prev
+  prev="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
+  if [ "$prev" != "$state" ]; then
+    notify "$msg"
+    log "EDGE $prev->$state notified"
+  else
+    log "DEDUP still $state - no re-notify"
+  fi
+  echo "$state" >"$LAST_FILE" 2>/dev/null
+}
+
+# extract_pinned_digest - echo the 64-hex source-pinned image digest, or empty.
+extract_pinned_digest() {
+  [ -r "$SRC_ZARF" ] || return 0
+  grep -oE "${IMAGE_RE}:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}" "$SRC_ZARF" 2>/dev/null \
+    | grep -oE 'sha256:[0-9a-f]{64}' | sed 's/^sha256://' | head -1
+}
+
+# tarball_has_digest TARBALL DIGEST -> 0 if the tarball listing contains the
+# digest (image manifest blob stored as blobs/sha256/<digest>), else 1.
+# pipefail OFF in a subshell: grep -q exits on first match and SIGPIPEs zstd/tar
+# upstream; under pipefail that non-zero would make a PRESENT digest look MISSING.
+tarball_has_digest() {
+  local tb="$1" dig="$2"
+  ( set +o pipefail; zstd -dc -- "$tb" 2>/dev/null | tar -t 2>/dev/null | grep -q -- "$dig" )
+}
+
+# pkg_index_digest PACKAGE_TARBALL -> echo the szl-receipts-server image MANIFEST
+# digest recorded in the package's images/index.json (best-effort, needs
+# python3). Used to learn the OLD digest BEFORE a re-cut so "old gone" can be
+# verified after. Empty on any failure (the "new present" gate still holds).
+pkg_index_digest() {
+  local tb="$1"
+  command -v python3 >/dev/null 2>&1 || return 0
+  ( set +o pipefail
+    zstd -dc -- "$tb" 2>/dev/null | tar -xO images/index.json 2>/dev/null
+  ) | python3 -c '
+import json,sys,re
+try:
+    idx=json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+img=re.compile(r"'"$IMAGE_RE"'")
+for m in idx.get("manifests",[]):
+    ann=m.get("annotations",{}) or {}
+    ref=ann.get("org.opencontainers.image.base.name","") or ann.get("org.opencontainers.image.ref.name","")
+    if img.search(ref):
+        d=m.get("digest","")
+        if d.startswith("sha256:"):
+            print(d[7:]); break
+' 2>/dev/null
+}
+
+# version_fingerprint - echo a stable "file=version" list for VERSION_FILES so a
+# re-cut that silently bumps metadata.version is caught.
+version_fingerprint() {
+  local f v
+  for f in $VERSION_FILES; do
+    [ -r "$REPO/$f" ] || { echo "$f=?"; continue; }
+    v="$(awk '/^metadata:/{m=1;next} m&&/^[^[:space:]]/{m=0} m&&/^[[:space:]]+version:/{gsub(/["'\'' ]/,"",$2);print $2;exit}' "$REPO/$f" 2>/dev/null)"
+    echo "$f=${v:-?}"
+  done
+}
+
+# ---- Single-flight lock -----------------------------------------------------
+exec 9>"$LOCK_FILE" 2>/dev/null || true
+if command -v flock >/dev/null 2>&1; then
+  flock -n 9 || { log "INFO another bundle-digest-recut holds the lock - skip"; exit 0; }
+fi
+
+# ---- Resolve the source pin; no-op if it cannot be read ---------------------
+pinned="$(extract_pinned_digest)"
+if [ -z "$pinned" ]; then
+  log "INFO no source-pinned ${IMAGE_RE} digest in $SRC_ZARF - skip"
+  write_status UNKNOWN "source pin unreadable" "" "$RECUT_MODE"
+  exit 0
+fi
+
+cd "$REPO" 2>/dev/null || { log "INFO repo $REPO absent - skip"; write_status UNKNOWN "repo absent" "$pinned" "$RECUT_MODE"; exit 0; }
+
+# ---- Detect drift on every built tarball that exists -----------------------
+stale=""; checked=0; pkg_stale=""
+add_stale() { stale="${stale:+$stale, }$1"; }
+for g in $TARBALL_GLOBS; do
+  for tb in $g; do
+    [ -f "$tb" ] || continue
+    checked=$((checked + 1))
+    if tarball_has_digest "$tb" "$pinned"; then
+      log "INFO $tb carries pinned digest $pinned"
+    else
+      add_stale "$tb"
+      case "$tb" in */zarf-package-szl-receipts-*) pkg_stale="$tb";; esac
+      log "DRIFT $tb is MISSING pinned digest $pinned (stale build)"
+    fi
+  done
+done
+
+if [ "$checked" -eq 0 ]; then
+  log "INFO no local bundle/package tarball built yet - skip"
+  write_status UNKNOWN "no built tarball present" "$pinned" "$RECUT_MODE"
+  exit 0
+fi
+
+recut_cmd="cd $REPO && uds run bundle"
+
+# ---- No drift: nothing to heal (RECOVERED if previously non-OK) -------------
+if [ -z "$stale" ]; then
+  write_status OK "all $checked built tarball(s) carry pinned ${pinned:0:12}" "$pinned" "$RECUT_MODE"
+  log "STATE OK checked=$checked all carry $pinned"
+  prev="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
+  if [ "$prev" != "OK" ]; then
+    notify "RECOVERED: local deploy tarball(s) on $(hostname) now carry the source-pinned ${IMAGE_RE} digest ${pinned:0:12} ($checked checked)."
+    log "EDGE $prev->OK recovered, notified"
+  fi
+  echo OK >"$LAST_FILE" 2>/dev/null
+  exit 0
+fi
+
+# ---- Drift present: capture the OLD digest before we rebuild ----------------
+old_digest=""
+[ -n "$pkg_stale" ] && old_digest="$(pkg_index_digest "$pkg_stale")"
+log "DRIFT stale=$stale old_digest=${old_digest:-unknown} pinned=$pinned"
+ledger "drift" "stale=$stale old=${old_digest:-unknown} pinned=$pinned"
+
+# ---- Safety gate: disabled / report-only -----------------------------------
+if [ "$ENABLED" = "0" ] || [ -f "$KILL_FILE" ] || [ "$RECUT_MODE" = "report" ]; then
+  why="report mode"
+  [ "$ENABLED" = "0" ] && why="BUNDLE_RECUT_ENABLED=0"
+  [ -f "$KILL_FILE" ] && why="kill file $KILL_FILE present"
+  write_status DISABLED "drift on $stale; auto-recut held ($why)" "$pinned" "$RECUT_MODE"
+  ledger "held" "$why"
+  notify_edge DISABLED "HELD: stale image digest baked into local deploy tarball(s) on $(hostname): $stale (pinned ${pinned:0:12}). Auto-recut is held ($why). Re-cut manually: $recut_cmd"
+  exit 0
+fi
+
+# ---- Safety gate: disk pre-flight ------------------------------------------
+free_kb="$(df -Pk "$REPO" 2>/dev/null | awk 'NR==2{print $4}')"
+free_gb=$(( ${free_kb:-0} / 1024 / 1024 ))
+if [ "$free_gb" -lt "$MIN_FREE_GB" ]; then
+  write_status BLOCKED "drift on $stale; only ${free_gb}G free (< ${MIN_FREE_GB}G) - refusing to re-cut" "$pinned" "$RECUT_MODE"
+  ledger "blocked-disk" "free=${free_gb}G min=${MIN_FREE_GB}G stale=$stale"
+  notify_edge BLOCKED "BLOCKED: cannot auto-recut on $(hostname) - only ${free_gb}G free (< ${MIN_FREE_GB}G). Stale tarball(s): $stale (pinned ${pinned:0:12}). Free space then: $recut_cmd"
+  exit 0
+fi
+
+# ---- Apply: receipts-only re-cut (a11oy is NOT a bundle member) -------------
+ver_before="$(version_fingerprint)"
+log "APPLY receipts-only re-cut (flavor=$FLAVOR tmpdir=$BUILD_TMPDIR free=${free_gb}G)"
+ledger "recut-start" "flavor=$FLAVOR free=${free_gb}G ver=$ver_before"
+mkdir -p "$BUILD_TMPDIR" 2>/dev/null
+
+build_ok=1
+if ! zarf package create packages/szl-receipts \
+      --flavor "$FLAVOR" \
+      --output packages/szl-receipts \
+      --tmpdir "$BUILD_TMPDIR" \
+      --confirm --no-progress >>"$LOG" 2>&1; then
+  build_ok=0
+  log "FAIL zarf package create (receipts) failed"
+fi
+
+if [ "$build_ok" = "1" ]; then
+  if ! uds create . \
+        --skip-signature-validation \
+        --confirm --no-progress \
+        --tmpdir "$BUILD_TMPDIR" >>"$LOG" 2>&1; then
+    build_ok=0
+    log "FAIL uds create (bundle) failed"
+  fi
+fi
+
+[ "$PRUNE_BUILD_TMP" = "1" ] && rm -rf "$BUILD_TMPDIR" 2>/dev/null
+
+if [ "$build_ok" = "0" ]; then
+  write_status FAILED "re-cut command failed for $stale (see log)" "$pinned" "$RECUT_MODE"
+  ledger "recut-failed" "stale=$stale"
+  notify_edge FAILED "FAILED: auto-recut on $(hostname) errored while rebuilding for stale tarball(s) $stale (pinned ${pinned:0:12}). See $LOG. Re-cut manually: $recut_cmd"
+  exit 0
+fi
+
+# ---- Verify the re-cut took ------------------------------------------------
+verify_fail=""
+add_vfail() { verify_fail="${verify_fail:+$verify_fail; }$1"; }
+rechecked=0
+for g in $TARBALL_GLOBS; do
+  for tb in $g; do
+    [ -f "$tb" ] || continue
+    rechecked=$((rechecked + 1))
+    if tarball_has_digest "$tb" "$pinned"; then
+      log "VERIFY $tb now carries new pin $pinned"
+    else
+      add_vfail "$tb missing NEW digest ${pinned:0:12}"
+      log "VERIFY-FAIL $tb still missing new pin $pinned"
+    fi
+    if [ -n "$old_digest" ] && [ "$old_digest" != "$pinned" ]; then
+      if tarball_has_digest "$tb" "$old_digest"; then
+        add_vfail "$tb STILL carries OLD digest ${old_digest:0:12}"
+        log "VERIFY-FAIL $tb still carries old pin $old_digest"
+      else
+        log "VERIFY $tb no longer carries old pin ${old_digest:0:12}"
+      fi
+    fi
+  done
+done
+
+ver_after="$(version_fingerprint)"
+if [ "$ver_before" != "$ver_after" ]; then
+  add_vfail "metadata.version CHANGED ($ver_before -> $ver_after)"
+  log "VERIFY-FAIL metadata.version changed: $ver_before -> $ver_after"
+fi
+
+if [ -n "$verify_fail" ]; then
+  write_status FAILED "re-cut ran but verification failed: $verify_fail" "$pinned" "$RECUT_MODE"
+  ledger "verify-failed" "$verify_fail"
+  notify_edge FAILED "FAILED: auto-recut on $(hostname) ran but verification failed: $verify_fail. Pinned ${pinned:0:12}. Inspect: $recut_cmd"
+  exit 0
+fi
+
+# ---- Success: heal is a real change -> always page once ---------------------
+write_status HEALED "re-cut baked ${pinned:0:12} into $rechecked tarball(s); metadata.version unchanged ($ver_after)" "$pinned" "$RECUT_MODE"
+ledger "healed" "rechecked=$rechecked pinned=$pinned old=${old_digest:-unknown} ver=$ver_after"
+notify "HEALED: re-cut local deploy tarball(s) on $(hostname) - now bake the source-pinned ${IMAGE_RE} digest ${pinned:0:12}${old_digest:+ (was ${old_digest:0:12})}; metadata.version unchanged ($ver_after). $rechecked tarball(s) verified."
+echo OK >"$LAST_FILE" 2>/dev/null
+exit 0

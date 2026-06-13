@@ -64,6 +64,7 @@ install -m 0755 "$here/sbin/vault-keystore-offbox-backup" /usr/local/sbin/vault-
 install -m 0755 "$here/sbin/authelia-rotate-demo"      /usr/local/sbin/authelia-rotate-demo
 install -m 0755 "$here/sbin/szl-receipt-checkpoint"     /usr/local/sbin/szl-receipt-checkpoint
 install -m 0755 "$here/sbin/bundle-digest-watch"       /usr/local/sbin/bundle-digest-watch
+install -m 0755 "$here/sbin/bundle-digest-recut"       /usr/local/sbin/bundle-digest-recut
 
 echo "[install] copying systemd units to /etc/systemd/system ..."
 install -m 0644 "$here/systemd/a11oy-coexist.service"        /etc/systemd/system/a11oy-coexist.service
@@ -120,6 +121,8 @@ install -m 0644 "$here/systemd/szl-receipt-checkpoint.service" /etc/systemd/syst
 install -m 0644 "$here/systemd/szl-receipt-checkpoint.timer"   /etc/systemd/system/szl-receipt-checkpoint.timer
 install -m 0644 "$here/systemd/bundle-digest-watch.service" /etc/systemd/system/bundle-digest-watch.service
 install -m 0644 "$here/systemd/bundle-digest-watch.timer"   /etc/systemd/system/bundle-digest-watch.timer
+install -m 0644 "$here/systemd/bundle-digest-recut.service" /etc/systemd/system/bundle-digest-recut.service
+install -m 0644 "$here/systemd/bundle-digest-recut.timer"   /etc/systemd/system/bundle-digest-recut.timer
 
 # The uptime/DNS watchers read their push-notification channel from
 # /etc/a11oy-uptime.env. That channel is a PRIVATE secret (an ntfy topic, etc.)
@@ -449,6 +452,7 @@ systemctl enable --now a11oy-contracting-tool-watch.timer
 systemctl enable --now szl-receipts-orphan-watch.timer
 systemctl enable --now szl-receipt-checkpoint.timer
 systemctl enable --now bundle-digest-watch.timer
+systemctl enable --now bundle-digest-recut.timer
 
 # Bring the cluster guards into a conformant state right now (idempotent no-ops
 # if the cluster is down or already conformant).
@@ -478,6 +482,7 @@ done
 # Flag a stale image digest baked into a locally-built deploy tarball (a repin
 # without a re-cut). Idempotent no-op when no tarball is built or no pin exists.
 [ -x /usr/local/sbin/bundle-digest-watch ] && /usr/local/sbin/bundle-digest-watch || true
+[ -x /usr/local/sbin/bundle-digest-recut ] && /usr/local/sbin/bundle-digest-recut || true
 
 echo "[install] done. current status:"
 a11oy-mode status || true

@@ -1,0 +1,9 @@
+[Unit]
+Description=Auto re-cut the local airgap deploy tarballs when they bake a stale szl-receipts image digest (heals what bundle-digest-watch only alarms on)
+Documentation=file:///usr/local/sbin/bundle-digest-recut
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/bundle-digest-recut

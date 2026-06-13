@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically heal stale image digests in the local airgap deploy tarballs (bundle-digest-recut)
+
+[Timer]
+# A few minutes AFTER bundle-digest-watch (OnBootSec 9min) so on boot the watch
+# pages the drift first, then this healer re-cuts. Then every 6h.
+OnBootSec=20min
+OnUnitActiveSec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

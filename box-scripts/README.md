@@ -1173,6 +1173,20 @@ from the now-current source pins. Re-run the watcher to confirm RECOVERED:
   `.github/workflows/bundle-digest-watch-guard.yml` — CI guard trio that keeps
   the alarm from silently regressing.
 
+`bundle-digest-recut` is the companion **healer**: when the watch detects that a
+local airgap deploy tarball bakes a stale `szl-receipts` image digest, the recut
+re-cuts the receipts package + UDS bundle so the new source-pinned digest is
+baked in (without bumping `metadata.version`), then verifies the re-cut took. It
+inherits the box safe-healer gates (kill switch, report mode, disk pre-flight,
+flock) and pages once per heal/block; the watch keeps alarming if it is held.
+
+- `box-scripts/sbin/bundle-digest-recut` — the auto-recut healer.
+- `box-scripts/systemd/bundle-digest-recut.{service,timer}` — periodic driver.
+- `box-scripts/bundle-digest-recut.README.md` — full operator notes.
+- `scripts/bundle-digest-recut-guard-checks.sh` (+ `.test.sh`) and
+  `.github/workflows/bundle-digest-recut-guard.yml` — CI guard trio that keeps
+  the healer from silently regressing.
+
 ## Reinstall
 
 Shipped by `box-scripts/install.sh` (script + units copied, timer enabled, run
