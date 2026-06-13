@@ -1,0 +1,63 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# pin-drift-guard-self-test.yml — Guard the receipts pin-drift PAGER in
+# receipts-pin-drift-guard.yml from being silently widened or broken.
+#
+# Why this exists
+# ---------------
+# receipts-pin-drift-guard.yml runs the receipts-server digest drift check on
+# every PR AND on a daily schedule, but it only PAGES the team (POSTs to the
+# shared szl-alert-relay -> ntfy webhook) on the UNATTENDED scheduled run when it
+# actually finds drift. That selectivity rests entirely on one `if:` expression:
+#
+#     if: always() && github.event_name == 'schedule' && steps.check.outputs.drift == '1'
+#
+# Drop `github.event_name == 'schedule'` and every contributor is paged on every
+# PR; drop `steps.check.outputs.drift == '1'` and the team is paged on green
+# runs; drop `always()` and an earlier step's failure silences a real drift
+# alert. None of those mistakes turns the Actions tab red on its own — they were
+# only ever caught by a human reading the YAML. This guard makes such an edit
+# fail loudly in CI instead.
+#
+# It also pins the contract the alert depends on: the drift-check step runs with
+# `set +e` and still exports drift/tag/fix_cmd to $GITHUB_OUTPUT, and a FINAL gate
+# step re-fails the run on drift INDEPENDENT of the alert (on every event, not
+# just the schedule) so a stale pin can never land green.
+#
+# The check logic lives in scripts/pin-drift-guard-checks.sh (pure text/lint, no
+# cluster). It is UNIT TESTED by scripts/pin-drift-guard-checks.test.sh, which
+# feeds each check a deliberately-BROKEN copy of the workflow and asserts the
+# check FAILS (plus that the pristine repo PASSES). The shared
+# run-checks-then-self-test scaffolding lives in the reusable
+# .github/workflows/guard-scaffold.yml; this workflow is a thin caller. The
+# self-test gates the guard run, so a future edit that neuters a check (passing
+# vacuously — green while guarding nothing) is caught before it can wave a
+# regression through.
+#
+# The asserted invariants:
+#   chk1  the alert step's `if:` keeps always()
+#   chk2  the alert step's `if:` keeps github.event_name == 'schedule'
+#   chk3  the alert step's `if:` keeps steps.check.outputs.drift == '1'
+#   chk4  the drift-check step runs with `set +e` and exports drift/tag/fix_cmd
+#   chk5  a final gate re-fails on drift, independent of the alert, on every event
+
+name: Pin Drift Guard Self-Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    uses: ./.github/workflows/guard-scaffold.yml
+    with:
+      test-command: bash scripts/pin-drift-guard-checks.test.sh
+      checks-command: bash scripts/pin-drift-guard-checks.sh
+      checks-args: "chk1 chk2 chk3 chk4 chk5"
+      success-message: "The receipts pin-drift pager only fires on scheduled drift (alert if + check contract + gate intact)."
