@@ -1,0 +1,68 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# alarm-guard-coverage.yml — META-GUARD over the box alarm guards themselves.
+#
+# Every box alarm (box-scripts/sbin/<name>-watch, <name>-check) pages a human
+# when a real failure mode appears. Each sibling per-alarm guard
+# (receipt-chain-watch-guard, receipts-orphan-watch-guard, ns-scratch-watch-guard,
+# the receipt-flood/-throttle-watch self-tests, ...) keeps ONE alarm from
+# silently regressing. But nothing stopped a NEW alarm from being added with no
+# guard at all — it would look protected (it has a timer, it runs) while its
+# edge-fire / no-op / notify correctness was never checked, so the failure it was
+# meant to catch could go unalerted with zero CI signal.
+#
+# This workflow closes that meta-gap. scripts/alarm-guard-coverage-checks.sh
+# enumerates the alarms install.sh actually installs (sbin scripts ending in
+# -watch / -check / -monitor / -alarm — the same install.sh-derived set
+# box-scripts-drift-check and box-helper-install-coverage use) and FAILS if any
+# of them lacks a guard shape:
+#   TEXT trio   scripts/<stem>-guard-checks.sh + .test.sh + <stem>-guard.yml
+#   E2E  trio   scripts/<stem>-guard.sh        + .test.sh + <stem>-guard.yml
+#   SELFTEST    scripts/<stem>-selftest.sh     + <stem>-selftest.yml
+# where <stem> is the alarm name or its szl-/a11oy--stripped form. Alarms that
+# are intentionally guard-exempt live on a documented inline allowlist in the
+# check script (today: a11oy-uptime-check, owned by the a11oy-uptime subsystem).
+#
+# The check logic was extracted so it can be UNIT TESTED:
+# scripts/alarm-guard-coverage-checks.test.sh feeds it broken fixtures (a new
+# unguarded alarm, a removed TEXT/E2E/SELFTEST file, an emptied allowlist, an
+# install.sh with no alarms) and asserts each makes the gate FAIL, plus that the
+# pristine repo PASSES. That self-test runs as the `self-test` job below, so a
+# future edit that neuters the coverage check (green while enforcing nothing) is
+# caught here.
+
+name: Alarm Guard Coverage
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the meta-guard to be trustworthy: it proves the
+  # coverage check still FAILS on bad input (i.e. is not silently passing). The
+  # guard job depends on it so a broken check blocks the build before it can wave
+  # an unguarded alarm through.
+  self-test:
+    name: Self-test the coverage check (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/alarm-guard-coverage-checks.test.sh
+
+  guard:
+    name: Assert every box alarm has a guard trio
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Every installed alarm is guarded or allowlisted
+        run: bash scripts/alarm-guard-coverage-checks.sh .
