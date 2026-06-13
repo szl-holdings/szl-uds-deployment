@@ -60,19 +60,30 @@
 #   fail-soft. Because it only fires on the EDGE and on RECOVERED it respects the
 #   standing "recurring alerts = the owner only" policy by construction.
 #
-# SELF-HEAL (opt-in, OFF by default)
-#   With SELF_HEAL=1 the watcher, on the healthy->drift EDGE, re-installs each
-#   drifted host file from its committed box-scripts/ copy (install -m, scripts
-#   0755 / units 0644) and, if any unit was re-installed, runs `systemctl
-#   daemon-reload`. It then pushes a REPAIRED notification (distinct from the
-#   RECOVERED that fires when the drift simply clears on its own). A DRIFT whose
-#   committed source is GONE (REPO-MISSING / BOTH-MISSING) cannot be restored and
-#   is reported as un-healable. The DRIFT edge alert still fires (it reads
-#   "auto-repairing now…") so the human still sees the event. A drift that is
-#   still present after a heal (e.g. an un-healable REPO-MISSING, or install
-#   keeps failing) is retried at most once every HEAL_RETRY_SECS so it never
-#   loops. With SELF_HEAL=0 (the default) the detection + alert + edge/de-dup
-#   path is exactly the original report-only behaviour.
+# SELF-HEAL (opt-in, OFF by default; scope it narrow when you turn it on)
+#   With SELF_HEAL=1 the watcher re-installs each drifted host file from its
+#   committed box-scripts/ copy (install -m, scripts 0755 / units 0644) and, if
+#   any unit was re-installed, runs `systemctl daemon-reload`. It then pushes a
+#   REPAIRED notification (distinct from the RECOVERED that fires when the drift
+#   simply clears on its own). A DRIFT whose committed source is GONE
+#   (REPO-MISSING / BOTH-MISSING) cannot be restored and is reported as
+#   un-healable. A drift that is still present after a heal (e.g. an un-healable
+#   REPO-MISSING, or install keeps failing) is retried at most once every
+#   HEAL_RETRY_SECS so it never loops.
+#
+#   ONE-CYCLE GRACE (HEAL_GRACE=1, the default when self-heal is on): on the
+#   FIRST healthy->drift edge the watcher only ALERTS — it does NOT clobber the
+#   host file yet. It re-installs the committed copy only on a SUBSEQUENT run if
+#   the same drift is still present. This deliberately leaves a window (one timer
+#   cycle, ~15 min) to back-port a genuine local hot-fix into the repo before the
+#   committed copy overwrites it — the documented "back-port vs clobber" hazard.
+#   The DRIFT edge alert spells this out ("NOT auto-repairing on this first
+#   drift…"). Set HEAL_GRACE=0 to restore the original heal-on-the-first-edge
+#   behaviour. To shrink the blast radius further, scope WHICH files self-heal
+#   touches with WATCH_SBIN / WATCH_UNITS (see install.sh) rather than healing
+#   the whole watched set.
+#   With SELF_HEAL=0 (the default) the detection + alert + edge/de-dup path is
+#   exactly the original report-only behaviour.
 #
 # Idempotent and safe to run on a short timer. Repo-absent = clean no-op.
 set -uo pipefail
@@ -146,6 +157,11 @@ ALERT_PREFIX="${ALERT_PREFIX:-}"      # e.g. "[TEST-ignore] " to test without al
 # clobbered. INSTALL_CMD / DAEMON_RELOAD_CMD are overridable for the isolated
 # test recipe (see box-scripts-drift-check.README.md).
 SELF_HEAL="${SELF_HEAL:-0}"
+# HEAL_GRACE (default ON when self-heal is on): on the FIRST drift edge only
+# ALERT, do not restore — heal on the NEXT run if the drift persists, leaving a
+# window to back-port a genuine local hot-fix first. HEAL_GRACE=0 restores the
+# original heal-on-the-first-edge behaviour.
+HEAL_GRACE="${HEAL_GRACE:-1}"
 INSTALL_CMD="${INSTALL_CMD:-install}"
 DAEMON_RELOAD_CMD="${DAEMON_RELOAD_CMD:-systemctl daemon-reload}"
 HEAL_TS_FILE="${HEAL_TS_FILE:-$STATE_DIR/heal-last.ts}"
@@ -279,8 +295,9 @@ overall="OK"; [ "$drift_count" -gt 0 ] && overall="DRIFT"
   printf '  "overall": "%s",\n' "$overall"
   printf '  "drift_count": %s,\n' "$drift_count"
   printf '  "alerting": %s,\n' "$( [ "$drift_count" -gt 0 ] && echo true || echo false )"
-  printf '  "self_heal": { "enabled": %s, "last_result": "%s" },\n' \
+  printf '  "self_heal": { "enabled": %s, "grace": %s, "last_result": "%s" },\n' \
     "$( [ "$SELF_HEAL" = "1" ] && echo true || echo false )" \
+    "$( [ "${HEAL_GRACE:-1}" = "1" ] && echo true || echo false )" \
     "$( [ -r "$HEAL_RESULT_FILE" ] && tr -d '\n' <"$HEAL_RESULT_FILE" | sed 's/"/\\"/g' || echo none )"
   printf '  "files": [\n'
   i=0
@@ -297,13 +314,22 @@ overall="OK"; [ "$drift_count" -gt 0 ] && overall="DRIFT"
 } >"$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
 
 # ---- self-heal helpers ------------------------------------------------------
-# heal_due(): true when we should (re)attempt a re-install. Heals immediately on
-# a new drift edge; for a drift still present after a previous heal it only
-# re-tries once HEAL_RETRY_SECS has elapsed so it never loops (e.g. an
-# un-healable REPO-MISSING, or install repeatedly failing).
+# heal_due(): true when we should (re)attempt a re-install.
+#   * With the one-cycle grace (HEAL_GRACE=1, default) a brand-new drift edge is
+#     NOT healed — only alerted — so a genuine local hot-fix can be back-ported
+#     before the committed copy clobbers it. The drift is healed on the NEXT run
+#     if it is still present (is_new_edge=0). HEAL_GRACE=0 heals on the first
+#     edge (the original behaviour).
+#   * For a drift still present after a previous heal it only re-tries once
+#     HEAL_RETRY_SECS has elapsed so it never loops (e.g. an un-healable
+#     REPO-MISSING, or install repeatedly failing).
 heal_due() {
   [ "$SELF_HEAL" = "1" ] || return 1
-  [ "${is_new_edge:-0}" = "1" ] && return 0
+  if [ "${is_new_edge:-0}" = "1" ]; then
+    # First drift edge: defer one cycle unless grace is explicitly off.
+    [ "${HEAL_GRACE:-1}" = "1" ] && return 1
+    return 0
+  fi
   local last now
   last=$(cat "$HEAL_TS_FILE" 2>/dev/null || echo 0)
   case "$last" in (*[!0-9]*|"") last=0 ;; esac
@@ -395,7 +421,11 @@ if [ "$cur_sig" = "$prev_sig" ]; then
   log "(persisting) DRIFT $drift_count file(s): $problem_text"
 else
   is_new_edge=1
-  if [ "$SELF_HEAL" = "1" ]; then
+  if [ "$SELF_HEAL" = "1" ] && [ "${HEAL_GRACE:-1}" = "1" ]; then
+    body="$drift_count box-scripts host file(s) DRIFTED from the committed box-scripts/ copies on $REPO:
+$(printf '    %s\n' "${problems[@]}")
+Self-heal ON (one-cycle grace): NOT auto-repairing on this first drift. If the live edit is intended, back-port it now (copy host->repo + commit); otherwise the committed copy will be re-installed on the next check."
+  elif [ "$SELF_HEAL" = "1" ]; then
     body="$drift_count box-scripts host file(s) DRIFTED from the committed box-scripts/ copies on $REPO:
 $(printf '    %s\n' "${problems[@]}")
 Self-heal ON — auto-repairing now (re-installing the committed copies)..."
@@ -414,5 +444,5 @@ if heal_due; then
   attempt_heal || true
 fi
 
-log "STATE overall=DRIFT drift=$drift_count self_heal=$( [ "$SELF_HEAL" = "1" ] && echo on || echo off )"
+log "STATE overall=DRIFT drift=$drift_count self_heal=$( [ "$SELF_HEAL" = "1" ] && echo on || echo off ) grace=$( [ "${HEAL_GRACE:-1}" = "1" ] && echo on || echo off )"
 exit 0

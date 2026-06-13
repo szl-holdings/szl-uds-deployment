@@ -63,26 +63,37 @@ repo-drift watchers. No SMS/email (TCP 465 firewalled). Log-friendly:
 
 ## Self-heal (opt-in, OFF by default)
 
-With `SELF_HEAL=1` the watcher, on the **healthy→drift edge**, re-installs each
-drifted host file from its committed `box-scripts/` copy (`install -m`, scripts
-`0755` / units `0644`) and — if any **unit** was re-installed — runs
-`systemctl daemon-reload`. It then pushes a **REPAIRED** notification (distinct
-from the `RECOVERED` that fires when a drift simply clears on its own) and
-records the outcome in `status.json` (`self_heal.last_result`) +
-`/var/lib/box-scripts-drift/heal-last.txt`. The drift edge alert still fires
-(it reads "auto-repairing now…") so the human still sees the event.
+With `SELF_HEAL=1` the watcher re-installs each drifted host file from its
+committed `box-scripts/` copy (`install -m`, scripts `0755` / units `0644`) and —
+if any **unit** was re-installed — runs `systemctl daemon-reload`. It then pushes
+a **REPAIRED** notification (distinct from the `RECOVERED` that fires when a
+drift simply clears on its own) and records the outcome in `status.json`
+(`self_heal.last_result`) + `/var/lib/box-scripts-drift/heal-last.txt`.
+
+**One-cycle grace (default on).** To avoid clobbering a genuine local hot-fix,
+the **first** drift edge only **alerts** — it does *not* restore the host file.
+The committed copy is re-installed only on the **next** check (~15 min) if the
+same drift is still present, leaving a window to back-port the live edit first.
+The first-edge alert says so ("NOT auto-repairing on this first drift…"). Set
+`HEAL_GRACE=0` to heal on the first edge instead. `status.json` reports the
+current setting under `self_heal.grace`.
 
 ### Turning it on — the one-flip switch
 
-Re-run `install.sh` with `SELF_HEAL=1`; optionally **scope** it to a tight set
-of files whose committed copy is the unambiguous source of truth via
-`WATCH_SBIN` / `WATCH_UNITS` (space-separated basenames):
+Re-run `install.sh` with `SELF_HEAL=1`. **Scope it narrow**: name the specific
+file(s) whose committed copy is the unambiguous source of truth via `WATCH_SBIN`
+/ `WATCH_UNITS` (space-separated basenames). This is the recommended path — it
+keeps the blast radius to exactly those files. Enabling it **unscoped** heals
+*every* watched host file and `install.sh` prints a warning when you do.
 
 ```bash
-SELF_HEAL=1 sudo box-scripts/install.sh                       # heal everything watched
-SELF_HEAL=1 WATCH_SBIN="dns-drift-check" \
-  WATCH_UNITS="dns-drift-check.service" sudo box-scripts/install.sh   # heal only these
-SELF_HEAL=0 sudo box-scripts/install.sh                       # turn it back off
+# RECOMMENDED — scope it to the named file(s)
+SELF_HEAL=1 WATCH_UNITS="dns-drift-check.service" \
+  WATCH_SBIN="dns-drift-check" sudo box-scripts/install.sh
+# WIDE — heals everything watched (prints a warning)
+SELF_HEAL=1 sudo box-scripts/install.sh
+# turn it back off
+SELF_HEAL=0 sudo box-scripts/install.sh
 ```
 
 The flag rides a **systemd drop-in**
@@ -102,6 +113,9 @@ box). After the flip, `status.json` reports `self_heal.enabled: true`.
 - It is **OFF by default** because a host edit may be a deliberate hot-fix that
   should be **back-ported to the repo**, not clobbered. Turn it on only when the
   committed copy is the unambiguous source of truth.
+- The **first** drift edge only alerts; the committed copy is re-installed on the
+  next check if the drift persists (the one-cycle grace, default on; `HEAL_GRACE=0`
+  heals on the first edge).
 - A drift whose committed source is **gone** (`REPO-MISSING` / `BOTH-MISSING`)
   cannot be restored and is reported as **un-healable** — the host file is left
   untouched.
@@ -153,12 +167,19 @@ run                                   # one DRIFT alert (host file UNCHANGED)
 run                                   # (persisting) — no repeat push
 ```
 
-Self-heal (add `SELF_HEAL=1`):
+Self-heal (add `SELF_HEAL=1`). With the default one-cycle grace the first run
+only alerts; the second run (drift still present) restores the host file:
 
 ```bash
-run SELF_HEAL=1                        # DRIFT alert + REPAIRED push; host file restored to "committed v1"
+run SELF_HEAL=1                        # DRIFT alert only; host file UNCHANGED (grace)
+cat "$T/sbin/demo-script"             # -> echo HAND-EDITED  (still drifted)
+run SELF_HEAL=1                        # REPAIRED push; host file restored to "committed v1"
 cat "$T/sbin/demo-script"             # -> echo committed v1
 run SELF_HEAL=1                        # RECOVERED (drift cleared)
+
+# heal on the FIRST edge instead (opt out of the grace):
+printf 'echo HAND-EDITED\n' > "$T/sbin/demo-script"
+run SELF_HEAL=1 HEAL_GRACE=0           # DRIFT alert + REPAIRED in one run; host restored
 rm -rf "$T"
 ```
 

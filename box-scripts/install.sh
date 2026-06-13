@@ -339,13 +339,19 @@ done
 
 # --- box-scripts-drift self-heal opt-in (one-flip switch) -------------------
 # Self-heal is OFF by default: a drifted host file may be a deliberate hot-fix
-# to back-port to the repo, not clobber. Flip it on for THIS box by re-running
-# with SELF_HEAL=1; optionally scope it to a tight set of files whose committed
-# copy is the unambiguous source of truth via WATCH_SBIN / WATCH_UNITS:
+# to back-port to the repo, not clobber. When you DO turn it on, scope it to the
+# tight set of files whose committed copy is the unambiguous source of truth via
+# WATCH_SBIN / WATCH_UNITS — this is the recommended way to keep the blast radius
+# small (an unscoped enable will auto-restore EVERY watched host file):
+#     # RECOMMENDED: heal only the named file(s)
+#     SELF_HEAL=1 WATCH_UNITS="dns-drift-check.service" \
+#       WATCH_SBIN="dns-drift-check" sudo ./install.sh
+#     # WIDE (heals all watched files; prints a warning):
 #     SELF_HEAL=1 sudo ./install.sh
-#     SELF_HEAL=1 WATCH_SBIN="dns-drift-check" \
-#       WATCH_UNITS="dns-drift-check.service" sudo ./install.sh
 #     SELF_HEAL=0 sudo ./install.sh      # turn it back off (removes the drop-in)
+# Either way the watcher gives a one-cycle grace: the first drift only ALERTS and
+# the committed copy is re-installed on the NEXT check if the drift persists
+# (HEAL_GRACE=0 in the drop-in heals on the first edge instead).
 # The flag rides a systemd drop-in so the watched unit file itself is never
 # edited on the host (editing it would make box-scripts-drift-check.service
 # drift from its own committed copy and the watcher would alert on itself).
@@ -361,6 +367,12 @@ selfheal_dropin_dir="${SELFHEAL_DROPIN_DIR:-/etc/systemd/system/box-scripts-drif
 selfheal_dropin="$selfheal_dropin_dir/10-self-heal.conf"
 case "${SELF_HEAL:-}" in
   1|true|yes|on)
+    if [ -z "${WATCH_SBIN+set}" ] && [ -z "${WATCH_UNITS+set}" ]; then
+      echo "[install] WARN self-heal enabled with NO scope — it will auto-restore EVERY watched host file," >&2
+      echo "[install]      which can clobber a deliberate local hot-fix. Recommended: scope it to the file(s)" >&2
+      echo "[install]      whose committed copy is the source of truth, e.g.:" >&2
+      echo "[install]        SELF_HEAL=1 WATCH_UNITS=\"dns-drift-check.service\" WATCH_SBIN=\"dns-drift-check\" sudo ./install.sh" >&2
+    fi
     install -d -m 0755 "$selfheal_dropin_dir"
     selfheal_tmp="$(mktemp)"
     {

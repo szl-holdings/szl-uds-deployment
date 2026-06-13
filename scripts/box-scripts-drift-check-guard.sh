@@ -110,32 +110,56 @@ run
 if pushed RECOVERED;        then ok "D1 clearing the drift fires RECOVERED"; else bad "D1 no RECOVERED push when drift cleared"; fi
 if status_is OK;            then ok "D2 status.json back to overall=OK"; else bad "D2 status.json not OK after recovery"; fi
 
-echo "== Phase E: SELF_HEAL=1 repairs a drifted script AND unit (daemon-reload) =="
+echo "== Phase E: SELF_HEAL=1 one-cycle grace -> first edge ALERTS but does NOT restore =="
+# With the default grace, a brand-new drift edge must only alert; the host file
+# is left alone so a genuine local hot-fix can be back-ported before the
+# committed copy clobbers it.
 printf 'echo HAND-EDITED again\n'           > "$T/sbin/demo-script"
 printf '[Unit]\nDescription=HAND-EDITED\n'  > "$T/units/demo.service"
 run SELF_HEAL=1
 if pushed DRIFT;            then ok "E1 self-heal still fires the DRIFT edge alert"; else bad "E1 self-heal swallowed the DRIFT edge alert"; fi
-if pushed REPAIRED;         then ok "E2 self-heal fires a REPAIRED push"; else bad "E2 self-heal did NOT push REPAIRED"; fi
-if cmp -s "$T/sbin/demo-script" "$T/repo/box-scripts/sbin/demo-script"; then
-  ok "E3 self-heal restored the drifted SCRIPT from its committed copy"
+if ! pushed REPAIRED;       then ok "E2 grace does NOT repair on the first drift edge"; else bad "E2 self-heal repaired on the first edge despite grace"; fi
+if grep -q 'HAND-EDITED again' "$T/sbin/demo-script"; then
+  ok "E3 grace leaves the drifted host SCRIPT untouched on the first edge"
 else
-  bad "E3 self-heal did NOT restore the drifted script"
+  bad "E3 grace restored the host script on the first edge (should defer one cycle)"
+fi
+
+echo "== Phase E2: SELF_HEAL=1 next cycle (drift persists) -> repairs script AND unit =="
+run SELF_HEAL=1
+if pushed REPAIRED;         then ok "E4 self-heal fires a REPAIRED push on the next cycle"; else bad "E4 self-heal did NOT push REPAIRED after the grace cycle"; fi
+if cmp -s "$T/sbin/demo-script" "$T/repo/box-scripts/sbin/demo-script"; then
+  ok "E5 self-heal restored the drifted SCRIPT from its committed copy"
+else
+  bad "E5 self-heal did NOT restore the drifted script"
 fi
 if cmp -s "$T/units/demo.service" "$T/repo/box-scripts/systemd/demo.service"; then
-  ok "E4 self-heal restored the drifted UNIT from its committed copy"
+  ok "E6 self-heal restored the drifted UNIT from its committed copy"
 else
-  bad "E4 self-heal did NOT restore the drifted unit"
+  bad "E6 self-heal did NOT restore the drifted unit"
 fi
 if grep -q 'daemon-reload-stub' "$LOG"; then
-  ok "E5 self-heal ran daemon-reload after re-installing a unit"
+  ok "E7 self-heal ran daemon-reload after re-installing a unit"
 else
-  bad "E5 self-heal did NOT run daemon-reload after a unit changed"
+  bad "E7 self-heal did NOT run daemon-reload after a unit changed"
 fi
 
 echo "== Phase F: next cycle after self-heal -> RECOVERED =="
 run SELF_HEAL=1
 if pushed RECOVERED;        then ok "F1 self-heal cycle clears to RECOVERED"; else bad "F1 no RECOVERED after self-heal repaired the drift"; fi
 if status_is OK;            then ok "F2 status.json OK after self-heal"; else bad "F2 status.json not OK after self-heal"; fi
+
+echo "== Phase F2: HEAL_GRACE=0 heals on the FIRST edge (opt out of the grace) =="
+printf 'echo HAND-EDITED thrice\n' > "$T/sbin/demo-script"
+run SELF_HEAL=1 HEAL_GRACE=0
+if pushed REPAIRED;         then ok "F2a HEAL_GRACE=0 repairs on the first edge"; else bad "F2a HEAL_GRACE=0 did NOT repair on the first edge"; fi
+if cmp -s "$T/sbin/demo-script" "$T/repo/box-scripts/sbin/demo-script"; then
+  ok "F2b HEAL_GRACE=0 restored the SCRIPT in a single run"
+else
+  bad "F2b HEAL_GRACE=0 did NOT restore the script in a single run"
+fi
+run SELF_HEAL=1            # clear back to a clean baseline for the next phase
+if status_is OK;            then ok "F2c status.json OK after the HEAL_GRACE=0 heal"; else bad "F2c status.json not OK after HEAL_GRACE=0 heal"; fi
 
 echo "== Phase G: SELF_HEAL=1 leaves an un-healable REPO-MISSING host file untouched =="
 # A host file with NO committed copy cannot be restored — it must be left as-is.
