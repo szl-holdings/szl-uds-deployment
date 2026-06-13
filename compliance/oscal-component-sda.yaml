@@ -199,8 +199,8 @@ component-definition:
                 khipu-sda-core (SLSA L2 build-attestation present). The provenance
                 subject.digest is left empty in the shipped stub and is populated only
                 after the real build (STUB_PENDING_FORGE_BUILD_FA-001) — no digest is
-                fabricated. HONEST SLSA: L1 today, L2 attestation present, L2-verified/L3
-                ROADMAP (hermetic, isolated builder + verifier admission).
+                fabricated. HONEST SLSA: L1 today, L2 attestation present; L2-verified and
+                L3 are ROADMAP (hermetic, isolated builder + verifier admission).
               links:
                 - href: "#a6e5b7c8-9daf-4eb0-c132-4d5e6f708192"
                   rel: lula

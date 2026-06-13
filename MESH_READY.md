@@ -211,7 +211,7 @@ the L1–L5 building blocks exist and are widely deployed, but the *consolidated
 re-verifiable chain-of-title receipt* is the differentiator we are pursuing.
 
 > **L6 is a PROPOSED SZL posture, not an industry standard and not a claimed certification.**
-> It does not imply FedRAMP, CMMC, Iron Bank, or SLSA L3+ — those remain unearned (see §5).
+> It does not imply FedRAMP, CMMC, Iron Bank, or SLSA L3+ — those are not achieved and remain on the roadmap (unearned; see §5).
 
 ### Honest limit
 
