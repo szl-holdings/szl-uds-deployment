@@ -127,6 +127,25 @@ signatures are correctly **rejected**. There is no separate HMAC verify path; an
 older HMAC-based demo verifier has been retired in favour of the Ed25519/DSSE one
 above.
 
+### Signing schemes by component
+
+The SZL estate intentionally uses **different signature schemes in different
+components**, each bound to its own key material. They are not interchangeable
+and the apparent "drift" between docs is by design:
+
+| Component | Scheme | Encoding | Key material | Notes |
+| --- | --- | --- | --- | --- |
+| `services/szl-receipts-server` (this repo) | **Ed25519** | DSSE PAE over SHA-256 chain | `szl-receipts-ed25519` keypair | Primary/authoritative receipt scheme; verified by `scripts/verify_receipts.sh`. |
+| `pepr/policies/szl-receipt-on-deploy.ts` | **Ed25519** primary | DSSE PAE (`ieee-p1363`) | `szl-receipts-ed25519` (keyid) | Emits receipts on Deployment/Job admission, matching the server scheme. |
+| `pepr` HMAC path | **HMAC-SHA-256** (legacy fallback) | raw MAC | `SZL_HMAC_KEY` env (optional) | Only active if the env var is set; retired/legacy, **rejected** by the authoritative verifier and pinned-rejected in `scripts/dsse_scheme_regression_test.py`. |
+| `a11oy` (`szl_dsse.py`, `a11oy_signing_key.py`) | **ECDSA P-256** (SECP256R1) | DSSE PAE over SHA-256 | SZLHOLDINGS Cosign keypair (`cosign.pub`) | Deliberately **not** Ed25519 — chosen to match the org Cosign key so a11oy receipts verify with the same public key as cosign artifacts. |
+
+In short: receipt-server and Pepr both sign with **Ed25519/DSSE** (HMAC is a
+disabled legacy fallback that the verifier rejects), while **a11oy** signs with
+**ECDSA P-256/DSSE** to stay compatible with the org Cosign key. No crypto was
+changed to reconcile these docs; only the descriptions were corrected to match
+the code.
+
 ---
 
 ## Repository Structure
