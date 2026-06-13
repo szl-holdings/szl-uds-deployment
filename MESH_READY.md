@@ -59,6 +59,7 @@ uds zarf package create capabilities/szl-governance --confirm
 # Lula/OSCAL compliance assessment (against a live cluster)
 lula validate -f compliance/oscal-component-a11oy.yaml
 lula validate -f compliance/oscal-component-killinchu.yaml
+lula validate -f compliance/oscal-component-sda.yaml
 ```
 
 > **Flavors:** `upstream` pins the **VERIFIED-LIVE** `uds-v0.2.0` organ images by digest
@@ -122,6 +123,7 @@ OSCAL 1.1.2 component-definitions runnable with **lula1** (Apache-2.0):
 ```bash
 lula validate -f compliance/oscal-component-a11oy.yaml
 lula validate -f compliance/oscal-component-killinchu.yaml
+lula validate -f compliance/oscal-component-sda.yaml
 ```
 
 Five NIST SP 800-53 Rev 5 controls per app, each backed by an OPA/Rego policy that
@@ -209,7 +211,7 @@ the L1–L5 building blocks exist and are widely deployed, but the *consolidated
 re-verifiable chain-of-title receipt* is the differentiator we are pursuing.
 
 > **L6 is a PROPOSED SZL posture, not an industry standard and not a claimed certification.**
-> It does not imply FedRAMP, CMMC, Iron Bank, or SLSA L3+ — those remain unearned (see §5).
+> It does not imply FedRAMP, CMMC, Iron Bank, or SLSA L3+ — those are not achieved and remain on the roadmap (unearned; see §5).
 
 ### Honest limit
 

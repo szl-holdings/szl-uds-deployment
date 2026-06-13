@@ -122,6 +122,7 @@ kubectl get virtualservices,networkpolicies -n killinchu
 ```bash
 lula validate -f compliance/oscal-component-a11oy.yaml
 lula validate -f compliance/oscal-component-killinchu.yaml
+lula validate -f compliance/oscal-component-sda.yaml
 lula evaluate  ...                                   # track compliance over time
 #   -> machine-readable OSCAL assessment-results.
 #   Posture: SLSA L1+L2 attested ONLY where attest-build-provenance runs +
