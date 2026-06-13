@@ -1,0 +1,90 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: energy-harvest
+  namespace: szl-energy-harvest
+  labels:
+    app: energy-harvest
+    app.kubernetes.io/name: energy-harvest
+    szl.io/component: uds-workload
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: energy-harvest
+  template:
+    metadata:
+      labels:
+        app: energy-harvest
+        app.kubernetes.io/name: energy-harvest
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: energy-harvest
+          # NOT yet published — build + push + cosign-sign + digest-pin before
+          # adding to a bundle or deploying live (see uds-package.yaml
+          # image-status; FA-001 style). Zarf rewrites this to the in-cluster
+          # registry reference at deploy time once it is baked into the package.
+          image: ghcr.io/szl-holdings/energy-harvest:uds-v0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: energy-harvest
+  namespace: szl-energy-harvest
+  labels:
+    app: energy-harvest
+    app.kubernetes.io/name: energy-harvest
+spec:
+  selector:
+    app: energy-harvest
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
