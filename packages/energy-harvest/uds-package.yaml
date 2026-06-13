@@ -1,0 +1,103 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# UDS Package CR — energy-harvest (wasted-energy harvest grid signal)
+#
+# energy-harvest is a small, read-only edge signal. It reads THREE public,
+# no-key grid feeds and tells us when the grid is WASTING power (negative
+# wholesale price / curtailed renewables) so already-wasted energy can be soaked.
+# It talks to NO other SZL module — its only egress is to those three external
+# feeds (plus DNS / KubeAPI). It exposes the tab + a /metrics scrape.
+#
+# Doctrine v11: REAL public grid data under the honest "grid" source; joules stay
+# SAMPLE until an on-box NVML meter; this signal NEVER sets sovereign:true; it is
+# NOT one of the locked-8; Lambda = Conjecture 1. No free-energy, no greenwashing.
+#
+# UDS Package CR (v1alpha1) reference for every field:
+#   https://uds.defenseunicorns.com/reference/configuration/custom-resources/packages-v1alpha1-cr/
+#   - network.expose fields / network.allow fields (incl. remoteHost external
+#     egress) / monitor fields are all on that page.
+# UDS Operator generation (Istio + NetworkPolicy + ServiceMonitor):
+#   https://uds.defenseunicorns.com/reference/uds-core/overview/
+---
+apiVersion: uds.dev/v1alpha1
+kind: Package
+metadata:
+  name: energy-harvest
+  namespace: szl-energy-harvest
+  labels:
+    app.kubernetes.io/name: energy-harvest
+    szl.io/component: uds-package
+    szl.io/mesh-version: v0.4.0
+  annotations:
+    szl.io/role: "wasted-energy harvest grid signal (energy-harvest.szl-energy-harvest.svc.cluster.local:8080)"
+    szl.io/image-status: >-
+      NOT yet published — ghcr.io/szl-holdings/energy-harvest image build pending.
+      Package is build-valid (manifests internally consistent) but live deploy /
+      bundle membership is gated on the image being built, pushed and
+      cosign-signed, then digest-pinned here and in manifests/deployment.yaml
+      (FA-001 style). NOT deployed to the live 2-vCPU k3d (headroom).
+    szl.io/doctrine: >-
+      v11 — honest labels (live only on a real 200); joules SAMPLE until on-box
+      NVML; NEVER sets sovereign:true; not one of the locked-8; Lambda = Conjecture 1.
+spec:
+  network:
+    # serviceMesh.mode: ambient — matches the live k3d uds-szl-demo (Istio
+    # ambient mTLS, no sidecar). The v1alpha1 CRD defaults to ambient; declared
+    # explicitly per the reference-package idiom.
+    serviceMesh:
+      mode: ambient
+
+    # Expose the read-only tab + grid-signal API through the tenant gateway.
+    expose:
+      - service: energy-harvest
+        selector:
+          app: energy-harvest
+        host: energy
+        gateway: tenant
+        port: 8080
+        targetPort: 8080
+        description: "Public read-only Energy Harvest tab + honest grid-signal JSON API"
+
+    allow:
+      - direction: Egress
+        selector:
+          app: energy-harvest
+        remoteGenerated: KubeAPI
+        description: "Kubernetes API / DNS resolution"
+
+      # energy-harvest -> aWATTar (DE day-ahead wholesale price; no API key).
+      - direction: Egress
+        selector:
+          app: energy-harvest
+        remoteHost: api.awattar.de
+        remoteProtocol: TLS
+        port: 443
+        description: "aWATTar DE wholesale day-ahead price feed (negative price = wasted energy)"
+
+      # energy-harvest -> energy-charts.info (DE renewable share; no API key).
+      - direction: Egress
+        selector:
+          app: energy-harvest
+        remoteHost: api.energy-charts.info
+        remoteProtocol: TLS
+        port: 443
+        description: "energy-charts.info DE renewable generation share feed"
+
+      # energy-harvest -> UK National Grid carbon intensity (no API key).
+      - direction: Egress
+        selector:
+          app: energy-harvest
+        remoteHost: api.carbonintensity.org.uk
+        remoteProtocol: TLS
+        port: 443
+        description: "UK National Grid carbon intensity feed"
+
+  monitor:
+    - portName: http
+      selector:
+        app: energy-harvest
+      targetPort: 8080
+      path: /metrics
+      kind: ServiceMonitor
+      description: "energy-harvest honest grid-signal metrics scrape (no fabricated joules)"
