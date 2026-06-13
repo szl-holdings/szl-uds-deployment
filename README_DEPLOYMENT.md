@@ -36,6 +36,43 @@ ambient dataplane**, not sidecars. Both flagships are deployed accordingly:
 
 ---
 
+## Bumping the szl-receipts version (use the script, don't hand-edit)
+
+The szl-receipts version lives in **three** files that must agree, or a fresh
+clone installs the wrong thing and CI goes red (`version-coherence-guard.yml`
+plus the image-digest / pin guards):
+
+| File | Field(s) |
+|---|---|
+| `charts/szl-receipts/Chart.yaml` | `version` **and** `appVersion` |
+| `charts/szl-receipts/values.yaml` | `server.image.tag` (`uds-v<version>`) **and** `server.image.digest` |
+| `packages/szl-receipts/zarf.yaml` | the server image ref `ghcr.io/szl-holdings/szl-receipts-server:uds-v<version>@sha256:<digest>` |
+
+A half-finished hand-edit once left the chart on `0.4.0` while the image tag /
+zarf ref had already moved to `uds-v0.4.1`; the coherence guard only *catches*
+that drift after the fact. Do not hand-edit these files. Instead:
+
+```bash
+# 1. Publish the new image first (separate step): push tag
+#    receipts-server-v<version>  ->  receipts-server-image.yml builds + cosign-
+#    signs ghcr.io/szl-holdings/szl-receipts-server:uds-v<version>.
+# 2. Resolve the published linux/amd64 CHILD digest (never the multi-arch index).
+# 3. Bump every version site in lockstep, in one command:
+scripts/bump-receipts-version.sh <new-version> <new-digest>
+#    e.g. scripts/bump-receipts-version.sh 0.4.2 sha256:758052db...
+# 4. Review and commit:
+git diff
+```
+
+The same digest is written to BOTH `values.yaml` and `zarf.yaml` so they stay
+byte-identical (`image-pin-guard`'s `chart-zarf-digest-match` check). After the
+script runs, `version-coherence-guard.yml` passes with no manual edits.
+
+> **Forward-only.** Never rename an already-signed `uds-v*` tag — that breaks the
+> cosign signature. Bump to a NEW version; see `scripts/check_version_doctrine.sh`.
+
+---
+
 ## Prerequisites
 
 | Tool | Minimum version |
