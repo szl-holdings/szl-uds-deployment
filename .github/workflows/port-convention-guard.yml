@@ -1,0 +1,71 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# port-convention-guard.yml — Catch mismatched service ports across the organ
+# packages before they ship, the way organ-package-guard.yml protects packaging
+# shape.
+#
+# Task #638 fixed real port skew in this repo: four organs' egress rules pointed
+# at a11oy on port 8080, but a11oy actually listens on 7860. The UDS operator
+# turns every `spec.network.allow` rule into a NetworkPolicy whose port is the
+# *destination* workload's port, so a wrong port SILENTLY blackholes mesh traffic
+# — no error, no failed deploy. That fix was hand-verified with a one-off YAML
+# audit; nothing stopped the skew from quietly returning. This guard makes the
+# convention self-policing, cluster-free, in seconds.
+#
+# It asserts, for every canonical packages/*/uds-package.yaml (the experimental
+# uds-package-mesh-ready.yaml infra variants are intentionally out of scope):
+#   * every spec.network.allow rule's `port` == the destination workload's real
+#     listener port (Egress -> remoteSelector's app; Ingress -> the package's own
+#     app),
+#   * every monitor.targetPort / expose.targetPort == the package's own listener.
+# The real listener ports are DERIVED from each organ's
+# packages/<organ>/manifests/deployment.yaml containerPort + the szl-receipts
+# chart's server.port — never from prose comments — so the table stays
+# self-updating. See .github/scripts/port_convention_check.py.
+#
+# TAMPER-PROOFING: the checker is itself code — a commented-out, weakened, or
+# vacuously-passing check would leave CI green while guarding nothing. Mirroring
+# the repo's other guard self-tests (teardown-guard.yml, organ-package-guard.yml),
+# the reusable guard-scaffold runs .github/scripts/test_port_convention_check.py
+# (deliberately-BROKEN fixtures: wrong egress port, wrong ingress port, wrong
+# monitor targetPort, unknown destination, stale static map) and asserts the
+# checker FAILS on each + PASSES on a known-good fixture, gating the real run.
+
+name: Port Convention Guard
+
+on:
+  pull_request:
+    paths:
+      - "packages/*/uds-package.yaml"
+      - "packages/*/manifests/deployment.yaml"
+      - "charts/szl-receipts/values.yaml"
+      - ".github/scripts/port_convention_check.py"
+      - ".github/scripts/test_port_convention_check.py"
+      - ".github/workflows/port-convention-guard.yml"
+      - ".github/workflows/guard-scaffold.yml"
+  push:
+    branches: [main]
+    paths:
+      - "packages/*/uds-package.yaml"
+      - "packages/*/manifests/deployment.yaml"
+      - "charts/szl-receipts/values.yaml"
+      - ".github/scripts/port_convention_check.py"
+      - ".github/scripts/test_port_convention_check.py"
+      - ".github/workflows/port-convention-guard.yml"
+      - ".github/workflows/guard-scaffold.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    uses: ./.github/workflows/guard-scaffold.yml
+    with:
+      setup: python3 -m pip install --quiet pyyaml
+      test-command: python3 .github/scripts/test_port_convention_check.py
+      checks-command: python3 .github/scripts/port_convention_check.py
+      checks-args: "."
+      checks-target: ""
+      success-message: "All organ allow-rule / monitor / expose ports match their destination listeners."
