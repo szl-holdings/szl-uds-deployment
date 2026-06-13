@@ -22,8 +22,9 @@
 #   ROADMAP = requires additional infrastructure / future work (marked inline).
 #   Λ = Conjecture 1 (advisory anomaly score gate, NOT a mathematical theorem).
 #   Doctrine v11 LOCKED. Sovereign: air-gap / own-metal only; NO free-energy claims.
-#   SLSA: L1 honest today (provenance generated); L2 build-attestation present
-#   (in-toto SLSA provenance emitted by Forge build); L2-verified / L3 = ROADMAP.
+#   SLSA: L1 honest today (provenance generated). The Forge build wires an
+#   in-toto SLSA provenance attestation, but L2 is ROADMAP / not yet earned
+#   (no verified attestation exists for the unbuilt image); L3 = ROADMAP.
 #   NEVER fabricate signatures or image digests: the cosign verdict can only be
 #   earned after Forge signs uds-v0.4.0 (FA-001) on the founder-held key.
 #
@@ -162,7 +163,7 @@ component-definition:
         by the founder-held key during the Forge build (FA-001), and to carry an in-toto
         SLSA provenance attestation. A sigstore policy-controller ClusterImagePolicy
         opt-in label (policy.sigstore.dev/include=true) is set on the namespace. HONEST
-        SLSA gradient: L1 = provenance generated (today); L2 = build-attestation present
+        SLSA gradient: L1 = provenance generated (today); L2 = ROADMAP / not yet earned
         (in-toto SLSA provenance emitted by the Forge build); L2-verified / L3 = ROADMAP.
         The image digest is intentionally BLANK until Forge signs uds-v0.4.0 — no digest
         or signature is fabricated.
@@ -196,11 +197,13 @@ component-definition:
               control-id: sa-15
               description: >-
                 REAL: The Forge build emits an in-toto SLSA provenance attestation for
-                khipu-sda-core (SLSA L2 build-attestation present). The provenance
+                khipu-sda-core, but L2 is ROADMAP / not yet earned (no verified
+                attestation exists for the unbuilt image). The provenance
                 subject.digest is left empty in the shipped stub and is populated only
                 after the real build (STUB_PENDING_FORGE_BUILD_FA-001) — no digest is
-                fabricated. HONEST SLSA: L1 today, L2 attestation present; L2-verified and
-                L3 are ROADMAP (hermetic, isolated builder + verifier admission).
+                fabricated. HONEST SLSA posture: L1 honest today. Higher levels
+                (L2, L2-verified, and L3) are all on the roadmap and not yet earned
+                (hermetic, isolated builder + verifier admission required).
               links:
                 - href: "#a6e5b7c8-9daf-4eb0-c132-4d5e6f708192"
                   rel: lula
