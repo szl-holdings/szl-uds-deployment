@@ -117,29 +117,33 @@ WATCH_EXCLUDE="${WATCH_EXCLUDE:-}"
 # uptime/DNS trio. Derivation (above) remains the PRIMARY, self-maintaining path
 # for normal operation; this list only has to be touched if install.sh is
 # unreadable AND a new helper must be covered in that degraded mode.
-FALLBACK_SBIN="a11oy-mode a11oy-serverlb-deconflict a11oy-port-guard \
-szl-core-rightsize istiod-fit-strategy receipt-chain-watch receipt-flood-watch \
-szl-receipts-retention szl-ns-scratch szl-ns-scratch-watch szl-ns-scratch-stale-watch \
-a11oy-uptime-check a11oy-uptime-notify dns-drift-check box-scripts-drift-check \
-szl-alert-relay szl-alert-relay-watch szl-signing-health-check \
-szl-receipts-orphan-watch vault-auto-unseal"
-FALLBACK_UNITS="a11oy-coexist.service a11oy-port-guard.service a11oy-port-guard.timer \
-szl-core-rightsize.service szl-core-rightsize.timer \
-istiod-fit-strategy.service istiod-fit-strategy.timer \
-receipt-chain-watch.service receipt-chain-watch.timer \
-receipt-chain-watch@.service receipt-chain-watch@.timer \
-receipt-flood-watch.service receipt-flood-watch.timer \
-receipt-flood-watch@.service receipt-flood-watch@.timer \
-szl-receipts-retention.service szl-receipts-retention.timer \
-szl-ns-scratch-watch.service szl-ns-scratch-watch.timer \
-szl-ns-scratch-stale-watch.service szl-ns-scratch-stale-watch.timer \
-a11oy-uptime-check.service a11oy-uptime-check.timer \
-dns-drift-check.service dns-drift-check.timer \
-box-scripts-drift-check.service box-scripts-drift-check.timer \
-szl-alert-relay.service szl-alert-relay-watch.service szl-alert-relay-watch.timer \
-szl-signing-health-check.service szl-signing-health-check.timer \
-szl-receipts-orphan-watch.service szl-receipts-orphan-watch.timer \
-vault-auto-unseal.service vault-auto-unseal.timer"
+FALLBACK_SBIN="a11oy-contracting-tool-watch a11oy-mode a11oy-port-guard a11oy-serverlb-deconflict \
+a11oy-signing-key-watch a11oy-uptime-check a11oy-uptime-notify \
+authelia-rotate-demo box-scripts-drift-check dns-drift-check \
+istiod-fit-strategy receipt-chain-watch receipt-flood-watch receipt-throttle-watch \
+szl-alert-relay szl-alert-relay-watch szl-core-rightsize szl-ns-scratch \
+szl-ns-scratch-stale-watch szl-ns-scratch-watch szl-receipt-checkpoint \
+szl-receipts-cold-offsite szl-receipts-orphan-watch szl-receipts-retention \
+szl-signing-health-check vault-auto-unseal vault-keystore-offbox-backup"
+FALLBACK_UNITS="a11oy-coexist.service a11oy-contracting-tool-watch.service a11oy-contracting-tool-watch.timer \
+a11oy-port-guard.service a11oy-port-guard.timer a11oy-signing-key-watch.service \
+a11oy-signing-key-watch.timer a11oy-uptime-check.service a11oy-uptime-check.timer \
+authelia-rotate-demo.service authelia-rotate-demo.timer box-scripts-drift-check.service \
+box-scripts-drift-check.timer dns-drift-check.service dns-drift-check.timer \
+istiod-fit-strategy.service istiod-fit-strategy.timer receipt-chain-watch.service \
+receipt-chain-watch@.service receipt-chain-watch.timer receipt-chain-watch@.timer \
+receipt-flood-watch.service receipt-flood-watch@.service receipt-flood-watch.timer \
+receipt-flood-watch@.timer receipt-throttle-watch.service receipt-throttle-watch@.service \
+receipt-throttle-watch.timer receipt-throttle-watch@.timer szl-alert-relay.service \
+szl-alert-relay-watch.service szl-alert-relay-watch.timer szl-core-rightsize.service \
+szl-core-rightsize.timer szl-ns-scratch-stale-watch.service szl-ns-scratch-stale-watch.timer \
+szl-ns-scratch-watch.service szl-ns-scratch-watch.timer szl-receipt-checkpoint.service \
+szl-receipt-checkpoint.timer szl-receipts-cold-offsite.service \
+szl-receipts-cold-offsite.timer szl-receipts-orphan-watch.service \
+szl-receipts-orphan-watch.timer szl-receipts-retention.service \
+szl-receipts-retention.timer szl-signing-health-check.service \
+szl-signing-health-check.timer vault-auto-unseal.service vault-auto-unseal.timer \
+vault-keystore-offbox-backup.service vault-keystore-offbox-backup.timer"
 
 STATE_DIR="${STATE_DIR:-/var/lib/box-scripts-drift}"
 LOG_DIR="${LOG_DIR:-/var/log/box-scripts-drift}"

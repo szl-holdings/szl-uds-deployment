@@ -1,0 +1,76 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# box-fallback-superset-guard.yml — PR-time gate asserting the STATIC emergency
+# fallback watch lists (FALLBACK_SBIN / FALLBACK_UNITS) in
+# box-scripts/sbin/box-scripts-drift-check remain a SUPERSET of every sbin
+# script / systemd unit box-scripts/install.sh installs (minus the small
+# own-installer allowlist, e.g. szl-box-sync*).
+#
+# WHY THIS EXISTS
+# box-scripts-drift-check DERIVES the set of files it watches at RUNTIME by
+# parsing install.sh, but falls back to the STATIC FALLBACK_SBIN / FALLBACK_UNITS
+# lists when install.sh is missing/unreadable so it never silently watches
+# NOTHING in that degraded mode. That fallback only protects every self-heal
+# helper if it actually lists them all. Nothing stops a future change from adding
+# a new self-heal script to install.sh while forgetting the fallback, silently
+# re-opening the exact gap the list was hardened to close (a new helper unwatched
+# precisely when install.sh cannot be read). This guard is the PR-time gate that
+# catches that omission before it merges — a fallback that falls behind install.sh
+# FAILS the build, naming the missing script(s)/unit(s).
+#
+# It is a pure grep/awk text check (no cluster, no root). The install.sh parser
+# is kept in lockstep with derive_install_set() in box-scripts-drift-check (and
+# with scripts/box-helper-install-coverage-checks.sh) so "installed" means the
+# same thing at PR time and at runtime.
+#
+# scripts/box-fallback-superset-checks.sh holds the check.
+# scripts/box-fallback-superset-checks.test.sh is the negative-fixture self-test:
+# it sources the check and asserts the pristine repo passes, dropping an
+# installed sbin name / unit from the fallback fails, re-adding it passes, and
+# the allowlist is actually consulted (an own-installer install line is skipped
+# with the default allowlist but required once it is emptied) — so the guard
+# cannot pass vacuously. It runs as the `self-test` job, which the guard job
+# depends on.
+
+name: Box Fallback Superset Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves the
+  # check's assertions still FAIL on a fallback that has fallen behind install.sh
+  # (i.e. are not silently passing). The guard job depends on it so a broken
+  # check blocks the build before it can wave a stale fallback through.
+  self-test:
+    name: Self-test the guard (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/box-fallback-superset-checks.test.sh
+
+  guard:
+    name: FALLBACK lists are a superset of install.sh
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check parses clean (bash -n)
+        run: bash -n scripts/box-fallback-superset-checks.sh
+
+      - name: Assert FALLBACK_SBIN / FALLBACK_UNITS cover install.sh
+        run: bash scripts/box-fallback-superset-checks.sh .
+
+      - name: Static emergency fallback still covers every installed helper
+        run: echo "FALLBACK_SBIN and FALLBACK_UNITS in box-scripts-drift-check are a superset of every install.sh-installed sbin script / systemd unit."
