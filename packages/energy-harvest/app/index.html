@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Energy Harvest · a11oy</title>
+<style>
+  :root{
+    --bg:#070b12; --panel:#0d1420; --panel2:#111b2b; --line:#1c2a3f;
+    --ink:#e6edf6; --muted:#8aa0bd; --dim:#5c708c;
+    --green:#34d399; --amber:#fbbf24; --red:#f87171; --blue:#60a5fa; --cyan:#22d3ee;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 600px at 70% -10%,#0f1a2c 0%,var(--bg) 60%);
+    color:var(--ink);font:15px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Inter,sans-serif;
+    -webkit-font-smoothing:antialiased;min-height:100vh}
+  .wrap{max-width:1040px;margin:0 auto;padding:32px 20px 64px}
+  header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}
+  h1{font-size:24px;margin:0;letter-spacing:-.02em}
+  .sub{color:var(--muted);font-size:13px;margin-top:4px;max-width:620px}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+  .chip{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;
+    padding:4px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted);background:#0a1220}
+  .chip.live{color:var(--green);border-color:#1f5140;background:#0b1f18}
+  .chip.sample{color:var(--amber);border-color:#5b4a18;background:#1d1707}
+  .chip.dim{color:var(--dim)}
+  .hero{margin-top:24px;border:1px solid var(--line);border-radius:16px;overflow:hidden;background:linear-gradient(180deg,var(--panel2),var(--panel))}
+  .hero-in{padding:26px 26px 22px;display:flex;align-items:center;gap:24px;flex-wrap:wrap}
+  .state{font-size:42px;font-weight:800;letter-spacing:-.03em;line-height:1}
+  .state small{display:block;font-size:12px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+  .dot{width:11px;height:11px;border-radius:50%;display:inline-block;margin-right:9px;vertical-align:middle;box-shadow:0 0 0 4px rgba(255,255,255,.03)}
+  .verdict{flex:1;min-width:240px;color:var(--muted);font-size:14px}
+  .verdict b{color:var(--ink)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:18px}
+  .card{border:1px solid var(--line);border-radius:14px;background:var(--panel);padding:16px 17px}
+  .card h3{margin:0 0 2px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:700}
+  .card .src{font-size:11px;color:var(--dim)}
+  .big{font-size:30px;font-weight:800;letter-spacing:-.02em;margin:10px 0 2px}
+  .big.neg{color:var(--green)} .big.warn{color:var(--amber)} .big.bad{color:var(--red)}
+  .meta{font-size:12px;color:var(--muted)}
+  .pill{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px;margin-top:8px}
+  .pill.ok{color:var(--green);background:#0b1f18} .pill.un{color:var(--red);background:#1f0f0f}
+  footer{margin-top:26px;border-top:1px solid var(--line);padding-top:16px;color:var(--dim);font-size:12px;line-height:1.7}
+  footer code{color:var(--muted)}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  .refresh{font-size:12px;color:var(--dim)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>⚡ Energy Harvest</h1>
+      <div class="sub">Live wasted-energy signal from real, no-key public grid feeds. When the grid is
+        <b>paying to offload load</b> (negative wholesale price) or renewables exceed demand
+        (curtailment), running our own compute soaks <b>already-wasted</b> energy.</div>
+      <div class="chips">
+        <span class="chip live">REAL GRID DATA</span>
+        <span class="chip sample">JOULES · SAMPLE</span>
+        <span class="chip dim">SOVEREIGN · UNCHANGED</span>
+        <span class="chip dim">NOT LOCKED-8 · Λ=CONJECTURE&nbsp;1</span>
+      </div>
+    </div>
+    <div class="refresh" id="refresh">loading…</div>
+  </header>
+
+  <div class="hero">
+    <div class="hero-in">
+      <div class="state"><small>Posture</small><span id="dot" class="dot"></span><span id="state">…</span></div>
+      <div class="verdict" id="verdict">Reading live grid feeds…</div>
+    </div>
+  </div>
+
+  <div class="grid" id="cards"></div>
+
+  <footer id="doctrine">
+    No free-energy. We soak <b>already-wasted</b> grid energy only. <code>joules_label=sample</code>
+    until an on-box NVML hardware meter feeds real measurements; this grid signal <b>never</b> sets
+    <code>sovereign:true</code>. Not one of the locked-8. Λ = Conjecture&nbsp;1.<br>
+    Feeds: <code>api.awattar.de</code> · <code>api.energy-charts.info</code> · <code>api.carbonintensity.org.uk</code>.
+    API: <a href="https://a11oy.net/api/a11oy/v1/harvest/harvest">/api/a11oy/v1/harvest/harvest</a>.
+  </footer>
+</div>
+
+<script>
+const API = "https://a11oy.net/api/a11oy/v1/harvest";
+const POSTURE = {
+  "negative-price":      {label:"NEGATIVE PRICE", color:"var(--green)", soak:true},
+  "curtailed-renewable": {label:"CURTAILED RENEWABLE", color:"var(--green)", soak:true},
+  "cheap":               {label:"CHEAP", color:"var(--cyan)", soak:false},
+  "normal":              {label:"NORMAL", color:"var(--blue)", soak:false},
+  "expensive":           {label:"EXPENSIVE", color:"var(--red)", soak:false},
+  "unknown":             {label:"UNKNOWN", color:"var(--dim)", soak:false},
+};
+const esc = s => String(s==null?"—":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const num = (v,d=2) => (v==null||isNaN(v))?"—":Number(v).toFixed(d);
+
+function feedCard(title, src, live, bodyHtml){
+  return `<div class="card"><h3>${esc(title)}</h3><div class="src">${esc(src)}</div>
+    ${bodyHtml}<span class="pill ${live?'ok':'un'}">${live?'LIVE':'UNREACHABLE'}</span></div>`;
+}
+
+async function load(){
+  const r = document.getElementById('refresh');
+  try{
+    const res = await fetch(API + "/posture", {cache:"no-store"});
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    const d = await res.json();
+    const p = POSTURE[d.grid_price_posture] || POSTURE.unknown;
+    document.getElementById('dot').style.background = p.color;
+    document.getElementById('state').textContent = p.label;
+    document.getElementById('state').style.color = p.color;
+
+    const soak = d.wasted_energy_available;
+    document.getElementById('verdict').innerHTML = soak
+      ? `<b>Wasted-energy window OPEN.</b> The grid is effectively paying us to absorb load — proactive/batch compute may soak it now. Reactive turns always serve regardless.`
+      : `No wasted-energy window right now. Proactive/batch soak is <b>off</b>; reactive turns always serve. ${d.next_window_negative?'A negative-price window is forecast ahead.':''}`;
+
+    const price = d.price_now_eur_mwh;
+    const priceCls = price==null?"":(price<0?"neg":(price>100?"bad":(price<30?"":"warn")));
+    const cards = [
+      feedCard("Wholesale price (DE)","api.awattar.de", d.feeds_live>0 && price!=null,
+        `<div class="big ${priceCls}">${num(price)} <span style="font-size:13px;color:var(--muted)">EUR/MWh</span></div>
+         <div class="meta">next-min ${num(d.next_min_eur_mwh)} · negative windows ahead: ${esc(d.next_negative_windows)}</div>`),
+      feedCard("Renewable share (DE)","api.energy-charts.info", d.renewable_share_pct!=null,
+        `<div class="big">${num(d.renewable_share_pct,1)}<span style="font-size:13px;color:var(--muted)">%</span></div>
+         <div class="meta">curtailment soak triggers at ≥100% of load</div>`),
+      feedCard("Carbon intensity (UK)","api.carbonintensity.org.uk", d.uk_gco2_per_kwh!=null,
+        `<div class="big">${num(d.uk_gco2_per_kwh,0)}<span style="font-size:13px;color:var(--muted)"> gCO₂/kWh</span></div>
+         <div class="meta">grid index: ${esc(d.uk_carbon_index)}</div>`),
+    ];
+    document.getElementById('cards').innerHTML = cards.join("");
+    const when = d.ts? new Date(d.ts*1000).toLocaleTimeString() : "now";
+    r.textContent = `${d.feeds_live}/${d.feeds_total} feeds live · ${d.cached?'cached':'fresh'} · ${when}`;
+  }catch(e){
+    r.textContent = "signal unreachable";
+    document.getElementById('state').textContent = "UNREACHABLE";
+    document.getElementById('verdict').innerHTML = `Could not read the live harvest signal (<code>${esc(e.message)}</code>). No data is fabricated when feeds are down.`;
+  }
+}
+load();
+let timer = setInterval(()=>{ if(!document.hidden) load(); }, 60000);
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden) load(); });
+</script>
+</body>
+</html>
