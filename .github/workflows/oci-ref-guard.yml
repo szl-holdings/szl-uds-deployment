@@ -1,0 +1,132 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# oci-ref-guard.yml — Catch deploy/publish commands that point at an OCI package
+# which was NEVER PUBLISHED (or was retired) before they 403/404 at runtime.
+#
+# Task #678 was exactly this class: a stale
+# `zarf package deploy oci://ghcr.io/szl-holdings/packages/szl-receipts:0.3.1`
+# reference that silently 403s anonymously / 404s authenticated — found by hand,
+# not by CI. The repo already guards image-DIGEST pins (image-pin-guard,
+# receipts-pin-drift-guard) but nothing checked that the OCI package REFS in the
+# deploy/publish surfaces actually resolve.
+#
+# This guard scans tasks.yaml, tasks/*.yaml and scripts/* for LITERAL
+# `oci://ghcr.io/szl-holdings/<repo>:<tag>` references (exactly what
+# `zarf package deploy` / `zarf package pull` consume — e.g. the
+# UPGRADE_BASELINE_REF default that `test-upgrade` deploys) and FAILS if a
+# referenced tag does not resolve on GHCR. Interpolated refs (`oci://${VAR}`),
+# tagless publish-target bases, and non-szl-holdings refs are SKIPPED (reported,
+# never failed). See scripts/oci-ref-checks.py for the full rationale + the
+# anon-then-PAT resolution semantics.
+#
+# Two layers prove the guard is not vacuous (mirroring image-pin-guard):
+#   1. self-test (negative fixtures) — scripts/oci-ref-checks.test.py feeds the
+#      pure core the literal #678 stale ref and asserts verdict() FAILS, so a
+#      neutered check turns CI red HERE, not in production.
+#   2. resolve-e2e — runs the REAL anon->PAT resolution path against two stable
+#      GHCR refs and asserts the verdict: a known PUBLISHED ref
+#      (szl-receipts:0.4.0-upstream) is accepted and a known NEVER-PUBLISHED ref
+#      (szl-receipts:0.0.0-guard-fixture-never-published) is rejected. This proves
+#      the live resolver actually catches a missing ref, not just the fixtures.
+
+name: OCI Ref Guard
+
+on:
+  pull_request:
+    paths:
+      - "tasks.yaml"
+      - "tasks/**"
+      - "scripts/**"
+      - ".github/workflows/oci-ref-guard.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tasks.yaml"
+      - "tasks/**"
+      - "scripts/**"
+      - ".github/workflows/oci-ref-guard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  # ── 0. Self-test the guard logic (negative fixtures) ────────────────────────
+  self-test:
+    name: Self-test oci-ref checks (negative fixtures)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run oci-ref checks self-test
+        run: python3 scripts/oci-ref-checks.test.py
+
+  # ── 1. Scan the repo's real deploy/publish surfaces ─────────────────────────
+  oci-ref-guard:
+    name: Verify every OCI deploy/publish ref resolves on GHCR
+    needs: self-test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: List the OCI refs that will be checked
+        run: python3 scripts/oci-ref-checks.py extract .
+
+      - name: Assert every szl-holdings OCI deploy/publish ref resolves
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/oci-ref-checks.py check .
+
+  # ── 2. Prove the LIVE resolution path catches a missing ref ─────────────────
+  # The self-test exercises the pure core with fixtures; this job runs the REAL
+  # anon->PAT GHCR resolver against two stable, content-addressable refs and
+  # asserts the verdict, so a regression in resolve_ghcr() (token exchange /
+  # HEAD path) turns CI red instead of silently no-op'ing.
+  resolve-e2e:
+    name: Live GHCR resolution e2e (known-good + known-missing)
+    needs: self-test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Resolve a published ref (accept) and a never-published ref (reject)
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import importlib.util, os, sys
+          spec = importlib.util.spec_from_file_location("m", "scripts/oci-ref-checks.py")
+          m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+          GOOD = ("szl-holdings/szl-receipts", "0.4.0-upstream")
+          BAD  = ("szl-holdings/szl-receipts", "0.0.0-guard-fixture-never-published")
+
+          def classify(repo, tag):
+              anon, pat, tried = m.resolve_ghcr(repo, tag)
+              v, detail = m.classify_status(anon, pat, tried)
+              print("  %s:%s -> %s (anon=%s pat=%s) %s" % (repo, tag, v, anon, pat, detail))
+              return v, anon
+
+          fails = 0
+          gv, ganon = classify(*GOOD)
+          if ganon == "OUTAGE":
+              print("::warning::GHCR unreachable for the known-good ref — skipping e2e (no false red).")
+              sys.exit(0)
+          if gv not in ("OK", "OK_PRIVATE"):
+              print("::error::known-PUBLISHED ref was not accepted (verdict=%s)" % gv); fails += 1
+
+          bv, banon = classify(*BAD)
+          if banon == "OUTAGE":
+              print("::warning::GHCR unreachable for the known-missing ref — skipping that half.")
+          elif bv != "MISSING":
+              print("::error::known-NEVER-PUBLISHED ref was not rejected as MISSING (verdict=%s)" % bv); fails += 1
+
+          if fails:
+              print("\nFAIL: live GHCR resolution path did not return the expected verdicts.")
+              sys.exit(1)
+          print("\nOK: live resolver accepts the published ref and rejects the never-published one.")
+          PY
