@@ -138,18 +138,10 @@ jobs:
             --k8s-host "https://kubernetes.default.svc"
 
           echo "==> assert the Transit key is NON-EXPORTABLE (private key cannot leave Vault)"
-          KEY_JSON="$(vault read -format=json transit/keys/szl-receipts)"
-          EXPORTABLE="$(printf '%s' "$KEY_JSON" | jq -r '.data.exportable')"
-          KEY_TYPE="$(printf '%s' "$KEY_JSON" | jq -r '.data.type')"
-          echo "transit/keys/szl-receipts: type=$KEY_TYPE exportable=$EXPORTABLE"
-          if [ "$EXPORTABLE" != "false" ]; then
-            echo "::error::Vault Transit signing key is exportable=$EXPORTABLE (custody violation)"
-            exit 1
-          fi
-          if [ "$KEY_TYPE" != "ed25519" ]; then
-            echo "::error::Vault Transit signing key type=$KEY_TYPE (expected ed25519)"
-            exit 1
-          fi
+          # Pass/fail logic lives in scripts/vault-key-custody-checks.sh (transit-key),
+          # self-tested cluster-free by scripts/vault-key-custody-checks.test.sh.
+          vault read -format=json transit/keys/szl-receipts \
+            | bash scripts/vault-key-custody-checks.sh transit-key
 
       - name: Deploy szl-receipts with the Vault overlay (signing wiring un-overridden)
         run: |
@@ -193,11 +185,10 @@ jobs:
           set -euo pipefail
           # helm-direct provisions NO key Secret (szl-key-init is a zarf component,
           # not a helm hook). Reading Secrets must yield no Ed25519 signing key.
-          if kubectl -n "$NS" get secret szl-receipts-ed25519 >/dev/null 2>&1; then
-            echo "::error::Unexpected signing-key Secret szl-receipts-ed25519 present — custody is supposed to live in Vault"
-            exit 1
-          fi
-          echo "OK: no szl-receipts-ed25519 Secret in namespace $NS"
+          # Pass/fail logic lives in scripts/vault-key-custody-checks.sh (no-key-secret),
+          # self-tested cluster-free by scripts/vault-key-custody-checks.test.sh.
+          { kubectl -n "$NS" get secret szl-receipts-ed25519 -o name 2>/dev/null || true; } \
+            | bash scripts/vault-key-custody-checks.sh no-key-secret
 
       - name: Assert the server is signing via Vault (not the silent unsigned fallback)
         run: |
@@ -207,33 +198,13 @@ jobs:
           echo "----- receipts-server log -----"
           echo "$LOGS"
           echo "-------------------------------"
-          # Exact success line emitted by VaultTransitSigner._init() in server.py:
-          #   "[vault] Transit signer ready; addr=... key=... keyid=... auth=... pub=..."
-          # We require auth=kubernetes so the gate proves ServiceAccount (k8s) auth
-          # specifically — not a static token Secret that would defeat Tier-2 custody.
-          # (server.py: self.auth_method defaults to "kubernetes"; values-vault.yaml
-          # pins signing.vault.auth.method=kubernetes.)
-          if ! printf '%s' "$LOGS" | grep -qiE '\[vault\] Transit signer ready;.*auth=kubernetes'; then
-            echo "::error::No '[vault] Transit signer ready; ... auth=kubernetes' line in server logs"
-            echo "::error::Server did not engage Vault Transit via Kubernetes ServiceAccount auth"
-            exit 1
-          fi
-          # Negative control: the server logs "...running unsigned..." whenever it
-          # falls back (VAULT_ADDR unset, init failed, key not Ed25519, etc.).
-          # The server is designed to self-heal (recheck loop re-runs _init), so a
-          # transient unsigned line at boot followed by recovery is NOT a failure.
-          # Judge the MOST RECENT signer-state line: it must be "ready", not unsigned.
-          SIGNER_STATE="$(printf '%s' "$LOGS" \
-            | grep -iE '\[vault\] Transit signer ready|running unsigned' | tail -n1 || true)"
-          if [ -z "$SIGNER_STATE" ]; then
-            echo "::error::No Vault signer-state line found in server logs at all"
-            exit 1
-          fi
-          if printf '%s' "$SIGNER_STATE" | grep -qi 'running unsigned'; then
-            echo "::error::Server's most recent signer state is UNSIGNED — Vault signing did not engage / did not recover"
-            echo "last signer-state line: $SIGNER_STATE"
-            exit 1
-          fi
+          # Pass/fail logic lives in scripts/vault-key-custody-checks.sh (signer-log),
+          # self-tested cluster-free by scripts/vault-key-custody-checks.test.sh. It
+          # requires a "[vault] Transit signer ready; ... auth=kubernetes" line (proves
+          # ServiceAccount auth, not a static token Secret) AND that the most recent
+          # signer-state line is "ready", not the silent "running unsigned" fallback
+          # (the server self-heals, so a transient unsigned line at boot is tolerated).
+          printf '%s' "$LOGS" | bash scripts/vault-key-custody-checks.sh signer-log
 
       - name: Live custody assertions (/pubkey backend=vault, /receipt signs, offline verify)
         run: |
@@ -249,27 +220,18 @@ jobs:
           echo "==> GET /pubkey"
           PUBKEY="$(curl -fsS http://127.0.0.1:18080/pubkey)"
           echo "$PUBKEY"
-          SIGNED="$(printf '%s' "$PUBKEY" | jq -r '.signed')"
-          BACKEND="$(printf '%s' "$PUBKEY" | jq -r '.backend')"
-          if [ "$SIGNED" != "true" ]; then
-            echo "::error::/pubkey reports signed=$SIGNED (expected true)"
-            exit 1
-          fi
-          if [ "$BACKEND" != "vault" ]; then
-            echo "::error::/pubkey reports backend=$BACKEND (expected vault — silent file/unsigned downgrade)"
-            exit 1
-          fi
+          # Pass/fail logic lives in scripts/vault-key-custody-checks.sh (pubkey),
+          # self-tested cluster-free by scripts/vault-key-custody-checks.test.sh.
+          printf '%s' "$PUBKEY" | bash scripts/vault-key-custody-checks.sh pubkey
 
           echo "==> POST /receipt"
           RESP="$(curl -fsS -X POST http://127.0.0.1:18080/receipt \
             -H 'content-type: application/json' \
             -d '{"subject":"vault-key-custody-gate","action":"release-verify","source":"ci"}')"
           echo "$RESP"
-          VALID="$(printf '%s' "$RESP" | jq -r '.valid')"
-          if [ "$VALID" != "true" ]; then
-            echo "::error::POST /receipt returned valid=$VALID (expected true)"
-            exit 1
-          fi
+          # Pass/fail logic lives in scripts/vault-key-custody-checks.sh (receipt),
+          # self-tested cluster-free by scripts/vault-key-custody-checks.test.sh.
+          printf '%s' "$RESP" | bash scripts/vault-key-custody-checks.sh receipt
 
           echo "==> Independent offline verification against the published public key"
           python3 scripts/verify_receipts_ed25519.py --url http://127.0.0.1:18080
