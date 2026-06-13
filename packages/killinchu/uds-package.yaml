@@ -20,7 +20,7 @@ metadata:
     szl.io/component: uds-package
     szl.io/mesh-version: v0.4.0
   annotations:
-    szl.io/role: "drone/UAV coordination (killinchu.szl-killinchu.svc.cluster.local:7860)"
+    szl.io/role: "drone/UAV coordination (szl-killinchu.szl-killinchu.svc.cluster.local:7860)"
     szl.io/doctrine-version: "v11"
     szl.io/doctrine-pin: "749/14/163"
     szl.io/kernel-commit: "c7c0ba17"
@@ -46,11 +46,16 @@ spec:
           OIDC_ISSUER: "https://sso.uds.dev/realms/uds"
 
   network:
+    # The live uds-szl-demo cluster runs the Istio AMBIENT dataplane under
+    # restricted PodSecurity (the pepr-uds-core webhook rejects sidecar
+    # injection, and the killinchu namespace is labelled
+    # istio.io/dataplane-mode: ambient). Declare ambient explicitly so the
+    # bundle/test path deploys the same mesh mode as the live chart/prod path.
     serviceMesh:
-      mode: sidecar
+      mode: ambient
     expose:
       - host: killinchu
-        service: killinchu
+        service: szl-killinchu
         port: 7860
         gateway: tenant
         selector:

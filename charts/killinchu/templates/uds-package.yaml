@@ -1,0 +1,120 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# UDS Package CR — killinchu (receipt/transport courier, run INSIDE UDS Core)
+#
+# Parity with charts/a11oy/templates/uds-package.yaml: the live a11oy flagship is
+# UDS-managed (operator-generated Istio VirtualService + NetworkPolicies +
+# ServiceMonitor) because its chart renders this Package CR. killinchu was
+# deployed from this chart WITHOUT a Package CR template, so it ran as a bare
+# Service (szl-killinchu) with no VirtualService and no ServiceMonitor — i.e. it
+# was NOT actually on the secure mesh. This template closes that gap so killinchu
+# deploys through the mesh the same way a11oy already does, in test and prod.
+#
+# SSO model (mirrors a11oy / the proven live szl-receipts Package):
+#   - enableAuthserviceSelector binds the authservice sidecar in front of the
+#     killinchu HTTP ingress (browser/gateway traffic) when SSO is on.
+#   - killinchu is a *client* of szl-receipts: it emits DSSE receipts via EGRESS,
+#     which authservice never intercepts — so a single-workload authservice
+#     selector keeps the machine-to-machine receipt path unbroken.
+#   - Prometheus metrics scraping is preserved via the always-on monitor block
+#     and an explicit ingress allow, independent of SSO state.
+#   - Gated on .Values.udsPackage.sso.enabled (default false). When disabled we
+#     emit NO `sso` key at all — an empty `sso: []` still trips the UDS
+#     authservice gate and forces an unsatisfiable waypoint. Flip true only
+#     after Keycloak is up.
+#
+# UDS Package CRD: https://uds.defenseunicorns.com/reference/configuration/custom-resources/packages-v1alpha1-cr/
+#
+# The whole Package CR is gated on .Values.udsPackage.enabled. Off the UDS-Core
+# mesh (e.g. a plain Helm/k3d install with no uds.dev CRD) an always-rendered
+# Package would make `helm install` fail with "no matches for kind Package".
+{{- if .Values.udsPackage.enabled }}
+apiVersion: uds.dev/v1alpha1
+kind: Package
+metadata:
+  name: killinchu
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: killinchu
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/version: {{ .Chart.AppVersion }}
+    szl.io/component: uds-package
+  annotations:
+    szl.io/doc: "killinchu courier on the UDS secure mesh (parity with a11oy)"
+spec:
+  {{- if .Values.udsPackage.sso.enabled }}
+  # ── SSO — Keycloak OIDC client + authservice gating of killinchu's human UI ──
+  {{- $exposeHost := .Values.udsPackage.expose.host }}
+  {{- if eq .Values.udsPackage.expose.gateway "admin" }}
+  {{- $exposeHost = printf "%s.admin" .Values.udsPackage.expose.host }}
+  {{- end }}
+  sso:
+    - name: SZL killinchu
+      clientId: szl-killinchu
+      redirectUris:
+        # Login host = the gateway-qualified endpoint (admin gw -> <host>.admin.<domain>).
+        - "https://{{ $exposeHost }}.{{ .Values.global.domain }}/oauth2/callback"
+      # authservice sidecar intercepts killinchu's HTTP ingress -> Keycloak login.
+      enableAuthserviceSelector:
+        app: killinchu
+      secretName: szl-killinchu-sso
+  {{- end }}
+
+  # ── Network — ingress + egress (UDS generates Istio + K8s NetworkPolicy) ─────
+  network:
+    expose:
+      # Publish killinchu on the UDS Core Istio gateway -> https://<host>.<gw>.<domain>
+      - service: szl-killinchu
+        selector:
+          app: killinchu
+        gateway: {{ .Values.udsPackage.expose.gateway }}
+        host: {{ .Values.udsPackage.expose.host }}
+        port: {{ .Values.service.port }}
+        targetPort: {{ .Values.service.port }}
+        description: "killinchu courier UI/API — {{ .Values.udsPackage.expose.gateway }} gateway"
+
+    allow:
+      # killinchu -> Kubernetes API / DNS resolution
+      - direction: Egress
+        selector:
+          app: killinchu
+        remoteGenerated: KubeAPI
+        description: "Kubernetes API / DNS"
+
+      # killinchu -> szl-receipts : DSSE receipt relay (MACHINE, egress).
+      # authservice on killinchu's ingress never touches this, so turning SSO on
+      # does not break the receipt path.
+      - direction: Egress
+        selector:
+          app: killinchu
+        remoteNamespace: {{ .Values.receiptsSink.namespace }}
+        remoteSelector:
+          app: szl-receipts-server
+        port: {{ .Values.receiptsSink.port }}
+        description: "killinchu relays signed receipts to the szl-receipts chain authority"
+
+      {{- if .Values.monitoring.enabled }}
+      # monitoring -> killinchu : Prometheus metrics scrape (MACHINE, always on,
+      # independent of SSO).
+      - direction: Ingress
+        selector:
+          app: killinchu
+        remoteNamespace: monitoring
+        remoteSelector:
+          app.kubernetes.io/name: prometheus
+        port: {{ .Values.service.port }}
+        description: "Prometheus scrape of killinchu {{ .Values.monitoring.path }}"
+      {{- end }}
+
+  {{- if .Values.monitoring.enabled }}
+  # ── Monitor — UDS generates the ServiceMonitor / scrape config ───────────────
+  monitor:
+    - portName: http
+      selector:
+        app: killinchu
+      targetPort: {{ .Values.service.port }}
+      path: {{ .Values.monitoring.path }}
+      description: "killinchu metrics scrape"
+  {{- end }}
+{{- end }}

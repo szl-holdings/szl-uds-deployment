@@ -1,6 +1,11 @@
 # Copyright 2026 SZL Holdings — SPDX-License-Identifier: Apache-2.0
 # killinchu Helm values — STIG-aligned securityContext, default-deny NetworkPolicy,
 # STRICT mTLS via Istio (managed by UDS Operator / uds-core).
+
+# Cluster domain — MUST match UDS Core DOMAIN (used for the SSO redirect host).
+global:
+  domain: "uds.dev"
+
 namespace: szl-killinchu
 replicas: 1
 
@@ -10,9 +15,12 @@ image:
   pullPolicy: IfNotPresent
 
 service:
-  # mesh / NetworkPolicy-facing port (UDS expose, default-deny rules)
-  port: 8080
-  # port the killinchu app actually listens on inside the container
+  # Mesh / NetworkPolicy-facing port AND the in-container listener port. Unified
+  # on 7860 to match the a11oy flagship (Service szl-a11oy 7860->7860) so the
+  # UDS-operator VirtualService resolves to szl-killinchu:7860. The killinchu
+  # container listens on $PORT=7860 (HF Space app port).
+  port: 7860
+  # Kept equal to .port; the container listens on 7860.
   targetPort: 7860
 
 healthPath: "/api/killinchu/healthz"
@@ -45,6 +53,27 @@ monitoring:
 networkPolicy:
   enabled: true
   defaultDeny: true
+
+# ── UDS Package CR knobs (parity with charts/a11oy) ───────────────────────────
+# Render the UDS Operator Package CR so killinchu joins the secure mesh the same
+# way a11oy does: operator-generated Istio VirtualService + NetworkPolicies +
+# ServiceMonitor. Default ON (matches a11oy). On a plain Helm/k3d cluster with no
+# uds.dev CRD, set false to avoid "no matches for kind Package".
+udsPackage:
+  enabled: true
+  # Exposure surface. On the single-node uds-szl-demo only the ADMIN gateway has
+  # an LB IP (the tenant gateway stays <pending>), so we publish on admin ->
+  # endpoint killinchu.admin.<domain>, exactly as a11oy does. Multi-node/HA
+  # clusters set tenant.
+  expose:
+    host: killinchu
+    gateway: admin
+  # SSO (Keycloak OIDC client) + authservice gating of killinchu's human UI.
+  # Default OFF: when disabled the template emits NO `sso` key at all (an empty
+  # `sso: []` still trips the UDS authservice gate and forces an unsatisfiable
+  # waypoint). Flip true only after Keycloak is up.
+  sso:
+    enabled: false
 
 securityContext:
   runAsNonRoot: true

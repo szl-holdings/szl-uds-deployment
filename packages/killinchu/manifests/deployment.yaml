@@ -64,9 +64,13 @@ spec:
           emptyDir: {}
 ---
 apiVersion: v1
+# Service name szl-killinchu (NOT killinchu) so the UDS bundle/test path deploys
+# the same Service the live chart path (charts/killinchu) and prod cluster use.
+# This keeps the UDS Package expose (service: szl-killinchu) non-dangling whether
+# killinchu is brought up via the Zarf bundle (test) or the Helm chart (prod).
 kind: Service
 metadata:
-  name: killinchu
+  name: szl-killinchu
   namespace: szl-killinchu
   labels:
     app: killinchu
