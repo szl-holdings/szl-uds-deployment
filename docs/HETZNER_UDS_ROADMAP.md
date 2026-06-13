@@ -230,23 +230,36 @@ cosign verify ghcr.io/szl-holdings/killinchu-bundle:0.5.0 \
 
 ### 4.2 — gh attestation / cosign verify-attestation on the ORGAN IMAGES (SLSA L2)
 ```bash
-# SLSA Build L2 attestation on each organ image (slsa.dev/provenance/v0.2):
-# NOTE: this loop spans 5 separate organ repos via ${organ}; each image is signed
-# by its OWN repo's workflow and 3 of those repos (amaru/sentra/rosie) have since
-# been deleted, so there is no single exact --certificate-identity to pin here —
-# the per-repo prefix regexp is intentional and is left loose on purpose.
-for organ in a11oy sentra amaru rosie killinchu; do
-  cosign verify-attestation --type slsaprovenance \
-    "ghcr.io/szl-holdings/${organ}:uds-v0.2.0" \
-    --certificate-identity-regexp "https://github.com/szl-holdings/${organ}/" \
-    --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  && echo "  -> ${organ}: SLSA L2 provenance VERIFIED"
-done
+# SLSA Build L2 attestation on each organ image (slsa.dev/provenance/v0.2).
+#
+# SURVIVING organs (a11oy, killinchu) still publish from a live repo with a KNOWN,
+# exact signer workflow — pin them with an exact --certificate-identity. (Signer
+# subjects confirmed via `cosign verify-attestation` on box 167.233.50.75,
+# 2026-06-13: both sign from `<organ>/.github/workflows/ghcr-build-push.yml@refs/heads/main`.)
+cosign verify-attestation --type slsaprovenance \
+  "ghcr.io/szl-holdings/a11oy:uds-v0.2.0" \
+  --certificate-identity 'https://github.com/szl-holdings/a11oy/.github/workflows/ghcr-build-push.yml@refs/heads/main' \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  && echo "  -> a11oy: SLSA L2 provenance VERIFIED"
 
-# GitHub-native attestation verify (equivalent):
+cosign verify-attestation --type slsaprovenance \
+  "ghcr.io/szl-holdings/killinchu:uds-v0.2.0" \
+  --certificate-identity 'https://github.com/szl-holdings/killinchu/.github/workflows/ghcr-build-push.yml@refs/heads/main' \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  && echo "  -> killinchu: SLSA L2 provenance VERIFIED"
+
+# DELETED organs (amaru, sentra, rosie): their source repos have been removed, so
+# there is NO live workflow identity to pin and these attestations are no longer
+# independently re-verifiable from source. Treat them as UNVERIFIABLE / removed —
+# do NOT --certificate-identity-regexp a deleted repo (that asserts a guarantee we
+# can no longer back). Their images may still resolve in GHCR; if you ever need to
+# spot-check a cached copy, do it explicitly and label the result "unverifiable".
+
+# GitHub-native attestation verify (equivalent; surviving organs only):
+gh attestation verify oci://ghcr.io/szl-holdings/a11oy:uds-v0.2.0     --owner szl-holdings
 gh attestation verify oci://ghcr.io/szl-holdings/killinchu:uds-v0.2.0 --owner szl-holdings
 ```
-> **Honest:** L2 is on the **images**, NOT L3, NOT Iron Bank.
+> **Honest:** L2 is on the **images**, NOT L3, NOT Iron Bank. The exact-identity pin covers the **surviving** organs (a11oy, killinchu); amaru/sentra/rosie repos are **deleted** and their attestations are **unverifiable from source** — documented as removed, not silently regexp-matched.
 
 ### 4.3 — per-service health
 ```bash

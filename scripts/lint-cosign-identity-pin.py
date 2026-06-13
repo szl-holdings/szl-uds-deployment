@@ -35,10 +35,13 @@
 #
 # Scope / intentional exemptions
 #   * Only commands that reference one of the pinnable artifacts below are checked.
-#     Loose regexp verifies for OTHER artifacts — most importantly the templated
-#     per-organ SLSA attestation loop (`${organ}` spans 5 repos, 3 now deleted, so
-#     there is no single exact signer identity to pin) — are deliberately left
-#     alone.
+#     As of Task #892 the two SURVIVING organ images (a11oy, killinchu) ARE
+#     pinnable — their §4.2 SLSA-attestation verifies now carry an exact
+#     --certificate-identity and are enforced.
+#   * The DELETED organs (amaru/sentra/rosie) have no live repo and therefore no
+#     signer identity to pin, so they are documented as unverifiable/removed and
+#     left out of scope (no token matches them). A purely templated `${organ}`
+#     placeholder verify is likewise out of scope.
 #   * The legacy key-pair path (`cosign verify --key ...`) is identity-less by
 #     design and is always allowed.
 #
@@ -68,6 +71,11 @@ PINNED_ARTIFACT_TOKENS = (
     "zarf-package-sign.yml",     # a package signing workflow (keyless identity; receipts + fleet-overlay)
     # --- other published artifacts with a KNOWN exact signer (Task #680) ---
     "szl-holdings/killinchu:",   # killinchu organ image  -> killinchu/ghcr-build-push.yml@main
+    # --- surviving organ images now exact-pinned (Task #892) ---
+    # a11oy organ image -> a11oy/ghcr-build-push.yml@main. The trailing ':' keeps
+    # this from matching the a11oy-bundle ('a11oy-bundle:') or the deleted-organ
+    # remnant in §4.2 (amaru/sentra/rosie, which carry no live signer identity).
+    "szl-holdings/a11oy:",
     "szl-mesh:",                 # szl-mesh UDS bundle     -> uds-bundles/uds-bundle-publish.yml@main
     "a11oy-bundle:",             # a11oy canonical bundle  -> uds-bundles/uds-canonical-bundles-publish.yml@main
     "killinchu-bundle:",         # killinchu canon bundle  -> uds-bundles/uds-canonical-bundles-publish.yml@main

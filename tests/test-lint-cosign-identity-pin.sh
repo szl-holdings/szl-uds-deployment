@@ -68,6 +68,12 @@ expect 1 "canonical bundle verify with loose regexp is flagged" \
 expect 1 "fleet-overlay verify-blob with loose regexp is flagged" \
   "$fixtures/fail-fleetoverlay-blob-regexp.md"
 
+# --- surviving organ images now exact-pinned (Task #892) ---
+expect 1 "a11oy organ image verify with loose regexp is flagged" \
+  "$fixtures/fail-a11oy-image-regexp.md"
+expect 0 "a11oy organ image verify with exact --certificate-identity passes" \
+  "$fixtures/pass-a11oy-image-exact.md"
+
 # --- other pinnable artifacts (Task #680): legit -> PASS (exit 0) ---
 expect 0 "killinchu image verify with exact --certificate-identity passes" \
   "$fixtures/pass-image-exact.md"
