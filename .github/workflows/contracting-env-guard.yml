@@ -9,6 +9,16 @@
 # asserts the contract, and runs weekly to catch cross-repo drift.
 #
 # See box-scripts/contracting-env.README.md for the variable contract.
+#
+# Direct alerting
+# ---------------
+# Because the protected surfaces live in OTHER repos, the only trigger that
+# catches a cross-repo regression is the WEEKLY scheduled run — and that run's
+# failure otherwise just turns the Actions tab red, which nobody watches. So a
+# SCHEDULED-run failure pages the team over the shared szl-alert-relay -> ntfy
+# path (SLACK_WEBHOOK_URL secret), exactly like the receipts-pin-drift guard.
+# Contributor push/PR runs do NOT alert (the red check is already visible to the
+# author), so the relay only fires on the unattended schedule.
 
 name: contracting-env-guard
 
@@ -65,3 +75,47 @@ jobs:
         run: python3 scripts/contracting-env-checks.py a11oy _src/a11oy/serve.py
       - name: killinchu szl_contracting.py — canonical vars + confirm/absent flip
         run: python3 scripts/contracting-env-checks.py canonical _src/killinchu/szl_contracting.py
+
+  # Direct push notification so a cross-repo contract regression found by the
+  # UNATTENDED weekly run is noticed within a day, not whenever someone next
+  # looks at the Actions tab. Fires ONLY on a SCHEDULED run where a guard job
+  # failed — contributor push/PR failures already show a red check, so they
+  # never page the team. Posts a Slack-compatible payload via curl (no
+  # third-party action, so it stays within the org's github-owned/verified-
+  # actions-only policy) to the shared szl-alert-relay -> ntfy webhook. If the
+  # webhook secret is unset it logs a notice and soft-skips; the failed guard
+  # jobs still stand, so the run is still red.
+  alert:
+    name: Page the team on a scheduled-run failure
+    needs: [self-test, guard]
+    if: ${{ always() && github.event_name == 'schedule' && (needs.self-test.result == 'failure' || needs.guard.result == 'failure') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post a clean alert line via the szl-alert-relay webhook
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_WEBHOOK_URL}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL secret not configured — skipping direct alert. The failed run still stands."
+            exit 0
+          fi
+
+          # One clean line naming the repo, what drifted, and the one-line fix.
+          text=":rotating_light: *Contracting env guard FAILED* in ${REPO} (unattended weekly run) — the founder-confirmed Contracting Readiness env-var contract has drifted in szl-holdings/a11oy serve.py and/or szl-holdings/killinchu szl_contracting.py. Fix: restore the \`SZL_CONTRACTING_*\` (+ legacy \`A11OY_ORG_*\`) mapping per \`box-scripts/contracting-env.README.md\`; the failed run logs name the exact variable. Run: ${RUN_URL}"
+
+          # JSON-encode with jq so quotes/backticks can't break the payload.
+          payload=$(jq -n --arg text "$text" '{text: $text}')
+
+          echo "Posting contracting-env-guard alert to the szl-alert-relay webhook..."
+          code=$(curl -sS -o /tmp/relay_resp.txt -w '%{http_code}' \
+                   -X POST -H 'Content-Type: application/json' \
+                   --max-time 20 --data "${payload}" "${SLACK_WEBHOOK_URL}")
+          echo "Webhook responded HTTP ${code}."
+          if [ "${code}" -lt 200 ] || [ "${code}" -ge 300 ]; then
+            echo "::error::Direct alert webhook POST failed (HTTP ${code}): $(cat /tmp/relay_resp.txt)"
+            exit 1
+          fi
+          echo "Direct alert delivered."
