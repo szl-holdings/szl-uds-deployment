@@ -1,0 +1,41 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# box-scripts-tests.yml — run the box-scripts self-test suite in CI.
+#
+# The suite lives at box-scripts/tests/ and is the source-of-truth proof for the
+# box (167.233.50.75) watcher/guard fleet:
+#   * watcher-edges.sh — CI-safe. Drives EVERY box watcher's healthy->ALERT edge
+#     through a capture-stub NOTIFY_CMD (no root, no real cluster, no network,
+#     never the real ntfy/Telegram/webhook channel) and asserts each one fires
+#     its edge AND de-dupes the persisting problem on a second run. This is the
+#     piece that catches a refactor silently neutering a watcher's notify/edge
+#     logic — a red CI run instead of a hole found during the next real incident.
+#   * restore-fleet.sh — the destructive install/restore proof. It needs
+#     root+systemd+CONFIRM=1 and therefore SELF-SKIPS with exit code 77 in CI;
+#     run-all.sh already treats 77 as a non-failure (it only runs for real on the
+#     box: sudo CONFIRM=1 box-scripts/tests/run-all.sh).
+#
+# run-all.sh exits non-zero if any test that actually ran reported a failure, so
+# a watcher edge/de-dup regression fails the PR.
+
+name: Box Scripts Self-tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    name: Run box-scripts/tests/run-all.sh (watcher edges; restore self-skips)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run box-scripts self-test suite
+        run: bash box-scripts/tests/run-all.sh
