@@ -4,15 +4,26 @@
  *
  * szl-receipt-on-deploy.ts
  *
- * Pepr capability that emits a DSSE-wrapped HMAC-SHA-256 governance receipt
- * for every Kubernetes Deployment and Job admission event, then annotates the
- * resource with the receipt SHA-256 ID.
+ * Pepr capability that emits a DSSE-wrapped governance receipt for every
+ * Kubernetes Deployment and Job admission event, then annotates the resource
+ * with the receipt SHA-256 ID.
+ *
+ * SIGNING SCHEME (matches the signReceipt() code below, not changed here):
+ *   - PRIMARY (production): Ed25519 over the DSSE Pre-Authentication Encoding,
+ *     keyid "szl-receipts-ed25519", from the mounted szl-receipts-ed25519 Secret.
+ *     This is the same scheme implemented + pinned by services/szl-receipts-server
+ *     and proven in scripts/dsse_scheme_regression_test.py.
+ *   - LEGACY FALLBACK: HMAC-SHA-256 (keyid "szl-dev-hmac-sha256-2026"), used only
+ *     when no Ed25519 Secret is mounted and SZL_HMAC_KEY is set. Retained for
+ *     backward compatibility with older receipt consumers; the canonical
+ *     Ed25519/DSSE verifier REJECTS HMAC signatures (see README "Signing schemes
+ *     by component"). Not a contradiction — Ed25519 is the real production path.
  *
  * DSSE envelope format (simplified, https://github.com/secure-systems-lab/dsse):
  * {
  *   "payload":     "<base64(JSON payload)>",
  *   "payloadType": "application/vnd.szl.receipt.v1+json",
- *   "signatures":  [{ "keyid": "<keyid>", "sig": "<base64(HMAC-SHA-256)>" }]
+ *   "signatures":  [{ "keyid": "<keyid>", "sig": "<base64(Ed25519 sig | legacy HMAC-SHA-256)>" }]
  * }
  *
  * The payload JSON contains:
@@ -241,8 +252,8 @@ function shouldEmitReceipt(subject: string, specHash: string): boolean {
 export const szlReceiptPolicy = new Capability({
   name: "szl-receipt-policy",
   description:
-    "Emit DSSE-wrapped HMAC-SHA-256 governance receipts for every Deployment and Job " +
-    "applied to the cluster, and annotate the resource with the receipt SHA-256 ID.",
+    "Emit DSSE-wrapped Ed25519-signed governance receipts (HMAC-SHA-256 legacy fallback only) " +
+    "for every Deployment and Job applied to the cluster, and annotate the resource with the receipt SHA-256 ID.",
   namespaces: [], // cluster-wide; alwaysIgnore in package.json filters system namespaces
 });
 
