@@ -1,0 +1,336 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# receipts-cold-rebuild-proof.yml — Born-clean COLD-CLUSTER rebuild proof for the
+# rate-limited szl-receipts deploy.
+# =============================================================================
+# This gate proves that the *rate-limited* szl-receipts package survives a FULL
+# born-clean cold-cluster rebuild: a throwaway k3d cluster + UDS Core is created
+# from scratch, the canonical Zarf package is deployed from COMMITTED SOURCE with
+# NO manual kubectl, and the live deployment is then asserted end-to-end.
+#
+# How this differs from receipts-signing-gate.yml (and why it is NOT redundant):
+#   * The signing gate `docker build`s the server image LOCALLY (tag uds-v0.4.0)
+#     so `zarf package create` bakes the freshly-built bits. That path NEVER
+#     exercises the chart's DIGEST pin, so it cannot catch a broken/unreachable
+#     pinned digest or a Zarf agent digest-rewrite regression.
+#   * This proof deliberately does NOT build the image. It lets Zarf PULL the
+#     digest-pinned published image
+#       ghcr.io/szl-holdings/szl-receipts-server:uds-v0.4.1@sha256:758052db66…
+#     mirror it BY DIGEST into the fresh in-cluster registry, and the Zarf agent
+#     rewrite the pod image to that internal registry ref @<same digest>. We then
+#     assert the pod pulled BY DIGEST with NO ErrImagePull/ImagePullBackOff — the
+#     real "digest pin survives a cold rebuild" property.
+#   * It additionally asserts the anti-flood ingest rate limit is live from the
+#     CHART DEFAULTS (SZL_INGEST_RATE_LIMIT=1.0 / SZL_INGEST_BURST=20 — note the
+#     server CODE default burst is 60, so seeing 20 proves the chart wiring, not
+#     a fallback), that a burst of POST /receipt sheds HTTP 429 and increments
+#     szl_receipts_throttled_total, that genuine SPACED receipts still chain
+#     (szl_chain_valid=1, chain advances, offline verifier passes), and that the
+#     deployed server signs (/pubkey signed=true).
+#
+# Triggers:
+#   * workflow_dispatch — run by hand any time.
+#   * push: tags v* / uds-v* — re-prove on every release so a tag can never ship
+#     while the rate-limited package stopped surviving a cold rebuild.
+#   * schedule (nightly) — continuously re-prove between releases so a regression
+#     (a dead digest, a dropped rate-limit env, a broken mirror) is caught within
+#     a day, not at release time.
+#
+# Org policy forbids third-party actions; only first-party + SHA-pinned upstream
+# actions are used (same pins/versions as test.yaml / prove-organs.yaml). All
+# assertion logic is inline (matching receipts-signing-gate.yml) because it runs
+# against a LIVE cluster and cannot be unit-tested offline.
+#
+# On AUTOMATIC (release-tag / nightly) failure the `alert` job pages the team CI
+# alert channel (ntfy relay) — loud, never silent. The red run is the signal for
+# manual dispatch runs.
+#
+# References:
+#   Zarf image mirror / digest rewrite: https://docs.zarf.dev/ref/deploy/
+#   defenseunicorns/setup-uds:           https://github.com/defenseunicorns/setup-uds
+
+name: Receipts Cold-Rebuild Proof
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+      - "uds-v*"
+  schedule:
+    # Nightly at 06:30 UTC (ahead of prove-organs at 07:00 so a shared-runner
+    # contention window does not overlap).
+    - cron: "30 6 * * *"
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  cold-rebuild-proof:
+    name: Cold-cluster rebuild + rate-limit proof (real cluster)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install UDS CLI
+        uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1 (v1.0.1)
+        with:
+          version: v0.31.0
+
+      - name: Install Zarf
+        run: |
+          curl -sL "https://github.com/zarf-dev/zarf/releases/download/v0.77.0/zarf_v0.77.0_Linux_amd64" \
+            -o /usr/local/bin/zarf && chmod +x /usr/local/bin/zarf
+          zarf version
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+      - name: Install kubectl
+        run: |
+          curl -sLO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+          kubectl version --client
+
+      - name: Install cryptography (offline chain verifier)
+        # scripts/verify_receipts.sh verifies every receipt's Ed25519 signature
+        # over the canonical DSSE PAE using python3 'cryptography' (public key only).
+        run: pip install cryptography
+
+      - name: Log in to GHCR (digest-pinned image is pulled, not built)
+        # We intentionally do NOT `docker build` the server image. Zarf pulls the
+        # digest-pinned published image from GHCR during `zarf package create`, so
+        # the runner must be able to read org packages.
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      # ── Born-clean COLD cluster: fresh k3d + UDS Core, no prior state ────────────
+      # The published k3d-core-slim-dev bundle creates the k3d cluster and installs
+      # UDS Core (Istio + the Pepr UDS Operator + Keycloak + Prometheus). UDS Core
+      # is required because the receipts package applies UDS Package + Exemption CRs
+      # (uds.dev/v1alpha1) and the root keygen hook is only admitted via the
+      # RequireNonRootUser Exemption the operator enforces.
+      - name: Create cold cluster + UDS Core (k3d-core-slim-dev)
+        run: |
+          uds deploy oci://ghcr.io/defenseunicorns/bundles/k3d-core-slim-dev:1.5.0 \
+            --confirm --no-progress
+
+      # ── Build + deploy the canonical Zarf package FROM COMMITTED SOURCE ───────────
+      # NB: NO local docker build. `zarf package create` reads the digest-pinned
+      # image refs from packages/szl-receipts/zarf.yaml images: and pulls them by
+      # digest; `zarf package deploy` mirrors them BY DIGEST into the cluster's
+      # internal registry and the Zarf agent rewrites the pod image to that internal
+      # ref @<same digest>. This is the cold-rebuild digest path under test.
+      - name: Build + deploy the szl-receipts Zarf package (digest-pinned, no manual kubectl)
+        run: |
+          zarf package create packages/szl-receipts \
+            --flavor upstream \
+            --set DOMAIN=uds.dev \
+            --confirm --no-progress
+          zarf package deploy zarf-package-szl-receipts-*.tar.zst \
+            --confirm --no-progress
+
+      # ── Assertions against the LIVE born-clean deployment ────────────────────────
+      - name: Assert cold rebuild + rate-limit invariants
+        run: |
+          set -euo pipefail
+          NS=szl-receipts
+          DEPLOY=szl-receipts-server
+          CTR=receipts-server
+          SEL="app.kubernetes.io/name=szl-receipts-server"
+
+          echo "── (1) Pod reaches 1/1 Ready on the cold cluster ──────────────────"
+          kubectl -n "$NS" rollout status deployment/"$DEPLOY" --timeout=240s
+          kubectl -n "$NS" get pods -o wide
+
+          echo "── (2) Image is DIGEST-PINNED and pulled BY DIGEST (no ErrImagePull) ─"
+          # The server digest pinned in the chart (source of truth — read, never
+          # hardcode here, so this proof tracks a re-pin automatically).
+          SERVER_DIGEST="$(grep -A5 'repository: ghcr.io/szl-holdings/szl-receipts-server' \
+            charts/szl-receipts/values.yaml | grep -m1 'digest:' \
+            | sed -E 's/.*"(sha256:[a-f0-9]+)".*/\1/')"
+          if ! printf '%s' "$SERVER_DIGEST" | grep -qE '^sha256:[a-f0-9]{64}$'; then
+            echo "::error::could not read the server image digest from charts/szl-receipts/values.yaml"
+            exit 1
+          fi
+          echo "chart-pinned server digest: $SERVER_DIGEST"
+
+          # The Zarf agent rewrites the registry HOST but PRESERVES the digest, so
+          # the rendered Deployment image ref must still carry @<same digest>.
+          DEPLOY_IMG="$(kubectl -n "$NS" get deploy "$DEPLOY" \
+            -o jsonpath="{.spec.template.spec.containers[?(@.name=='$CTR')].image}")"
+          echo "deployed image ref: $DEPLOY_IMG"
+          case "$DEPLOY_IMG" in
+            *@"$SERVER_DIGEST") echo "  ok   Deployment image ref is pinned to the chart digest" ;;
+            *"$SERVER_DIGEST"*) echo "  ok   Deployment image ref carries the chart digest" ;;
+            *) echo "::error::deployed image ref does not carry the chart digest ($SERVER_DIGEST)"; exit 1 ;;
+          esac
+
+          # The actually-PULLED imageID must reference the same digest — proves the
+          # image was resolved+pulled BY DIGEST out of the mirrored internal registry.
+          IMG_ID="$(kubectl -n "$NS" get pod -l "$SEL" \
+            -o jsonpath="{.items[0].status.containerStatuses[?(@.name=='$CTR')].imageID}")"
+          echo "running imageID: $IMG_ID"
+          case "$IMG_ID" in
+            *"$SERVER_DIGEST"*) echo "  ok   running container was pulled BY DIGEST" ;;
+            *) echo "::error::running imageID does not reference the pinned digest — not pulled by digest"; exit 1 ;;
+          esac
+
+          # No image-pull failures anywhere in the namespace (covers both containers).
+          WAITING="$(kubectl -n "$NS" get pods -o json \
+            | grep -oE '"reason": *"(ErrImagePull|ImagePullBackOff|InvalidImageName)"' || true)"
+          if [ -n "$WAITING" ]; then
+            echo "::error::image-pull failure(s) detected in $NS:"; echo "$WAITING"
+            kubectl -n "$NS" get events --sort-by=.lastTimestamp | tail -30 || true
+            exit 1
+          fi
+          echo "  ok   no ErrImagePull / ImagePullBackOff in $NS"
+
+          echo "── (3) Chart-default rate-limit env is wired into the pod ──────────"
+          # Expected = chart defaults (NOT the server code default burst of 60).
+          ENV_RATE="$(kubectl -n "$NS" get deploy "$DEPLOY" \
+            -o jsonpath="{.spec.template.spec.containers[?(@.name=='$CTR')].env[?(@.name=='SZL_INGEST_RATE_LIMIT')].value}")"
+          ENV_BURST="$(kubectl -n "$NS" get deploy "$DEPLOY" \
+            -o jsonpath="{.spec.template.spec.containers[?(@.name=='$CTR')].env[?(@.name=='SZL_INGEST_BURST')].value}")"
+          echo "SZL_INGEST_RATE_LIMIT=$ENV_RATE  SZL_INGEST_BURST=$ENV_BURST"
+          [ "$ENV_RATE" = "1.0" ] || { echo "::error::SZL_INGEST_RATE_LIMIT chart default (1.0) missing; got '$ENV_RATE'"; exit 1; }
+          [ "$ENV_BURST" = "20" ] || { echo "::error::SZL_INGEST_BURST chart default (20) missing; got '$ENV_BURST'"; exit 1; }
+          echo "  ok   chart-default ingest rate limit is live (rate=1.0/s, burst=20)"
+
+          echo "── Port-forward for /pubkey, /receipt, /metrics ────────────────────"
+          kubectl -n "$NS" port-forward "svc/$DEPLOY" 18080:8080 >/tmp/pf.log 2>&1 &
+          PF=$!
+          trap 'kill $PF 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            curl -sf http://localhost:18080/pubkey >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+          echo "── (4) Deployed server is SIGNED (/pubkey) ─────────────────────────"
+          PUB="$(curl -sf http://localhost:18080/pubkey)"
+          echo "pubkey: $PUB"
+          echo "$PUB" | grep -qE '"signed":[[:space:]]*true' \
+            || { echo "::error::in-cluster server is UNSIGNED (signed!=true) — key Secret not mounted"; exit 1; }
+          echo "$PUB" | grep -qE '"public_key_b64u":[[:space:]]*"[A-Za-z0-9_-]+"' \
+            || { echo "::error::/pubkey has no public_key_b64u"; exit 1; }
+          echo "  ok   server reports signed=true with a published Ed25519 public key"
+
+          echo "── (5) Burst POST /receipt sheds 429 + bumps szl_receipts_throttled_total ─"
+          read_metric() {  # $1 = metric name -> prints the value (or empty)
+            curl -sf http://localhost:18080/metrics | awk -v m="$1" '$1==m {print $2; exit}'
+          }
+          THR0="$(read_metric szl_receipts_throttled_total)"; THR0="${THR0:-0}"
+          echo "throttled_total before burst: $THR0"
+          # Fire 30 rapid receipts. Burst=20 + ~1 refill/s over the brief loop ⇒ the
+          # excess is shed with HTTP 429 BEFORE signing (anti-flood door).
+          ACC=0; SHED=0; OTHER=0
+          for i in $(seq 1 30); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:18080/receipt \
+              -H 'Content-Type: application/json' \
+              -d "{\"kind\":\"cold-rebuild-burst\",\"actor\":\"cold-rebuild-proof\",\"i\":$i}")"
+            case "$code" in
+              2*) ACC=$((ACC+1)) ;;
+              429) SHED=$((SHED+1)) ;;
+              *) OTHER=$((OTHER+1)); echo "  unexpected HTTP $code on burst #$i" ;;
+            esac
+          done
+          echo "burst result: accepted=$ACC shed(429)=$SHED other=$OTHER"
+          [ "$OTHER" -eq 0 ] || { echo "::error::unexpected non-200/429 responses during burst"; exit 1; }
+          [ "$SHED" -ge 3 ] || { echo "::error::burst was NOT shed (429=$SHED) — ingest rate limit not enforcing"; exit 1; }
+          [ "$ACC" -le 25 ] || { echo "::error::accepted=$ACC exceeds burst+refill ceiling — limiter not capping"; exit 1; }
+          THR1="$(read_metric szl_receipts_throttled_total)"; THR1="${THR1:-0}"
+          echo "throttled_total after burst: $THR1"
+          DELTA="$(awk -v a="$THR0" -v b="$THR1" 'BEGIN{print b-a}')"
+          [ "$DELTA" = "$SHED" ] || { echo "::error::szl_receipts_throttled_total delta ($DELTA) != observed 429s ($SHED)"; exit 1; }
+          echo "  ok   burst shed $SHED receipts with 429 and the throttled counter advanced by $SHED"
+
+          echo "── (6) Genuine SPACED receipts still chain (szl_chain_valid=1) ──────"
+          IDX0="$(read_metric szl_chain_index)"; IDX0="${IDX0:-0}"
+          # Let the token bucket refill, then POST a few receipts spaced > 1s apart
+          # (rate=1.0/s) so each is accepted and chains — a real deploy mints a
+          # handful of spaced receipts.
+          sleep 5
+          for i in 1 2 3; do
+            RESP="$(curl -sf -X POST http://localhost:18080/receipt \
+              -H 'Content-Type: application/json' \
+              -d "{\"kind\":\"cold-rebuild-spaced\",\"actor\":\"cold-rebuild-proof\",\"n\":$i}")" \
+              || { echo "::error::spaced receipt #$i was rejected — genuine traffic is being shed"; exit 1; }
+            echo "spaced #$i: $RESP"
+            echo "$RESP" | grep -qE '"valid":[[:space:]]*true' \
+              || { echo "::error::spaced receipt #$i not signed valid:true"; exit 1; }
+            sleep 1.2
+          done
+          # Scrape /metrics to force the integrity scan that updates szl_chain_valid.
+          CHAIN_VALID="$(read_metric szl_chain_valid)"
+          IDX1="$(read_metric szl_chain_index)"; IDX1="${IDX1:-0}"
+          echo "szl_chain_valid=$CHAIN_VALID  chain_index ${IDX0} -> ${IDX1}"
+          [ "$CHAIN_VALID" = "1" ] || { echo "::error::szl_chain_valid != 1 (chain integrity broken on cold rebuild)"; exit 1; }
+          awk -v a="$IDX0" -v b="$IDX1" 'BEGIN{exit !(b>a)}' \
+            || { echo "::error::chain index did not advance ($IDX0 -> $IDX1)"; exit 1; }
+          echo "  ok   spaced receipts chained and szl_chain_valid=1"
+
+          kill $PF 2>/dev/null || true
+          trap - EXIT
+          sleep 1
+
+          echo "── (7) Independent offline chain verification (verify_receipts.sh) ──"
+          # Public-key-only verifier: its own port-forward, pulls /pubkey + /receipts,
+          # re-verifies every Ed25519 signature over the DSSE PAE + each hash-chain
+          # link. Exits non-zero if any receipt fails.
+          bash scripts/verify_receipts.sh
+
+          echo "ALL COLD-REBUILD + RATE-LIMIT INVARIANTS HOLD."
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          NS=szl-receipts
+          echo "==== cluster namespaces ===="; kubectl get ns || true
+          echo "==== $NS workloads ===="; kubectl -n "$NS" get deploy,pods,svc -o wide || true
+          echo "==== $NS describe deploy ===="; kubectl -n "$NS" describe deployment/szl-receipts-server || true
+          echo "==== $NS events ===="; kubectl -n "$NS" get events --sort-by=.lastTimestamp || true
+          echo "==== $NS logs ===="; kubectl -n "$NS" logs deployment/szl-receipts-server --all-containers --tail=200 || true
+          echo "==== zarf agent (image rewrite) logs ===="; kubectl -n zarf logs deploy/agent-hook --tail=100 2>/dev/null || true
+          echo "==== port-forward log ===="; cat /tmp/pf.log 2>/dev/null || true
+
+      - name: Teardown cold cluster
+        if: always()
+        run: k3d cluster delete uds 2>/dev/null || true
+
+  # ── Page the CI alert channel when an AUTOMATIC run fails ─────────────────────
+  # Manual (workflow_dispatch) runs are watched by the person who clicked "Run
+  # workflow", so we only page for release-tag / nightly failures. The red run is
+  # itself the signal; this job makes it loud.
+  alert:
+    name: Page CI alert channel on failure
+    needs: [cold-rebuild-proof]
+    if: failure() && github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Post failure to the team alert channel (ntfy relay)
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL is unset — cannot page; the red workflow run is the only signal."
+            exit 0
+          fi
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          TRIGGER="${{ github.event_name }}"
+          REF="${{ github.ref_name }}"
+          TEXT=":rotating_light: receipts-cold-rebuild-proof FAILED on ${TRIGGER} (${REF}) — the rate-limited"
+          TEXT="${TEXT} szl-receipts package did NOT survive a born-clean cold-cluster rebuild"
+          TEXT="${TEXT} (digest pin, rate limit, or chain). ${RUN_URL}"
+          payload=$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1]}))' "${TEXT}")
+          code=$(curl -sS -o /tmp/relay.out -w "%{http_code}" \
+            -X POST -H "Content-Type: application/json" \
+            -d "${payload}" "${SLACK_WEBHOOK_URL}")
+          echo "relay responded HTTP ${code}"
+          cat /tmp/relay.out 2>/dev/null || true
+          case "${code}" in
+            2*) echo "Alert delivered to the CI alert channel." ;;
+            *)  echo "::error::alert POST failed (HTTP ${code})"; exit 1 ;;
+          esac
