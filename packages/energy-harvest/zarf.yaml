@@ -1,0 +1,99 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# zarf.yaml — szl-energy-harvest (UDS-bundle-member-style package)
+# =============================================================================
+# Packages the wasted-energy harvest grid signal as a self-contained, manifest-
+# based Zarf package, the same shape as packages/sentra: a namespace + the UDS
+# Operator Package CR (Istio ambient mesh / NetworkPolicy / ServiceMonitor) plus
+# the workload Deployment + Service.
+#
+# IMAGE GATING (FA-001 style): ghcr.io/szl-holdings/energy-harvest is NOT yet
+# published. So the `images:` bake list is intentionally COMMENTED OUT below —
+# `zarf package create` would otherwise try to pull a non-existent image and
+# fail. Once the image is built (see ./Dockerfile), pushed and cosign keyless-
+# signed on GHCR:
+#   1. uncomment the images: entry and DIGEST-PIN it to the linux/amd64 child,
+#   2. digest-pin the same ref in manifests/deployment.yaml,
+#   3. only then add this package to a UDSBundle / deploy it.
+# Until then this package is build-valid (manifests internally consistent, the
+# deploy-entry consistency class passes) but deliberately not live-deployed
+# (the 2-vCPU box has no headroom).
+#
+# Build (once the image exists; single-arch so the @sha256 pin is create-safe):
+#   zarf package create packages/energy-harvest \
+#     --set VERSION=0.1.0 --architecture amd64 --confirm
+#
+# References:
+#   Zarf schema:  https://docs.zarf.dev/ref/zarf-package/
+#   UDS Operator: https://uds.defenseunicorns.com/reference/uds-core/overview/
+
+# yaml-language-server: $schema=https://raw.githubusercontent.com/zarf-dev/zarf/main/zarf.schema.json
+kind: ZarfPackageConfig
+
+metadata:
+  name: szl-energy-harvest
+  version: "###ZARF_PKG_TMPL_VERSION###"
+  description: >-
+    SZL energy-harvest — wasted-energy harvest grid signal. Reads three public,
+    no-key grid feeds (aWATTar DE price, energy-charts.info DE renewable share,
+    UK carbon intensity) and reports when the grid is WASTING power so
+    already-wasted energy can be soaked. Doctrine v11: honest labels, joules
+    SAMPLE, NEVER sovereign:true, not one of the locked-8.
+  url: "https://szlholdings.com"
+  authors: "SZL Holdings <eng@szlholdings.com>"
+  documentation: "https://github.com/szl-holdings/szl-uds-deployment"
+
+variables:
+  - name: VERSION
+    description: "Image tag / package version (injected from the release tag, 'v'/'uds-' stripped)"
+    default: "0.1.0"
+  - name: DOMAIN
+    description: "Cluster domain — must match UDS Core DOMAIN"
+    default: "uds.dev"
+
+components:
+  # 1. Namespace + UDS Operator Package CR (Istio ambient / NetworkPolicy /
+  #    external-feed egress / ServiceMonitor).
+  - name: szl-energy-harvest-operator
+    required: true
+    description: >-
+      Create the szl-energy-harvest namespace and apply the UDS Operator Package
+      CR that generates the ambient mesh config, the external-feed egress
+      NetworkPolicies/ServiceEntries, the tenant-gateway expose, and the
+      ServiceMonitor.
+    manifests:
+      - name: szl-energy-harvest-namespace
+        namespace: szl-energy-harvest
+        files:
+          - manifests/namespace.yaml
+      - name: szl-energy-harvest-uds-package
+        namespace: szl-energy-harvest
+        files:
+          - uds-package.yaml
+
+  # 2. The energy-harvest workload (Deployment + Service).
+  - name: szl-energy-harvest-workload
+    required: true
+    description: >-
+      Deploy the energy-harvest Deployment + Service. The image is gated until
+      published (see header) — uncomment + digest-pin images: before live deploy.
+    # images:
+    #   # Uncomment + DIGEST-PIN once published + cosign-signed on GHCR.
+    #   - ghcr.io/szl-holdings/energy-harvest:uds-v0.1.0@sha256:<linux-amd64-child-digest>
+    manifests:
+      - name: szl-energy-harvest-workload
+        namespace: szl-energy-harvest
+        files:
+          - manifests/deployment.yaml
+    actions:
+      onDeploy:
+        after:
+          - description: "Wait for energy-harvest Deployment to be Available"
+            maxTotalSeconds: 180
+            wait:
+              cluster:
+                kind: Deployment
+                name: energy-harvest
+                namespace: szl-energy-harvest
+                condition: Available
