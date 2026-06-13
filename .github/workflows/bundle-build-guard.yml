@@ -82,9 +82,13 @@ on:
   workflow_dispatch:
     inputs:
       run_e2e:
-        description: "Also run the heavy end-to-end `uds run bundle` build"
+        description: "Also run the heavy end-to-end `uds run bundle` build (receipts ROOT bundle)"
         type: boolean
         default: true
+      run_full_organ_e2e:
+        description: "Also run the heavy end-to-end FULL-ORGAN bundle build (pulls the 5 live signed organ images; needs GHCR_PUBLISH_TOKEN)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -256,3 +260,236 @@ jobs:
               await github.rest.issues.update({ owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, state: 'closed' });
               core.notice(`Closed rolling incident issue #${existing.number}.`);
             }
+
+  # ── Heavy end-to-end FULL-ORGAN bundle build (opt-in workflow_dispatch ONLY) ─
+  # The e2e-bundle job above proves the receipts-only ROOT bundle really builds.
+  # The 5-organ customer hand-off bundle (bundles/szl-uds-bundle/uds-bundle.yaml)
+  # is only validated here by the STATIC guard — its sole REAL build lives in the
+  # publish path (.github/workflows/uds-bundle-publish.yml), so a build-time break
+  # the text scan cannot see (an OCI pull failure / flavor drop during the real
+  # `zarf package create` loop, uds/zarf version drift, a fat-layer CDN stall)
+  # would surface only at publish time, when a customer-facing release is already
+  # in flight.
+  #
+  # This job runs that exact build loop end-to-end — pre-warm → per-organ
+  # `zarf package create` → `uds create` — on a runner with real disk, then
+  # asserts every expected member Zarf package (and the composed bundle tarball)
+  # is produced. It deliberately STOPS before publish/sign: it never pushes to
+  # ghcr.io, never cosign-signs, and needs no `id-token`/`packages` permission.
+  #
+  # Kept strictly OPT-IN (manual workflow_dispatch with run_full_organ_e2e
+  # checked) — never on PR/push and never on the nightly schedule. It pulls 5
+  # live, cosign-signed organ images (some carry a fat ~363MB layer), so it is
+  # heavier than the receipts e2e and needs the org GHCR_PUBLISH_TOKEN to pull
+  # the digest-pinned images; a human triggers it and watches the result, so it
+  # needs no ntfy/incident plumbing (that exists only for the unattended nightly
+  # receipts run).
+  e2e-full-organ-bundle:
+    name: end-to-end full-organ bundle build (no publish)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_full_organ_e2e }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # Pin the same toolchain the publish path actually uses so this reproduces
+      # the real build (and catches uds/zarf version drift against it).
+      ZARF_VERSION: "v0.77.0"
+      UDS_CLI_VERSION: "v0.31.0"
+      REGISTRY: "ghcr.io"
+      ORG: "szl-holdings"
+      BUNDLE_NAME: "szl-uds-bundle"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android || true
+          df -h /
+
+      # Resolve the member package version the bundle expects. The 4 templated
+      # organs (sentra/amaru/killinchu/rosie) share one `ref:` in the bundle and
+      # are version-injected via `--set VERSION`; a11oy's zarf metadata.version is
+      # hardcoded. Read szl-sentra's ref so a future bundle version bump flows
+      # through automatically instead of being hardcoded here.
+      - name: Resolve member package version from the bundle
+        id: pkgver
+        run: |
+          set -euo pipefail
+          BUNDLE_YAML="bundles/szl-uds-bundle/uds-bundle.yaml"
+          PKG_VERSION="$(awk '/- name: szl-sentra/{f=1} f && /ref:/{gsub(/[" ]/,"",$2); print $2; exit}' "${BUNDLE_YAML}")"
+          : "${PKG_VERSION:=0.3.0}"
+          echo "version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Member package version (templated organs) = ${PKG_VERSION}"
+
+      # ── Install Zarf (direct download — mirrors the publish path) ───────────
+      - name: Install Zarf ${{ env.ZARF_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/zarf-dev/zarf/releases/download/${ZARF_VERSION}/zarf_${ZARF_VERSION}_Linux_amd64" -o zarf
+          sudo install -m 0755 zarf /usr/local/bin/zarf
+          zarf version
+
+      # ── Build uds-cli from source (mirrors the publish path) ───────────────
+      # The 196MB uds-cli release binary truncates to 0 bytes on hardened GitHub
+      # runners (HTTP 200, curl_exit=23), so the publish workflow builds it from
+      # source via the Go module proxy (many small objects). We do the same here
+      # so this reproduces the real publish toolchain rather than a different one.
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: "1.26.0"
+          cache: false
+      - name: Build uds-cli ${{ env.UDS_CLI_VERSION }} from source
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          set -uo pipefail
+          echo "uds-cli build: clone+build ${UDS_CLI_VERSION}"
+          go version
+          set +e
+          git clone --depth 1 --branch "${UDS_CLI_VERSION}" \
+            https://github.com/defenseunicorns/uds-cli.git uds-cli-src
+          CRC=$?
+          echo "uds-cli clone rc=${CRC}"
+          if [ "${CRC}" -eq 0 ]; then
+            ( cd uds-cli-src && \
+              go build -ldflags "-s -w -X github.com/defenseunicorns/uds-cli/src/config.CLIVersion=${UDS_CLI_VERSION}" \
+                -o /tmp/uds main.go )
+            echo "uds-cli go_build rc=$?"
+          fi
+          set -e
+          SZ=0; [ -f /tmp/uds ] && SZ=$(stat -c%s /tmp/uds 2>/dev/null || echo 0)
+          echo "uds-cli bin_size=${SZ}"
+          if [ ! -f /tmp/uds ] || [ "${SZ}" -lt 50000000 ]; then
+            echo "::error title=uds-cli-build-failed::source build did not produce a usable binary"
+            exit 1
+          fi
+          sudo install -m 0755 /tmp/uds /usr/local/bin/uds
+      - name: Verify uds-cli
+        run: |
+          set -euo pipefail
+          test -x /usr/local/bin/uds
+          uds version || echo "(uds version self-check returned non-zero; binary is installed, continuing)"
+
+      # ── Log in to ghcr.io to pull the digest-pinned organ images ───────────
+      # The member images are cosign-signed on ghcr.io and pulled by digest in
+      # each packages/<organ>/zarf.yaml. Authenticate with the org-owner PAT
+      # (same secret the publish path uses) so private/rate-limited pulls succeed.
+      # Soft-skip with a loud warning if the secret is not provisioned — zarf
+      # will then attempt an anonymous pull and fail honestly if the image is not
+      # publicly readable.
+      - name: Log in to ghcr.io
+        env:
+          GHCR_PUBLISH_TOKEN: ${{ secrets.GHCR_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GHCR_PUBLISH_TOKEN:-}" ]; then
+            echo "::warning title=ghcr-login-skipped::GHCR_PUBLISH_TOKEN not configured — attempting anonymous image pulls. This job will fail honestly if an organ image is not publicly readable."
+            exit 0
+          fi
+          echo "${GHCR_PUBLISH_TOKEN}" | docker login "${REGISTRY}" -u "${GITHUB_REPOSITORY_OWNER}" --password-stdin
+
+      # ── Pre-warm large organ image layers into the Zarf cache (resumable) ──
+      # amaru/rosie carry a fat single layer that repeatedly stalls/EOFs on the
+      # GHCR CDN; both zarf and docker pulls are non-resumable. Mirror the publish
+      # path's resumable pre-fetch so a transient CDN hiccup doesn't fail the
+      # whole create. Best-effort: a miss falls through to zarf's own pull.
+      - name: Pre-warm organ image layers into the Zarf cache (resumable)
+        env:
+          GHCR_BEARER: ${{ secrets.GHCR_PUBLISH_TOKEN }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ ! -x scripts/prewarm-ghcr-blobs.sh ]; then
+            chmod +x scripts/prewarm-ghcr-blobs.sh 2>/dev/null || true
+          fi
+          for organ in amaru rosie a11oy sentra killinchu; do
+            ref="$(grep -oE 'ghcr\.io/szl-holdings/[a-z0-9._/-]+@sha256:[0-9a-f]{64}' "packages/${organ}/zarf.yaml" | head -1 || true)"
+            if [ -z "${ref}" ]; then
+              echo "packages/${organ}/zarf.yaml has no digest-pinned image; zarf will pull it by tag"
+              continue
+            fi
+            echo "::group::pre-warm ${organ} ${ref}"
+            scripts/prewarm-ghcr-blobs.sh "${ref}" \
+              || echo "::warning title=prewarm-${organ}::pre-warm incomplete; zarf will attempt its own pull"
+            echo "::endgroup::"
+          done
+
+      # ── Build the 5 member Zarf packages from the LIVE ghcr.io images ───────
+      # This is the exact loop the publish path runs. Images are baked as literal
+      # digest-pinned refs in each package, so --set VERSION only names the built
+      # tarball (it must equal the member `ref:` in the bundle). Disable bash -e
+      # so a per-organ failure is captured + annotated with the real cause.
+      - name: Build member Zarf packages
+        env:
+          PKG_VERSION: ${{ steps.pkgver.outputs.version }}
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          for organ in killinchu rosie a11oy sentra amaru; do
+            echo "::group::zarf package create packages/${organ}"
+            RC=0
+            for attempt in 1 2 3; do
+              zarf package create "packages/${organ}" \
+                --set VERSION="${PKG_VERSION}" \
+                --architecture amd64 \
+                --confirm \
+                --output-directory "packages/${organ}" > "/tmp/${organ}.log" 2>&1
+              RC=$?
+              [ "${RC}" -eq 0 ] && break
+              echo "zarf package create ${organ} failed (attempt ${attempt}/3, rc=${RC}); retrying after backoff" >> "/tmp/${organ}.log"
+              sleep $(( attempt * 15 ))
+            done
+            echo "::endgroup::"
+            cat "/tmp/${organ}.log" || true
+            ERRTAIL=$(grep -iE 'err|fail|fatal|unable|denied|not found|no such|invalid|cannot|forbidden|unauthor' "/tmp/${organ}.log" | tail -n 4 | tr '\n' '|' | sed 's/[^[:print:]|]//g')
+            echo "::error title=zarf-${organ}::rc=${RC} tail=${ERRTAIL}"
+            if [ "${RC}" -ne 0 ]; then exit 1; fi
+          done
+          echo "Built member packages:"
+          ls -lh packages/*/zarf-package-*.tar.zst || true
+
+      # ── Compose the full bundle (no publish) ───────────────────────────────
+      - name: Create UDS bundle (local, no publish)
+        run: |
+          set -euo pipefail
+          uds create bundles/szl-uds-bundle \
+            --confirm \
+            --no-progress \
+            --output dist
+          echo "Bundle tarball:"
+          ls -lh dist/uds-bundle-*.tar.zst
+
+      # ── Assert every expected per-organ package + the bundle were produced ──
+      - name: Assert per-organ packages + bundle tarball were produced
+        env:
+          PKG_VERSION: ${{ steps.pkgver.outputs.version }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for organ in a11oy sentra amaru killinchu rosie; do
+            tar="$(ls "packages/${organ}"/zarf-package-szl-${organ}-amd64-*.tar.zst 2>/dev/null | head -1 || true)"
+            if [ -z "${tar}" ]; then
+              echo "FAIL: no member Zarf package produced for ${organ} (expected packages/${organ}/zarf-package-szl-${organ}-amd64-*.tar.zst)" >&2
+              missing=1
+            else
+              echo "OK: member package ${organ} -> ${tar} ($(du -h "${tar}" | cut -f1))"
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            echo "::error title=full-organ-members::full-organ build did not produce all 5 expected member packages" >&2
+            exit 1
+          fi
+          BUNDLE="$(ls -t dist/uds-bundle-${BUNDLE_NAME}-amd64-*.tar.zst 2>/dev/null | head -1 || true)"
+          if [ -z "${BUNDLE}" ]; then
+            echo "FAIL: no full-organ bundle tarball (dist/uds-bundle-${BUNDLE_NAME}-amd64-*.tar.zst) was produced by 'uds create'." >&2
+            ls -la dist/uds-bundle-*.tar.zst 2>/dev/null || echo "  (no bundle tarballs at all)"
+            exit 1
+          fi
+          echo "OK: composed full-organ bundle ${BUNDLE} ($(du -h "${BUNDLE}" | cut -f1))"
+          echo "All 5 member packages + the full-organ bundle were produced (no publish)."
