@@ -1130,3 +1130,57 @@ systemctl enable --now a11oy-contracting-tool-watch.timer
 The OK→ALERT edge + de-dup is exercised offline (stub docker/curl) by
 `box-scripts/tests/watcher-edges.sh`. The guard's checks are self-tested by
 `scripts/a11oy-contracting-tool-watch-guard-checks.test.sh`.
+
+# box-scripts (part 9) — stale bundle-digest alarm (local airgap tarballs)
+
+## The problem it solves
+
+`scripts/pin-receipts-image-digest.sh` repins the **source** szl-receipts image
+digest (zarf.yaml, packages/szl-receipts/zarf.yaml, charts/szl-receipts/values.yaml)
+and the package is re-signed. But the local airgap tarballs already cut on this
+box —
+
+- `uds-bundle-szl-receipts-bundle-<arch>-<ver>.tar.zst`
+- `packages/szl-receipts/zarf-package-szl-receipts-<arch>-<ver>.tar.zst`
+
+— keep baking whatever digest was current when they were last built. A **same-tag
+image rebuild re-mints a new digest**, so after a repin a stale tarball can sit on
+disk and a later airgap deploy ships the **old** image, with no visible symptom.
+
+`bundle-digest-watch` turns that silent drift into a push alert: every cycle it
+extracts the source-pinned digest from `packages/szl-receipts/zarf.yaml`, lists
+each built tarball (`zstd -dc | tar -t`), and ALERTs if any existing tarball does
+not contain the pinned digest. It is edge-triggered (pages once on OK→ALERT, once
+on RECOVERED) and no-ops when the pin is unreadable or no tarball has been built.
+
+## Re-cut after a repin (the one place this is documented)
+
+```
+cd /opt/szl/szl-uds-deployment && uds run bundle
+```
+
+`uds run bundle` re-runs `zarf package create packages/szl-receipts` +
+`zarf package create packages/a11oy` + `uds create .`, regenerating both tarballs
+from the now-current source pins. Re-run the watcher to confirm RECOVERED:
+`/usr/local/sbin/bundle-digest-watch`.
+
+## Files
+
+- `box-scripts/sbin/bundle-digest-watch` — the alarm (env-overridable).
+- `box-scripts/systemd/bundle-digest-watch.{service,timer}` — periodic driver.
+- `box-scripts/bundle-digest-watch.README.md` — full operator notes.
+- `scripts/bundle-digest-watch-guard-checks.sh` (+ `.test.sh`) and
+  `.github/workflows/bundle-digest-watch-guard.yml` — CI guard trio that keeps
+  the alarm from silently regressing.
+
+## Reinstall
+
+Shipped by `box-scripts/install.sh` (script + units copied, timer enabled, run
+once). A box rebuild reinstalls it with the rest of the fleet.
+
+## Verify
+
+```
+systemctl list-timers bundle-digest-watch.timer
+/usr/local/sbin/bundle-digest-watch; cat /var/lib/bundle-digest-watch/status.json
+```

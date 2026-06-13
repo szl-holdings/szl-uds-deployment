@@ -1,0 +1,95 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# bundle-digest-watch-guard.yml — Guard the `bundle-digest-watch` box alarm (the
+# stale-image-digest-in-a-local-tarball alarm) from silently regressing.
+#
+# bundle-digest-watch (box-scripts/sbin/bundle-digest-watch) runs periodically on
+# box 167.233.50.75 and pages the moment a LOCALLY-BUILT airgap deploy tarball
+# stops carrying the source-pinned szl-receipts image digest. scripts/
+# pin-receipts-image-digest.sh repins the SOURCE digest (and the package is
+# re-signed), but the already-cut tarballs
+#   * uds-bundle-szl-receipts-bundle-<arch>-<ver>.tar.zst
+#   * packages/szl-receipts/zarf-package-szl-receipts-<arch>-<ver>.tar.zst
+# keep baking the OLD digest until re-cut. A same-tag rebuild re-mints a new
+# digest, so a stale tarball can sit on disk and a later airgap deploy ships the
+# wrong image with NO visible symptom. This alarm closes that gap, but its value
+# rests on fragile invariants that produce no symptom when broken:
+#   * it still extracts the SOURCE-pinned digest from the szl-receipts zarf manifest;
+#   * it still inspects the BUILT bundle + package tarballs (zstd -dc | tar -t);
+#   * it is EDGE-triggered (last_status state file) so it pages once per edge;
+#   * it NO-OPs when the pin is unreadable or no tarball has been built;
+#   * it stays WIRED into install.sh (script + units copied, timer enabled) and
+#     documented in README.md.
+# A sibling refactor of the script, install.sh, or README could quietly drop any
+# of these, re-opening the exact "a stale tarball ships unflagged" hole this
+# alarm closed.
+#
+# The check logic lives in scripts/bundle-digest-watch-guard-checks.sh (pure
+# text/lint, no cluster, no tarball). It was extracted so it can be UNIT TESTED:
+# scripts/bundle-digest-watch-guard-checks.test.sh feeds each check a
+# deliberately-BROKEN fixture and asserts the check FAILS, plus that the pristine
+# repo PASSES. That self-test runs as the `self-test` job below, so a future edit
+# that neuters a check (green while guarding nothing) is caught here.
+#
+# The asserted invariants:
+#   chk1  bundle-digest-watch exists and parses clean (bash -n)
+#   chk2  extracts the source-pinned digest from the szl-receipts zarf manifest
+#   chk3  inspects the built bundle + package tarballs for that digest
+#   chk4  edge-triggered: reads+writes last_status, exactly two notify calls
+#   chk5  source-pin-unreadable / no-tarball-built paths no-op
+#   chk6  wired into install.sh (script + units copied, timer enabled)
+#   chk7  documented in README.md
+
+name: Bundle Digest Watch Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/bundle-digest-watch-guard-checks.test.sh
+
+  guard:
+    name: Assert the stale-bundle-digest alarm is intact
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check 1 — bundle-digest-watch exists and parses clean
+        run: bash scripts/bundle-digest-watch-guard-checks.sh chk1 .
+
+      - name: Check 2 — extracts the source-pinned digest from the zarf manifest
+        run: bash scripts/bundle-digest-watch-guard-checks.sh chk2 .
+
+      - name: Check 3 — inspects the built bundle + package tarballs
+        run: bash scripts/bundle-digest-watch-guard-checks.sh chk3 .
+
+      - name: Check 4 — edge-triggered (state file + exactly two notifies)
+        run: bash scripts/bundle-digest-watch-guard-checks.sh chk4 .
+
+      - name: Check 5 — pin-unreadable / no-tarball-built no-op
+        run: bash scripts/bundle-digest-watch-guard-checks.sh chk5 .
+
+      - name: Check 6 — wired into install.sh (script + timer enabled)
+        run: bash scripts/bundle-digest-watch-guard-checks.sh chk6 .
+
+      - name: Check 7 — documented in README.md
+        run: bash scripts/bundle-digest-watch-guard-checks.sh chk7 .
+
+      - name: Stale-bundle-digest alarm is intact
+        run: echo "The bundle-digest-watch stale-tarball alarm is intact."

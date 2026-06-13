@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+#
+# bundle-digest-watch - alarm when a LOCALLY-BUILT deploy tarball on the box
+# (167.233.50.75) bakes a STALE szl-receipts image digest: an image digest that
+# no longer matches the source-pinned digest in the repo.
+#
+# WHY: scripts/pin-receipts-image-digest.sh repins the SOURCE (zarf.yaml,
+# packages/szl-receipts/zarf.yaml, charts/szl-receipts/values.yaml) and the
+# package is re-signed, but the local airgap tarballs already cut on the box
+#   - uds-bundle-szl-receipts-bundle-<arch>-<ver>.tar.zst
+#   - packages/szl-receipts/zarf-package-szl-receipts-<arch>-<ver>.tar.zst
+# keep baking whatever digest was current when they were last `uds create` /
+# `zarf package create`-d. A same-tag image rebuild re-mints a NEW digest, the
+# repin loop updates the pins, but a stale tarball sits on disk undetected and a
+# later airgap deploy ships the OLD image. There is NO visible symptom until the
+# wrong image is deployed. This guard turns that silent drift into a push alert
+# and prints the one-line re-cut command.
+#
+# WHAT IT DETECTS (-> ALERT): a built tarball EXISTS but its listing does NOT
+# contain the source-pinned image manifest digest (zarf stores the image
+# manifest blob as blobs/sha256/<digest>; `uds create` flattens it to the bundle
+# level too -- verified both surfaces carry the hex). A tarball that does not
+# exist is SKIPPED (nothing built = nothing stale). If the source pin cannot be
+# read at all, or NO tarball exists, the run is a no-op (UNKNOWN, exit 0) -- we
+# only alarm when there is a built tarball to compare against a real pin.
+#
+# It is EDGE-triggered and de-duped via a state file: it fires the notifier only
+# on the healthy->drift edge and once on RECOVERED, never every cycle (honours
+# the "recurring alerts = one ping" policy). Every run still appends to the log +
+# status file so a broken notifier can never hide drift.
+#
+# Re-cut after a repin:  cd /opt/szl/szl-uds-deployment && uds run bundle
+# Full procedure: box-scripts/bundle-digest-watch.README.md
+#
+# Every input is an env-overridable parameter (no baked-in constant) so the same
+# body can watch other tarballs/pins. Driven by bundle-digest-watch.timer.
+# Mirrors the receipt-chain-watch / szl-receipts-orphan-watch pattern.
+set -uo pipefail
+
+REPO="${REPO:-/opt/szl/szl-uds-deployment}"
+# Source-of-truth pin lives in the szl-receipts zarf package manifest.
+SRC_ZARF="${SRC_ZARF:-$REPO/packages/szl-receipts/zarf.yaml}"
+IMAGE_RE="${IMAGE_RE:-szl-receipts-server}"
+# Built tarballs to inspect (space-separated globs, relative to REPO). A tarball
+# that does not exist is simply skipped.
+TARBALL_GLOBS="${TARBALL_GLOBS:-uds-bundle-szl-receipts-bundle-*-*.tar.zst packages/szl-receipts/zarf-package-szl-receipts-*-*.tar.zst}"
+
+STATE_DIR="${STATE_DIR:-/var/lib/bundle-digest-watch}"
+LOG_DIR="${LOG_DIR:-/var/log/bundle-digest-watch}"
+LAST_FILE="${LAST_FILE:-$STATE_DIR/last_status}"
+STATUS="${STATUS:-$STATE_DIR/status.json}"
+LOG="${LOG:-$LOG_DIR/bundle-digest-watch.log}"
+
+# Notifier: stdin = message. Default to the box working push channel.
+NOTIFY_CMD="${NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
+ALERT_PREFIX="${ALERT_PREFIX:-}"
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
+
+log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$1" >>"$LOG" 2>/dev/null; }
+
+notify() {
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed (alert was logged only)"
+}
+
+write_status() {
+  # $1 = overall (OK|ALERT|UNKNOWN)  $2 = reason  $3 = pinned digest (optional)
+  printf '{"overall":"%s","reason":"%s","pinned_digest":"%s","checked_at":"%s"}\n' \
+    "$1" "$(printf '%s' "$2" | sed 's/"/\\"/g')" "${3:-}" "$(date -u +%FT%TZ)" \
+    >"$STATUS" 2>/dev/null
+}
+
+# extract_pinned_digest - echo the 64-hex source-pinned image digest, or empty.
+extract_pinned_digest() {
+  [ -r "$SRC_ZARF" ] || return 0
+  grep -oE "${IMAGE_RE}:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}" "$SRC_ZARF" 2>/dev/null \
+    | grep -oE 'sha256:[0-9a-f]{64}' | sed 's/^sha256://' | head -1
+}
+
+# tarball_has_digest TARBALL DIGEST -> 0 if the tarball listing contains the
+# digest (image manifest blob stored as blobs/sha256/<digest>), else 1.
+tarball_has_digest() {
+  local tb="$1" dig="$2"
+  # Run in a subshell with pipefail OFF: grep -q exits early on the first match,
+  # which SIGPIPEs zstd/tar upstream; under `set -o pipefail` that non-zero would
+  # propagate and make a PRESENT digest look MISSING (a false ALERT). Isolating
+  # pipefail here makes the result depend only on grep's own exit status.
+  ( set +o pipefail; zstd -dc -- "$tb" 2>/dev/null | tar -t 2>/dev/null | grep -q -- "$dig" )
+}
+
+# ---- Resolve the source pin; no-op if it cannot be read ---------------------
+pinned="$(extract_pinned_digest)"
+if [ -z "$pinned" ]; then
+  log "INFO no source-pinned ${IMAGE_RE} digest in $SRC_ZARF - skip"
+  write_status UNKNOWN "source pin unreadable" ""
+  exit 0
+fi
+
+# ---- Inspect each built tarball that exists --------------------------------
+cd "$REPO" 2>/dev/null || { log "INFO repo $REPO absent - skip"; write_status UNKNOWN "repo absent" "$pinned"; exit 0; }
+
+stale=""; checked=0
+add_stale() { stale="${stale:+$stale, }$1"; }
+for g in $TARBALL_GLOBS; do
+  for tb in $g; do
+    [ -f "$tb" ] || continue        # glob did not match a real file
+    checked=$((checked + 1))
+    if tarball_has_digest "$tb" "$pinned"; then
+      log "INFO $tb carries pinned digest $pinned"
+    else
+      add_stale "$tb"
+      log "DRIFT $tb is MISSING pinned digest $pinned (stale build)"
+    fi
+  done
+done
+
+if [ "$checked" -eq 0 ]; then
+  log "INFO no local bundle/package tarball built yet - skip"
+  write_status UNKNOWN "no built tarball present" "$pinned"
+  exit 0
+fi
+
+# ---- Decide + edge-trigger -------------------------------------------------
+prev="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
+recut="cd $REPO && uds run bundle"
+
+if [ -n "$stale" ]; then
+  write_status ALERT "stale tarball(s): $stale (pinned ${pinned:0:12})" "$pinned"
+  log "STATE ALERT checked=$checked stale=$stale"
+  if [ "$prev" != "ALERT" ]; then
+    notify "ALERT: stale image digest baked into local deploy tarball(s) on $(hostname): $stale do NOT contain the source-pinned ${IMAGE_RE} digest ${pinned:0:12}. A repin happened without re-cutting. Re-cut: $recut"
+    log "EDGE OK->ALERT notified"
+  else
+    log "DEDUP still ALERT - no re-notify"
+  fi
+  echo ALERT >"$LAST_FILE" 2>/dev/null
+else
+  write_status OK "all $checked built tarball(s) carry pinned ${pinned:0:12}" "$pinned"
+  log "STATE OK checked=$checked all carry $pinned"
+  if [ "$prev" = "ALERT" ]; then
+    notify "RECOVERED: local deploy tarball(s) on $(hostname) were re-cut and now carry the source-pinned ${IMAGE_RE} digest ${pinned:0:12} ($checked checked)."
+    log "EDGE ALERT->OK recovered, notified"
+  fi
+  echo OK >"$LAST_FILE" 2>/dev/null
+fi
+
+exit 0

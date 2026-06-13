@@ -1,0 +1,9 @@
+[Unit]
+Description=Alarm when a locally-built deploy tarball bakes a stale szl-receipts image digest (repin happened without re-cutting the bundle/package)
+Documentation=file:///usr/local/sbin/bundle-digest-watch
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/bundle-digest-watch
