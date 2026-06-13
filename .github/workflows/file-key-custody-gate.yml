@@ -1,0 +1,258 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# File (SealedSecret) Key-Custody Gate — szl-receipts (Tier-1, Bitnami SealedSecret)
+# ============================================================================
+# Re-verifies the szl-receipts Tier-1 key-custody deploy on EVERY release —
+# the file-backend sibling of the Vault Key-Custody Gate (Tier-2).
+#
+# What this proves, live, on a throwaway cluster, end-to-end:
+#   1. The signing key is committed to git ONLY as an encrypted Bitnami
+#      SealedSecret blob (the chart renders templates/sealedsecret.yaml from
+#      signing.sealedSecret.encryptedKey); no plaintext key ever touches the repo.
+#   2. The in-cluster sealed-secrets controller DECRYPTS that blob into the
+#      ordinary Secret szl-receipts-ed25519 — proving the GitOps round-trip.
+#   3. The receipts server, deployed with the documented Helm values
+#      (charts/szl-receipts/values.yaml, signing.backend=file, requireKey=true),
+#      mounts that Secret, LOADS the Ed25519 file key and boots SIGNED — not the
+#      silent unsigned fallback.
+#   4. /pubkey reports signed==true backend==file, POST /receipt verifies, and
+#      receipts verify offline against the published public key with the
+#      INDEPENDENT auditor tool (verify_receipts_ed25519.py) — the same
+#      backend-agnostic proof the Vault gate uses.
+#
+# It deliberately asserts /pubkey signed==true (the server self-heals to an
+# unsigned state if the key is absent — a silent downgrade this gate must catch)
+# and backend==file (it is genuinely the Tier-1 file backend).
+#
+# The signing backend (signing.backend=file, requireKey=true, keypair.*) comes
+# ENTIRELY from the committed values.yaml; it is NEVER overridden with --set here.
+# The only --set flags are CI substrate (local image, drop UDS/monitoring CRDs
+# that need UDS Core, emptyDir store) and signing.sealedSecret.{enabled,scope,
+# encryptedKey} — the encryptedKey ciphertext is INHERENTLY per-cluster (sealed
+# against the throwaway controller's key) so it cannot be committed and is the one
+# value the CI must supply, sealed with the committed scripts/seal-signing-key.sh.
+
+name: File Key-Custody Gate
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: file-key-custody-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CLUSTER: szl-file-gate
+  NS: szl-receipts
+  IMG: szl-receipts-server:ci-gate
+  SEALED_NS: sealed-secrets
+
+jobs:
+  file-key-custody:
+    name: File (SealedSecret) key-custody (live)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install tools (kubectl, helm, k3d, kubeseal, cryptography)
+        run: |
+          set -euo pipefail
+          # kubectl
+          curl -fsSLo /tmp/kubectl "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          # helm
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          # k3d
+          curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+          # kubeseal (needed by scripts/seal-signing-key.sh to seal the CI key)
+          KUBESEAL_VERSION=0.27.1
+          curl -fsSLo /tmp/kubeseal.tgz "https://github.com/bitnami-labs/sealed-secrets/releases/download/v${KUBESEAL_VERSION}/kubeseal-${KUBESEAL_VERSION}-linux-amd64.tar.gz"
+          tar -xzf /tmp/kubeseal.tgz -C /tmp kubeseal
+          sudo install -m 0755 /tmp/kubeseal /usr/local/bin/kubeseal
+          # offline auditor dependency
+          python3 -m pip install --quiet cryptography
+          kubectl version --client
+          helm version
+          k3d version
+          kubeseal --version
+          openssl version
+
+      - name: Create throwaway k3d cluster
+        run: |
+          set -euo pipefail
+          k3d cluster create "$CLUSTER" --wait --timeout 180s
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Build receipts-server image and import into the cluster
+        run: |
+          set -euo pipefail
+          docker build -t "$IMG" services/szl-receipts-server
+          k3d image import "$IMG" -c "$CLUSTER"
+
+      - name: Install the sealed-secrets controller
+        run: |
+          set -euo pipefail
+          # The in-cluster controller is what decrypts the SealedSecret into the
+          # real Secret. Install name/namespace = sealed-secrets so they match the
+          # defaults of scripts/seal-signing-key.sh (--controller-name/-namespace).
+          helm repo add sealed-secrets https://bitnami-labs.github.io/sealed-secrets
+          helm repo update
+          helm upgrade --install sealed-secrets sealed-secrets/sealed-secrets \
+            --namespace "$SEALED_NS" --create-namespace \
+            --set fullnameOverride=sealed-secrets \
+            --wait --timeout 180s
+          kubectl -n "$SEALED_NS" rollout status deploy/sealed-secrets --timeout=120s
+          # The controller generates its sealing keypair on first start; wait for
+          # the active cert so kubeseal can encrypt against it.
+          for i in $(seq 1 30); do
+            kubeseal --controller-name sealed-secrets --controller-namespace "$SEALED_NS" \
+              --fetch-cert >/tmp/sealed-cert.pem 2>/dev/null \
+              && [ -s /tmp/sealed-cert.pem ] && break
+            sleep 2
+          done
+          [ -s /tmp/sealed-cert.pem ] || { echo "::error::could not fetch sealed-secrets controller cert"; exit 1; }
+
+      - name: Seal a fresh Ed25519 signing key (committed seal-signing-key.sh)
+        run: |
+          set -euo pipefail
+          # Generate an Ed25519 key, then seal it with the SAME script operators
+          # ship with. The plaintext PEM never leaves this step; the only thing we
+          # carry forward is the controller-encrypted ciphertext (safe to log).
+          openssl genpkey -algorithm ed25519 -out /tmp/ed25519.pem
+          # Mask the plaintext key material defensively, then never echo it.
+          echo "::add-mask::$(base64 -w0 /tmp/ed25519.pem)"
+          CIPHERTEXT="$(scripts/seal-signing-key.sh \
+            --key /tmp/ed25519.pem \
+            --namespace "$NS" \
+            --secret-name szl-receipts-ed25519 \
+            --scope strict \
+            --controller-name sealed-secrets \
+            --controller-namespace "$SEALED_NS" \
+            2>/dev/null | tail -n1)"
+          shred -u /tmp/ed25519.pem 2>/dev/null || rm -f /tmp/ed25519.pem
+          [ -n "$CIPHERTEXT" ] || { echo "::error::seal-signing-key.sh produced no ciphertext"; exit 1; }
+          # Persist for later steps without printing (it is encrypted, but keep it tidy).
+          printf '%s' "$CIPHERTEXT" > /tmp/sealed-ciphertext.txt
+          echo "Sealed ciphertext length: ${#CIPHERTEXT} chars"
+
+      - name: Deploy szl-receipts with the file backend + SealedSecret (backend un-overridden)
+        run: |
+          set -euo pipefail
+          CIPHERTEXT="$(cat /tmp/sealed-ciphertext.txt)"
+          # -f values.yaml carries signing.backend=file + requireKey=true verbatim.
+          # --set touches only CI substrate + signing.sealedSecret.* (the per-cluster
+          # ciphertext + its enable/scope), which cannot be committed.
+          helm upgrade --install szl-receipts charts/szl-receipts \
+            --namespace "$NS" --create-namespace \
+            -f charts/szl-receipts/values.yaml \
+            --set signing.sealedSecret.enabled=true \
+            --set signing.sealedSecret.scope=strict \
+            --set-string signing.sealedSecret.encryptedKey="$CIPHERTEXT" \
+            --set server.image.repository=szl-receipts-server \
+            --set server.image.tag=ci-gate \
+            --set server.image.digest="" \
+            --set server.image.pullPolicy=IfNotPresent \
+            --set server.persistence.enabled=false \
+            --set dashboard.enabled=false \
+            --set otel.enabled=false \
+            --set udsPackage.enabled=false \
+            --set networkPolicy.enabled=false \
+            --set prometheusRule.enabled=false \
+            --wait --timeout 240s
+
+          DEPLOY="$(kubectl -n "$NS" get deploy -l app.kubernetes.io/name=szl-receipts-server -o name | head -1)"
+          [ -n "$DEPLOY" ] || { echo "::error::receipts-server Deployment not found"; exit 1; }
+          echo "DEPLOY=$DEPLOY" >> "$GITHUB_ENV"
+          kubectl -n "$NS" rollout status "$DEPLOY" --timeout=240s
+
+      - name: Assert the SealedSecret CR is deployed (encrypted key, committed-safe)
+        run: |
+          set -euo pipefail
+          # Pass/fail logic lives in scripts/file-key-custody-checks.sh (sealed-secret),
+          # self-tested cluster-free by scripts/file-key-custody-checks.test.sh.
+          { kubectl -n "$NS" get sealedsecret szl-receipts-ed25519 -o name 2>/dev/null || true; } \
+            | bash scripts/file-key-custody-checks.sh sealed-secret
+
+      - name: Assert the controller materialised the decrypted key Secret
+        run: |
+          set -euo pipefail
+          # The sealed-secrets controller decrypts the SealedSecret into this Secret.
+          # Pass/fail logic lives in scripts/file-key-custody-checks.sh (key-secret),
+          # self-tested cluster-free by scripts/file-key-custody-checks.test.sh.
+          for i in $(seq 1 30); do
+            kubectl -n "$NS" get secret szl-receipts-ed25519 -o name >/dev/null 2>&1 && break
+            sleep 2
+          done
+          { kubectl -n "$NS" get secret szl-receipts-ed25519 -o name 2>/dev/null || true; } \
+            | bash scripts/file-key-custody-checks.sh key-secret
+
+      - name: Assert the server is signing with the file key (not the silent unsigned fallback)
+        run: |
+          set -euo pipefail
+          LOGS="$(kubectl -n "$NS" logs "$DEPLOY" -c receipts-server --tail=-1 2>/dev/null \
+                  || kubectl -n "$NS" logs "$DEPLOY" --all-containers --tail=-1)"
+          echo "----- receipts-server log -----"
+          echo "$LOGS"
+          echo "-------------------------------"
+          # Pass/fail logic lives in scripts/file-key-custody-checks.sh (signer-log),
+          # self-tested cluster-free by scripts/file-key-custody-checks.test.sh. It
+          # requires a "[file] Ed25519 signing key loaded; ..." line AND that the most
+          # recent signer-state line is "loaded", not the silent "running unsigned"
+          # fallback (the server re-reads the PEM, so a transient unsigned line at boot
+          # is tolerated).
+          printf '%s' "$LOGS" | bash scripts/file-key-custody-checks.sh signer-log
+
+      - name: Live custody assertions (/pubkey backend=file, /receipt signs, offline verify)
+        run: |
+          set -euo pipefail
+          kubectl -n "$NS" port-forward "$DEPLOY" 18080:8080 >/tmp/srv-pf.log 2>&1 &
+          PF_PID=$!
+          trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+          echo "==> GET /pubkey"
+          PUBKEY="$(curl -fsS http://127.0.0.1:18080/pubkey)"
+          echo "$PUBKEY"
+          # Pass/fail logic lives in scripts/file-key-custody-checks.sh (pubkey),
+          # self-tested cluster-free by scripts/file-key-custody-checks.test.sh.
+          printf '%s' "$PUBKEY" | bash scripts/file-key-custody-checks.sh pubkey
+
+          echo "==> POST /receipt"
+          RESP="$(curl -fsS -X POST http://127.0.0.1:18080/receipt \
+            -H 'content-type: application/json' \
+            -d '{"subject":"file-key-custody-gate","action":"release-verify","source":"ci"}')"
+          echo "$RESP"
+          # Pass/fail logic lives in scripts/file-key-custody-checks.sh (receipt),
+          # self-tested cluster-free by scripts/file-key-custody-checks.test.sh.
+          printf '%s' "$RESP" | bash scripts/file-key-custody-checks.sh receipt
+
+          echo "==> Independent offline verification against the published public key"
+          python3 scripts/verify_receipts_ed25519.py --url http://127.0.0.1:18080
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          set +e
+          echo "===== pods (all ns) ====="; kubectl get pods -A -o wide
+          echo "===== receipts ns describe ====="; kubectl -n "$NS" describe pods
+          echo "===== receipts logs ====="; kubectl -n "$NS" logs -l app.kubernetes.io/name=szl-receipts-server --all-containers --tail=-1
+          echo "===== sealedsecret ====="; kubectl -n "$NS" get sealedsecret -o wide
+          echo "===== secret (names only) ====="; kubectl -n "$NS" get secret
+          echo "===== sealed-secrets controller describe ====="; kubectl -n "$SEALED_NS" describe pods
+          echo "===== sealed-secrets controller logs ====="; kubectl -n "$SEALED_NS" logs deploy/sealed-secrets --tail=200
+          echo "===== server port-forward log ====="; cat /tmp/srv-pf.log 2>/dev/null
+
+      - name: Tear down cluster
+        if: always()
+        run: k3d cluster delete "$CLUSTER" || true

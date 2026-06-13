@@ -1,0 +1,38 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# file-key-custody-gate-selftest.yml — Self-test the File (SealedSecret)
+# Key-Custody Gate's pass/fail logic (no cluster).
+#
+# The gate (.github/workflows/file-key-custody-gate.yml) proves szl-receipts
+# Tier-1 (file backend fed by a Bitnami SealedSecret) signing-key custody live, on
+# a throwaway k3d cluster, but only at release time. Its security value is a
+# handful of bash assertions; a weakened one would pass vacuously and ship
+# unnoticed. Those assertions are extracted into
+# scripts/file-key-custody-checks.sh (the gate CALLS that script for every
+# pass/fail decision), and scripts/file-key-custody-checks.test.sh feeds each one a
+# GOOD fixture (must pass) and the BAD fixtures the gate must reject — a missing
+# SealedSecret CR, an unmaterialised key Secret, the unsigned fallback,
+# backend!=file — proving each still FAILS. It also asserts the gate is still wired
+# to every subcommand. Pure string/JSON fixtures, no cluster.
+#
+# Runs on PR + push to main via the shared self-test scaffolding, so a neutered
+# assertion is caught here on every change instead of silently at the next release.
+
+name: File Key-Custody Gate — Self-test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    uses: ./.github/workflows/guard-scaffold.yml
+    with:
+      test-command: bash scripts/file-key-custody-checks.test.sh
+      success-message: "The File key-custody gate's pass/fail logic is self-tested and wired."
