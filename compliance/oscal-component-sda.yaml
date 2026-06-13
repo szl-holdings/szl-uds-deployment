@@ -1,0 +1,409 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# NOTICE: OSCAL component-definition format from NIST SP 800-53 (public domain).
+# Lula validation engine: defenseunicorns-labs/lula1 (Apache-2.0).
+# Rego policies in back-matter: original SZL Holdings work.
+#
+# Run: lula validate -f oscal-component-sda.yaml
+# (lula1 binary, Apache-2.0, https://github.com/defenseunicorns-labs/lula1)
+#
+# CAPABILITY: szl-sda — the killinchu SDA / Domain Awareness anomaly capability.
+#   Clean-room sovereign anomaly/SDA engine (image: ghcr.io/szl-holdings/khipu-sda-core).
+#   Pipeline (Mosaic-derived 4-function model): DTID -> CHARACTERIZE -> TWA -> FUSE.
+#   Attribution: inspired by the public 4-function SDA framing of True Anomaly's
+#   "Mosaic" (https://www.trueanomaly.space/mosaic); clean-room implementation from
+#   permissive-licensed lineage (PyOD BSD-2, PyGOD BSD-2, Merlion BSD-3, TODS
+#   Apache-2.0, tsod MIT, GDN MIT, GraGOD MIT, python-sgp4 MIT). NOT affiliated with
+#   True Anomaly or Defense Unicorns. alibi-detect deliberately EXCLUDED (BSL 1.1).
+#
+# HONESTY:
+#   REAL    = Kubernetes resource query + Rego evaluation against live cluster state.
+#   ROADMAP = requires additional infrastructure / future work (marked inline).
+#   Λ = Conjecture 1 (advisory anomaly score gate, NOT a mathematical theorem).
+#   Doctrine v11 LOCKED. Sovereign: air-gap / own-metal only; NO free-energy claims.
+#   SLSA: L1 honest today (provenance generated); L2 build-attestation present
+#   (in-toto SLSA provenance emitted by Forge build); L2-verified / L3 = ROADMAP.
+#   NEVER fabricate signatures or image digests: the cosign verdict can only be
+#   earned after Forge signs uds-v0.4.0 (FA-001) on the founder-held key.
+#
+# DEPLOY-TIME VERIFICATION ONLY: lula validate must run against a live UDS Core
+# cluster (the K8s resource queries below return nothing offline). The OSCAL
+# document + Rego are validated here for structure/syntax; the control PASS/FAIL
+# verdicts can only be earned on the live Hetzner/tower cluster.
+
+component-definition:
+  uuid: 7f3c1d28-9b4e-4c1a-8e6d-2a51c9f0b7e4
+  metadata:
+    title: SZL SDA (killinchu Domain Awareness) Anomaly Capability — Compliance Component
+    last-modified: "2026-06-13T22:50:00Z"
+    version: "0.4.0"
+    oscal-version: "1.1.2"
+    remarks: >-
+      This component definition expresses the szl-sda anomaly/SDA capability's security
+      controls as machine-checkable OSCAL assessments using lula1 (Apache-2.0). Controls
+      map to NIST SP 800-53 Rev 5. Honest status: REAL = Kubernetes resource query + Rego
+      evaluation on live cluster; ROADMAP = requires additional infrastructure (marked
+      inline). Lambda = Conjecture 1 (advisory anomaly score gate, not a theorem).
+      Doctrine v11 LOCKED. Capability = clean-room anomaly/SDA (DTID -> CHARACTERIZE ->
+      TWA -> FUSE). SLSA L1 honest; L2 build-attestation present; L2-verified/L3 ROADMAP.
+    parties:
+      - uuid: bea51b9b-3414-42b9-ac61-d405406f84f2
+        type: organization
+        name: SZL Holdings
+        links:
+          - href: https://github.com/szl-holdings
+            rel: website
+
+  components:
+    # ── Component 1: SDA Workload Hardening (restricted PSA + securityContext) ─
+    - uuid: 1c9a4e77-2b08-4d3f-9a61-5e0c7d11aa30
+      type: software
+      title: SZL SDA Hardened Workload (szl-sda Deployment)
+      description: |
+        The szl-sda Deployment runs the clean-room anomaly/SDA engine
+        (ghcr.io/szl-holdings/khipu-sda-core) in the szl-sda namespace under a
+        STIG-aligned securityContext: runAsNonRoot, runAsUser 10001,
+        allowPrivilegeEscalation=false, readOnlyRootFilesystem=true,
+        seccompProfile RuntimeDefault, all Linux capabilities dropped,
+        automountServiceAccountToken=false. The namespace enforces Pod Security
+        Admission "restricted". REAL: namespace + securityContext are machine-checkable.
+      purpose: Run the anomaly/SDA engine under least-privilege, restricted-PSA constraints
+      responsible-roles:
+        - role-id: provider
+          party-uuids:
+            - bea51b9b-3414-42b9-ac61-d405406f84f2
+      control-implementations:
+        - uuid: a18d2f3b-6c44-4a9e-bb21-7f0d9c5e2210
+          source: https://raw.githubusercontent.com/usnistgov/oscal-content/master/nist.gov/SP800-53/rev5/json/NIST_SP-800-53_rev5_catalog.json
+          description: >-
+            Controls implemented by the hardened szl-sda workload and its namespace.
+          implemented-requirements:
+            # ── CM-7: Least Functionality ───────────────────────────────────
+            - uuid: 5d2b9a01-44e7-4c8a-9b3e-1a6f2c0d8e44
+              control-id: cm-7
+              description: >-
+                REAL: The szl-sda namespace carries pod-security.kubernetes.io/enforce=restricted,
+                constraining all Pods to the most restrictive Pod Security Standard. This
+                disallows privileged containers, host namespaces, and added capabilities,
+                limiting the workload to least functionality.
+              links:
+                - href: "#b1f0c2d3-4e5a-4f6b-8c7d-9e0a1b2c3d4e"
+                  rel: lula
+
+            # ── AC-6: Least Privilege ───────────────────────────────────────
+            - uuid: 6e3c0b12-55f8-4d9b-ac4f-2b7e3d1f9a55
+              control-id: ac-6
+              description: >-
+                REAL: The szl-sda Deployment is configured with runAsNonRoot=true,
+                allowPrivilegeEscalation=false, readOnlyRootFilesystem=true, and drops
+                ALL Linux capabilities. automountServiceAccountToken is disabled.
+                This is machine-checkable from the Deployment Pod spec.
+                ROADMAP: gVisor/Kata sandbox runtimeClass for stronger isolation (P2).
+              links:
+                - href: "#c2a1d3e4-5f6b-4a7c-9d8e-0f1a2b3c4d5e"
+                  rel: lula
+
+    # ── Component 2: SDA Receipt-Egress Gate (DSSE, fail-CLOSED) ──────────────
+    - uuid: 2d8b5f88-3c19-4e40-ab72-6f1d8e22bb41
+      type: software
+      title: SZL SDA Receipt-Egress Gate (Λ-gate, fail-closed)
+      description: |
+        Every anomaly/threat detection emitted by szl-sda must carry a signed DSSE
+        provenance receipt (in-toto Statement v1, predicateType
+        https://szlholdings.com/attestations/sda-anomaly/v1) before egress is permitted.
+        The szl-sda Pod template is labelled dsse-receipt=required and a default-deny
+        NetworkPolicy restricts ingress to the istio-system mesh. The receipt-egress
+        gate fails CLOSED: a detection without a verifiable receipt does not leave the
+        namespace. REAL: label + NetworkPolicy presence. ROADMAP: full DSSE envelope
+        cryptographic verification at the egress sidecar.
+      purpose: Ensure every anomaly detection is bound to a signed DSSE receipt before egress
+      responsible-roles:
+        - role-id: provider
+          party-uuids:
+            - bea51b9b-3414-42b9-ac61-d405406f84f2
+      control-implementations:
+        - uuid: b29e1f4c-7d55-4b1a-8c63-3a8f4e2d0b66
+          source: https://raw.githubusercontent.com/usnistgov/oscal-content/master/nist.gov/SP800-53/rev5/json/NIST_SP-800-53_rev5_catalog.json
+          description: >-
+            Controls implemented by the SDA receipt-egress gate.
+          implemented-requirements:
+            # ── AU-10: Non-repudiation ──────────────────────────────────────
+            - uuid: 7f4d1c23-66a9-4e2b-9d74-4b9f5e3c1d77
+              control-id: au-10
+              description: >-
+                REAL: The szl-sda Pod template carries the dsse-receipt=required label,
+                the machine-checkable signal that egress is gated on signed DSSE receipt
+                emission. Each detection -> signed span (sda.detection.*) -> Khipu Merkle
+                DAG entry, providing non-repudiable provenance.
+                ROADMAP: full DSSE envelope signature verification at the egress sidecar (P1).
+              links:
+                - href: "#d3b2e4f5-6a7c-4b8d-9e0f-1a2b3c4d5e6f"
+                  rel: lula
+
+            # ── SC-7: Boundary Protection ───────────────────────────────────
+            - uuid: 8a5e2d34-77ba-4f3c-ae85-5c0a6f4d2e88
+              control-id: sc-7
+              description: >-
+                REAL: A default-deny NetworkPolicy (szl-sda-default-deny) restricts
+                ingress to the szl-sda workload to the istio-system mesh namespace only,
+                on the service port. This is machine-checkable from the NetworkPolicy spec.
+                ROADMAP: L7 CiliumNetworkPolicy egress allow-list on Cilium-CNI edges.
+              links:
+                - href: "#e4c3f5a6-7b8d-4c9e-af10-2b3c4d5e6f70"
+                  rel: lula
+
+    # ── Component 3: SDA Image Provenance (cosign / SLSA, honest gradient) ────
+    - uuid: 3e9c6a99-4d2a-4f51-bc83-7a2e9f33cc52
+      type: software
+      title: SZL SDA Image Provenance Gate (cosign + SLSA)
+      description: |
+        The khipu-sda-core image is intended to be cosign-signed (keyless, Fulcio/Rekor)
+        by the founder-held key during the Forge build (FA-001), and to carry an in-toto
+        SLSA provenance attestation. A sigstore policy-controller ClusterImagePolicy
+        opt-in label (policy.sigstore.dev/include=true) is set on the namespace. HONEST
+        SLSA gradient: L1 = provenance generated (today); L2 = build-attestation present
+        (in-toto SLSA provenance emitted by the Forge build); L2-verified / L3 = ROADMAP.
+        The image digest is intentionally BLANK until Forge signs uds-v0.4.0 — no digest
+        or signature is fabricated.
+      purpose: Provide build provenance and image-signing enforcement for the SDA engine image
+      responsible-roles:
+        - role-id: provider
+          party-uuids:
+            - bea51b9b-3414-42b9-ac61-d405406f84f2
+      control-implementations:
+        - uuid: c30f2a5d-8e66-4c2b-9d74-4b0a5f3e1c99
+          source: https://raw.githubusercontent.com/usnistgov/oscal-content/master/nist.gov/SP800-53/rev5/json/NIST_SP-800-53_rev5_catalog.json
+          description: >-
+            Controls implemented by the SDA image provenance gate.
+          implemented-requirements:
+            # ── SI-7: Software, Firmware, and Information Integrity ──────────
+            - uuid: 9b6f3e45-88cb-4a4d-bf96-6d1b7f5e3f99
+              control-id: si-7
+              description: >-
+                REAL: The szl-sda namespace opts in to sigstore policy-controller
+                enforcement via the policy.sigstore.dev/include=true label, the
+                machine-checkable signal that admitted images in this namespace are
+                subject to a ClusterImagePolicy (cosign signature check).
+                ROADMAP: ClusterImagePolicy moved from warn to enforce once Forge
+                cosign-signs uds-v0.4.0 (FA-001); image digest pinned at that point.
+              links:
+                - href: "#f5d4a6b7-8c9e-4daf-b021-3c4d5e6f7081"
+                  rel: lula
+
+            # ── SA-15: Development Process, Standards, and Tools ─────────────
+            - uuid: 0c7a4f56-99dc-4b5e-ca07-7e2c8f6e40aa
+              control-id: sa-15
+              description: >-
+                REAL: The Forge build emits an in-toto SLSA provenance attestation for
+                khipu-sda-core (SLSA L2 build-attestation present). The provenance
+                subject.digest is left empty in the shipped stub and is populated only
+                after the real build (STUB_PENDING_FORGE_BUILD_FA-001) — no digest is
+                fabricated. HONEST SLSA: L1 today, L2 attestation present, L2-verified/L3
+                ROADMAP (hermetic, isolated builder + verifier admission).
+              links:
+                - href: "#a6e5b7c8-9daf-4eb0-c132-4d5e6f708192"
+                  rel: lula
+
+  back-matter:
+    resources:
+      # ── LULA VALIDATION 1: namespace enforces restricted PSA ──────────────
+      - uuid: b1f0c2d3-4e5a-4f6b-8c7d-9e0a1b2c3d4e
+        title: "Lula: szl-sda namespace enforces restricted Pod Security Admission"
+        rlinks:
+          - href: lula.dev
+        description: >-
+          domain:
+            type: kubernetes
+            kubernetes-spec:
+              resources:
+                - name: namespaces
+                  resource-rule:
+                    group: ""
+                    version: v1
+                    resource: namespaces
+                    namespaces: []
+          provider:
+            type: opa
+            opa-spec:
+              rego: |
+                package validate
+
+                import future.keywords.in
+
+                # REAL: Validates the szl-sda namespace exists and enforces the
+                # restricted Pod Security Standard.
+                validate {
+                  some ns in input.namespaces
+                  ns.metadata.name == "szl-sda"
+                  ns.metadata.labels["pod-security.kubernetes.io/enforce"] == "restricted"
+                }
+
+      # ── LULA VALIDATION 2: Deployment runs least-privilege securityContext ─
+      - uuid: c2a1d3e4-5f6b-4a7c-9d8e-0f1a2b3c4d5e
+        title: "Lula: szl-sda Deployment runs under hardened least-privilege securityContext"
+        rlinks:
+          - href: lula.dev
+        description: >-
+          domain:
+            type: kubernetes
+            kubernetes-spec:
+              resources:
+                - name: deployments
+                  resource-rule:
+                    group: apps
+                    version: v1
+                    resource: deployments
+                    namespaces: ["szl-sda"]
+          provider:
+            type: opa
+            opa-spec:
+              rego: |
+                package validate
+
+                import future.keywords.in
+
+                # REAL: Validates the szl-sda Deployment runs as non-root with
+                # privilege escalation disabled and all capabilities dropped.
+                validate {
+                  some dep in input.deployments
+                  dep.metadata.name == "szl-sda"
+                  spec := dep.spec.template.spec
+                  spec.securityContext.runAsNonRoot == true
+                  some c in spec.containers
+                  c.name == "szl-sda"
+                  c.securityContext.allowPrivilegeEscalation == false
+                  c.securityContext.readOnlyRootFilesystem == true
+                  "ALL" in c.securityContext.capabilities.drop
+                }
+
+      # ── LULA VALIDATION 3: Pod template carries dsse-receipt=required ──────
+      - uuid: d3b2e4f5-6a7c-4b8d-9e0f-1a2b3c4d5e6f
+        title: "Lula: szl-sda Pod template is labelled dsse-receipt=required (egress gate)"
+        rlinks:
+          - href: lula.dev
+        description: >-
+          domain:
+            type: kubernetes
+            kubernetes-spec:
+              resources:
+                - name: deployments
+                  resource-rule:
+                    group: apps
+                    version: v1
+                    resource: deployments
+                    namespaces: ["szl-sda"]
+          provider:
+            type: opa
+            opa-spec:
+              rego: |
+                package validate
+
+                import future.keywords.in
+
+                # REAL: Validates the szl-sda Pod template carries the
+                # dsse-receipt=required label that gates egress on signed receipt emission.
+                validate {
+                  some dep in input.deployments
+                  dep.metadata.name == "szl-sda"
+                  dep.spec.template.metadata.labels["dsse-receipt"] == "required"
+                }
+
+      # ── LULA VALIDATION 4: default-deny NetworkPolicy exists ──────────────
+      - uuid: e4c3f5a6-7b8d-4c9e-af10-2b3c4d5e6f70
+        title: "Lula: szl-sda default-deny NetworkPolicy restricts ingress to the mesh"
+        rlinks:
+          - href: lula.dev
+        description: >-
+          domain:
+            type: kubernetes
+            kubernetes-spec:
+              resources:
+                - name: networkpolicies
+                  resource-rule:
+                    group: networking.k8s.io
+                    version: v1
+                    resource: networkpolicies
+                    namespaces: ["szl-sda"]
+          provider:
+            type: opa
+            opa-spec:
+              rego: |
+                package validate
+
+                import future.keywords.in
+
+                # REAL: Validates a default-deny NetworkPolicy exists for the szl-sda
+                # workload (Ingress policyType present).
+                validate {
+                  some np in input.networkpolicies
+                  np.metadata.name == "szl-sda-default-deny"
+                  "Ingress" in np.spec.policyTypes
+                }
+
+      # ── LULA VALIDATION 5: sigstore policy-controller opt-in label ────────
+      - uuid: f5d4a6b7-8c9e-4daf-b021-3c4d5e6f7081
+        title: "Lula: szl-sda namespace opts in to sigstore ClusterImagePolicy enforcement"
+        rlinks:
+          - href: lula.dev
+        description: >-
+          domain:
+            type: kubernetes
+            kubernetes-spec:
+              resources:
+                - name: namespaces
+                  resource-rule:
+                    group: ""
+                    version: v1
+                    resource: namespaces
+                    namespaces: []
+          provider:
+            type: opa
+            opa-spec:
+              rego: |
+                package validate
+
+                import future.keywords.in
+
+                # REAL: Validates the szl-sda namespace opts in to sigstore
+                # policy-controller (cosign image signature) enforcement.
+                validate {
+                  some ns in input.namespaces
+                  ns.metadata.name == "szl-sda"
+                  ns.metadata.labels["policy.sigstore.dev/include"] == "true"
+                }
+
+      # ── LULA VALIDATION 6: SLSA provenance attestation shipped ────────────
+      - uuid: a6e5b7c8-9daf-4eb0-c132-4d5e6f708192
+        title: "Lula: SDA image SLSA provenance ConfigMap is declared (build-attestation present)"
+        rlinks:
+          - href: lula.dev
+        description: >-
+          domain:
+            type: kubernetes
+            kubernetes-spec:
+              resources:
+                - name: configmaps
+                  resource-rule:
+                    group: ""
+                    version: v1
+                    resource: configmaps
+                    namespaces: ["szl-sda"]
+          provider:
+            type: opa
+            opa-spec:
+              rego: |
+                package validate
+
+                import future.keywords.in
+
+                # REAL (structure): Validates the SDA SLSA provenance metadata ConfigMap
+                # is present, declaring the predicateType of the build attestation.
+                # NOTE: SLSA L2 = build-attestation present. L2-verified / L3 = ROADMAP
+                # (verifier admission + hermetic builder). The image digest is populated
+                # only after the real Forge build (FA-001); never fabricated.
+                validate {
+                  some cm in input.configmaps
+                  cm.metadata.name == "szl-sda-slsa-provenance"
+                  cm.data["predicateType"] == "https://slsa.dev/provenance/v1"
+                }

@@ -59,6 +59,7 @@ uds zarf package create capabilities/szl-governance --confirm
 # Lula/OSCAL compliance assessment (against a live cluster)
 lula validate -f compliance/oscal-component-a11oy.yaml
 lula validate -f compliance/oscal-component-killinchu.yaml
+lula validate -f compliance/oscal-component-sda.yaml
 ```
 
 > **Flavors:** `upstream` pins the **VERIFIED-LIVE** `uds-v0.2.0` organ images by digest
@@ -122,6 +123,7 @@ OSCAL 1.1.2 component-definitions runnable with **lula1** (Apache-2.0):
 ```bash
 lula validate -f compliance/oscal-component-a11oy.yaml
 lula validate -f compliance/oscal-component-killinchu.yaml
+lula validate -f compliance/oscal-component-sda.yaml
 ```
 
 Five NIST SP 800-53 Rev 5 controls per app, each backed by an OPA/Rego policy that

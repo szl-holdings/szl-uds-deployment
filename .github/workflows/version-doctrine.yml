@@ -1,0 +1,44 @@
+name: Version Doctrine (canonical uds-v* string)
+
+# Declares + enforces ONE canonical UDS ecosystem version (./VERSION = uds-v0.4.0).
+# Signed / digest-pinned tags (uds-v0.2.0, uds-v0.2.1 attested bundle, uds-v0.4.1
+# receipts image, uds-v0.3.0 capstone, uds-v0.1.0) are allowlisted. History/proof
+# files + truthful "never-built / deferred" records are advisory, not rewritten.
+# FORWARD-ONLY: signed bytes are NEVER renamed. See scripts/check_version_doctrine.sh.
+# Author: Yachay <yachay@szlholdings.dev> (DCO signed). ADDITIVE.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "VERSION"
+      - "**/*.md"
+      - "**/*.yaml"
+      - "**/*.yml"
+      - "**/*.cff"
+      - ".github/workflows/version-doctrine.yml"
+      - "scripts/check_version_doctrine.sh"
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  version-doctrine:
+    name: canonical version-string check
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Version doctrine check
+        run: bash scripts/check_version_doctrine.sh
