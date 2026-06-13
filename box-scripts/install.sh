@@ -350,7 +350,14 @@ done
 # edited on the host (editing it would make box-scripts-drift-check.service
 # drift from its own committed copy and the watcher would alert on itself).
 # A plain re-install with SELF_HEAL unset leaves the current state untouched.
-selfheal_dropin_dir="/etc/systemd/system/box-scripts-drift-check.service.d"
+# >>> SELF_HEAL_RECONCILE_BEGIN  (self-contained, testable block)
+# Everything between the BEGIN/END sentinels drives ONLY off the SELF_HEAL /
+# WATCH_SBIN / WATCH_UNITS / SELFHEAL_DROPIN_DIR environment, so it can be sliced
+# out and exercised no-root in CI by scripts/self-heal-flip-guard.sh. Keep it
+# self-contained (no reliance on variables defined elsewhere in install.sh).
+# SELFHEAL_DROPIN_DIR defaults to the real on-box path; the guard overrides it
+# to a throwaway dir.
+selfheal_dropin_dir="${SELFHEAL_DROPIN_DIR:-/etc/systemd/system/box-scripts-drift-check.service.d}"
 selfheal_dropin="$selfheal_dropin_dir/10-self-heal.conf"
 case "${SELF_HEAL:-}" in
   1|true|yes|on)
@@ -392,6 +399,7 @@ case "${SELF_HEAL:-}" in
     echo "[install] WARN ignoring unrecognized SELF_HEAL='${SELF_HEAL}' (use 1/0); leaving drop-in untouched" >&2
     ;;
 esac
+# <<< SELF_HEAL_RECONCILE_END
 
 echo "[install] reloading systemd + enabling units ..."
 systemctl daemon-reload
