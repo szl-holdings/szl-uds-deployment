@@ -137,10 +137,20 @@ step is what keeps the RWO PVC from deadlocking the rollout.
 
 ### Status
 
-- **Proven on `uds-szl-demo`** (k3d, the demo box): dry-run + `--yes` + durability
-  check, including a planted `shards/` bucket to confirm the shard-aware wipe
-  clears both layouts.
-- **Tower:** pending on-site execution — the tower cluster is not reachable
-  remotely, so steps 1–3 above are an operator task to run at the event machine.
-  The script is parameterized (`KCONTEXT` + the `NS`/`DEPLOY`/… vars) and
-  shard-correct so it carries over without code changes.
+- **Proven on `uds-szl-demo`** (k3d, the demo box). Re-verified live **2026-06-13**:
+  dry-run → `--yes` → durability (pod-delete + rehydrate). Wiped a 6-receipt chain
+  (flat root **plus** a `shards/00000000` bucket — confirming the shard-aware wipe
+  clears both layouts) → rebooted to genesis → seeded 3 server-signed receipts:
+  `szl_chain_length=3`, `szl_chain_valid=1`, `/pubkey signed=True`
+  (`keyid=szl-receipts-ed25519-2026`), `/healthz ok`. Pod-delete then rehydrated
+  from the head pointer: `chain_index=3 persisted=3 rehydrated=3 backend=file
+  signed=True`.
+- **Tower:** still **pending on-site execution**. The tower is the physical on-site
+  Warhacker event machine — it has no remote kubeconfig and is not a tailnet peer,
+  so it is unreachable from the demo box / build environment. A live tower run is a
+  hands-on operator step and is **not fabricated here** (honesty doctrine). The
+  script is parameterized (`KCONTEXT` + the `NS`/`DEPLOY`/… vars) and shard-correct,
+  so it carries over to the tower without code changes: run the discovery commands
+  above to confirm NS/DEPLOY/CONTAINER/SELECTOR, then
+  `KCONTEXT=<tower-context> bash scripts/reset-receipt-chain.sh` (dry-run) → `--yes`
+  → the durability check.

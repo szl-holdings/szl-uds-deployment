@@ -1,0 +1,61 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# reset-script-guard.yml — Guard scripts/reset-receipt-chain.sh from silently
+# regressing to a flat-only wipe/count that misses the sharded layout.
+#
+# WHY: the receipts-server stores a large chain under $STORE/shards/<bucket>/
+# once it grows past SZL_RECEIPT_SHARD_SIZE (default 10000). The reset script
+# previously only wiped/counted the flat store root ($STORE/*.json), so a reset
+# of a large (sharded) chain — exactly the case a reset is for — would silently
+# leave the bulk of it behind. That was fixed (shard-aware `rm -rf $STORE/shards`
+# + recursive `find ... -name '*.json'` count) but had no guard; a future edit
+# could quietly reintroduce the gap.
+#
+# scripts/reset-script-checks.sh statically asserts both invariants (pure
+# grep/awk, no cluster). scripts/reset-script-checks.test.sh is a negative-
+# fixture self-test that applies deliberate regressions to a COPY of the reset
+# script and asserts the guard FAILS on each, so the guard can't pass vacuously.
+# The self-test runs first and the guard job depends on it.
+
+name: Reset-script Shard-safety Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves the
+  # guard's assertions still FAIL on a broken reset script (i.e. are not
+  # silently passing). The guard job depends on it so a broken assertion blocks
+  # the build before it can wave a regression through.
+  self-test:
+    name: Self-test the guard (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/reset-script-checks.test.sh
+
+  guard:
+    name: Reset script wipes + counts the sharded layout
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: reset-receipt-chain.sh parses clean (bash -n)
+        run: bash -n scripts/reset-receipt-chain.sh
+
+      - name: Wipe and count cover the sharded layout, not just the flat root
+        run: bash scripts/reset-script-checks.sh all
+
+      - name: The reset-script shard-safety invariants are intact
+        run: echo "scripts/reset-receipt-chain.sh wipes (rm -rf \$STORE/shards) and counts (find ... -name '*.json') the sharded layout."
