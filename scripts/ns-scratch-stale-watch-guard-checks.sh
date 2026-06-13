@@ -28,8 +28,10 @@
 # behavioural check builds a hermetic sandbox (stub `k3d`/`kubectl`, a fake
 # `szl-ns-scratch list-stale`, and a capturing notifier) and actually runs
 # box-scripts/sbin/szl-ns-scratch-stale-watch against fixture scenarios, then
-# asserts the observed behaviour. The static checks (exists/parses, wired,
-# documented) mirror the sibling ns-scratch-watch-guard.
+# asserts the observed behaviour. That sandbox plus the edge-lifecycle / no-op
+# runners are SHARED across the scratch-namespace alarm guards in
+# scripts/lib/alarm-guard-sandbox.sh (sourced below). The static checks
+# (exists/parses, wired, documented) mirror the sibling ns-scratch-watch-guard.
 #
 # The check logic is extracted here (out of the workflow) so it can be UNIT
 # TESTED: ns-scratch-stale-watch-guard-checks.test.sh feeds each check a
@@ -48,91 +50,15 @@
 
 set -uo pipefail
 
-# err FILE MESSAGE — emit a GitHub Actions error annotation.
-err() { echo "::error file=$1::$2"; }
+# Shared hermetic sandbox + edge-lifecycle / no-op runners (defines err,
+# _mk_sandbox, _run, _pages, _alarm_edge_lifecycle, _alarm_noop_safety).
+# shellcheck source=scripts/lib/alarm-guard-sandbox.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/alarm-guard-sandbox.sh"
 
 # Paths (relative to a repo root) of the files this guard inspects.
 WATCH_REL="box-scripts/sbin/szl-ns-scratch-stale-watch"
 INSTALL_REL="box-scripts/install.sh"
 README_REL="box-scripts/README.md"
-
-# ── Sandbox plumbing ──────────────────────────────────────────────────────────
-# _mk_sandbox — build a hermetic dir with stub k3d/kubectl/notifier + a fake
-# `szl-ns-scratch list-stale`, and echo its path. The real stale-watch script is
-# run with PATH/SCRATCH_BIN/NOTIFY_CMD/STATE_DIR pointed here so NOTHING touches a
-# real cluster or pages a real channel.
-#
-# Stub knobs (env, read by the stubs at run time):
-#   K3D_RC     : exit code of `k3d kubeconfig write` (0 = cluster present)
-#   READYZ_RC  : exit code of the kubectl `/readyz` probe (0 = reachable)
-#   SCEN       : list-stale fixture — expired | none | nothing
-_mk_sandbox() {
-  local d; d="$(mktemp -d)"
-  mkdir -p "$d/bin" "$d/state" "$d/log"
-
-  cat >"$d/bin/k3d" <<'EOS'
-#!/usr/bin/env bash
-# k3d kubeconfig write <cluster> -> print a kubeconfig path (or fail if absent).
-[ "${K3D_RC:-0}" -ne 0 ] && exit "${K3D_RC}"
-echo "${FAKE_KC:-/dev/null}"
-EOS
-
-  cat >"$d/bin/kubectl" <<'EOS'
-#!/usr/bin/env bash
-# Record every invocation (so the guard can prove no destructive call is made),
-# then answer only the readiness probe.
-echo "$*" >>"${KUBECTL_LOG:-/dev/null}"
-case " $* " in
-  *" --raw=/readyz "*|*"--raw=/readyz"*) exit "${READYZ_RC:-0}" ;;
-esac
-exit 0
-EOS
-
-  cat >"$d/bin/notify-stub" <<'EOS'
-#!/usr/bin/env bash
-# Capture one page per call. The trailing sentinel lets the guard count pages.
-{ cat; printf '\n__NOTIFY_END__\n'; } >>"${NOTIFY_CAPTURE:-/dev/null}"
-EOS
-
-  cat >"$d/scratch" <<'EOS'
-#!/usr/bin/env bash
-# Fake `szl-ns-scratch`. Only list-stale is exercised. Line shape mirrors the
-# real tool: "<ns>  age=Xd threshold=Yd owner=Z".
-[ "$1" = "list-stale" ] || exit 0
-case "${SCEN:-none}" in
-  expired)
-    printf '%s\n' \
-      "szl-foo  age=20d threshold=14d owner=rosa" \
-      "szl-bar  age=30d threshold=14d owner=joe" ;;
-  none) : ;;
-  nothing) echo "[szl-ns-scratch] cluster 'uds-szl-demo' not present; nothing to do." >&2 ;;
-esac
-exit 0
-EOS
-
-  chmod +x "$d/bin/k3d" "$d/bin/kubectl" "$d/bin/notify-stub" "$d/scratch"
-  : >"$d/notify.cap"
-  : >"$d/kubectl.log"
-  echo "$d"
-}
-
-# _run TARGET SANDBOX SCEN [K3D_RC] [READYZ_RC] — run the real stale-watch script
-# against the sandbox. State persists in the sandbox across calls so edge
-# transitions can be exercised. Sets global RUN_RC.
-_run() {
-  local target="$1" d="$2" scen="$3" k3drc="${4:-0}" readyzrc="${5:-0}"
-  PATH="$d/bin:$PATH" \
-  SCEN="$scen" K3D_RC="$k3drc" READYZ_RC="$readyzrc" FAKE_KC=/dev/null \
-  SCRATCH_BIN="$d/scratch" \
-  NOTIFY_CMD="$d/bin/notify-stub" NOTIFY_CAPTURE="$d/notify.cap" \
-  KUBECTL_LOG="$d/kubectl.log" \
-  STATE_DIR="$d/state" LOG_DIR="$d/log" \
-    bash "$target"
-  RUN_RC=$?
-}
-
-# _pages FILE — number of pages captured.
-_pages() { grep -c '__NOTIFY_END__' "$1" 2>/dev/null || true; }
 
 # ── Check 1 ───────────────────────────────────────────────────────────────────
 # The guard script exists and parses clean under `bash -n`. If it is missing or
@@ -182,80 +108,28 @@ chk2() {
 #   B  still expired (prev ALERT)     -> DE-DUPE, zero pages
 #   C  none present (prev ALERT)      -> RECOVERED, page exactly once
 #   D  none present (prev OK)         -> steady, zero pages
+# The transition driver is shared (scripts/lib/alarm-guard-sandbox.sh); this
+# check pins the stale-watch ALERT body marker.
 chk3() {
   local root="${1:-.}"
   local F="$root/$WATCH_REL"
   test -f "$F" || { err "$F" "missing — required for the ns-scratch-stale-watch guard"; return 1; }
 
-  local d cap n; d="$(_mk_sandbox)"; cap="$d/notify.cap"
-
-  # A — expired present, fresh state.
-  : >"$cap"
-  _run "$F" "$d" expired
-  [ "$RUN_RC" -eq 0 ] || { err "$F" "REGRESSION — run errored (rc=$RUN_RC) when an expired scratch namespace was present."; rm -rf "$d"; return 1; }
-  n="$(_pages "$cap")"
-  [ "$n" -eq 1 ] || { err "$F" "REGRESSION — an expired scratch namespace must page EXACTLY once on the OK->ALERT edge (got $n)."; rm -rf "$d"; return 1; }
-  grep -Fq 'PAST their declared expiry' "$cap" || { err "$F" "REGRESSION — the ALERT page lost its 'PAST their declared expiry' body."; rm -rf "$d"; return 1; }
-  grep -q '"overall":"ALERT"' "$d/state/status.json" 2>/dev/null || { err "$F" "REGRESSION — status.json is not ALERT while an expired namespace is present."; rm -rf "$d"; return 1; }
-  [ "$(cat "$d/state/last_status" 2>/dev/null)" = "ALERT" ] || { err "$F" "REGRESSION — last_status not persisted as ALERT (de-dupe state lost)."; rm -rf "$d"; return 1; }
-
-  # B — still expired (prev ALERT): must de-dupe.
-  : >"$cap"
-  _run "$F" "$d" expired
-  n="$(_pages "$cap")"
-  [ "$n" -eq 0 ] || { err "$F" "REGRESSION — de-dupe broken: re-paged while still expired (got $n, want 0). This is the alert-storm failure."; rm -rf "$d"; return 1; }
-
-  # C — none present (prev ALERT): RECOVERED once.
-  : >"$cap"
-  _run "$F" "$d" none
-  n="$(_pages "$cap")"
-  [ "$n" -eq 1 ] || { err "$F" "REGRESSION — recovery (all expired cleaned up) must page EXACTLY once (got $n)."; rm -rf "$d"; return 1; }
-  grep -Fq 'RECOVERED' "$cap" || { err "$F" "REGRESSION — the recovery page lost its 'RECOVERED' marker."; rm -rf "$d"; return 1; }
-  grep -q '"overall":"OK"' "$d/state/status.json" 2>/dev/null || { err "$F" "REGRESSION — status.json is not OK after recovery."; rm -rf "$d"; return 1; }
-
-  # D — none present (prev OK): steady, silent.
-  : >"$cap"
-  _run "$F" "$d" none
-  n="$(_pages "$cap")"
-  [ "$n" -eq 0 ] || { err "$F" "REGRESSION — a steady-OK cycle must not page (got $n)."; rm -rf "$d"; return 1; }
-
-  rm -rf "$d"
+  _alarm_edge_lifecycle "$F" 'PAST their declared expiry' || return 1
   echo "OK: edge lifecycle — expired->ALERT(1), still-expired de-dupe(0), recovered(1), steady-OK(0)"
 }
 
 # ── Check 4 ───────────────────────────────────────────────────────────────────
 # No-op safety (BEHAVIOURAL): a down/unreachable cluster, or the scratch tool's
 # "nothing to do" sentinel, must each exit 0 with NO page — and must never emit a
-# FALSE recovered (so prev=ALERT survives a transient outage).
+# FALSE recovered (so prev=ALERT survives a transient outage). The driver is
+# shared (scripts/lib/alarm-guard-sandbox.sh).
 chk4() {
   local root="${1:-.}"
   local F="$root/$WATCH_REL"
   test -f "$F" || { err "$F" "missing — required for the ns-scratch-stale-watch guard"; return 1; }
 
-  local d
-  # cluster absent (k3d kubeconfig write fails).
-  d="$(_mk_sandbox)"; echo ALERT >"$d/state/last_status"
-  _run "$F" "$d" expired 1 0
-  [ "$RUN_RC" -eq 0 ] || { err "$F" "REGRESSION — cluster-absent must NO-OP (exit 0); got rc=$RUN_RC. A stopped k3d cluster would now error/page."; rm -rf "$d"; return 1; }
-  [ "$(_pages "$d/notify.cap")" -eq 0 ] || { err "$F" "REGRESSION — cluster-absent paged (got a page); a powered-down demo cluster must be silent."; rm -rf "$d"; return 1; }
-  [ "$(cat "$d/state/last_status" 2>/dev/null)" = "ALERT" ] || { err "$F" "REGRESSION — cluster-absent flipped last_status (a transient outage would later mask a real ALERT or fake a RECOVERED)."; rm -rf "$d"; return 1; }
-  rm -rf "$d"
-
-  # cluster unreachable (readyz probe fails).
-  d="$(_mk_sandbox)"; echo ALERT >"$d/state/last_status"
-  _run "$F" "$d" expired 0 1
-  [ "$RUN_RC" -eq 0 ] || { err "$F" "REGRESSION — cluster-unreachable must NO-OP (exit 0); got rc=$RUN_RC."; rm -rf "$d"; return 1; }
-  [ "$(_pages "$d/notify.cap")" -eq 0 ] || { err "$F" "REGRESSION — cluster-unreachable paged."; rm -rf "$d"; return 1; }
-  rm -rf "$d"
-
-  # scratch tool "nothing to do" sentinel, with prev=ALERT: must NOT false-recover.
-  d="$(_mk_sandbox)"; echo ALERT >"$d/state/last_status"
-  _run "$F" "$d" nothing
-  [ "$RUN_RC" -eq 0 ] || { err "$F" "REGRESSION — scratch-tool no-op must exit 0; got rc=$RUN_RC."; rm -rf "$d"; return 1; }
-  [ "$(_pages "$d/notify.cap")" -eq 0 ] || { err "$F" "REGRESSION — scratch-tool no-op produced a (false) page; an empty result during an outage must not be read as RECOVERED."; rm -rf "$d"; return 1; }
-  [ "$(cat "$d/state/last_status" 2>/dev/null)" = "ALERT" ] || { err "$F" "REGRESSION — scratch-tool no-op flipped last_status away from ALERT (would mask the later real RECOVERED edge)."; rm -rf "$d"; return 1; }
-  rm -rf "$d"
-
+  _alarm_noop_safety "$F" || return 1
   echo "OK: cluster-absent / unreachable / scratch no-op all exit 0, never page, never false-recover"
 }
 

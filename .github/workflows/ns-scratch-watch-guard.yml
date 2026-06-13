@@ -9,43 +9,42 @@
 # `szl-ns-scratch list-unlabeled` every ~10 min and pages the team the moment an
 # UNKNOWN (unmanaged + unlabeled) scratch namespace appears — so it gets labeled
 # or removed while it is still obvious who made it, before a later cleanup
-# mistakes it for live work. Its value rests on a few fragile behaviours that
+# mistakes it for live work. Its value rests on a few fragile invariants that
 # produce NO visible symptom when broken until a real drift goes unalerted:
-#   * an UNKNOWN namespace pages EXACTLY once (OK->ALERT edge);
-#   * while still present it DE-DUPEs (never re-pages — no alert storm);
-#   * once cleaned up it pages RECOVERED once, then stays quiet;
-#   * cluster absent / unreachable / the scratch tool's "nothing to do" sentinel
-#     are each a true NO-OP (exit 0, no page) and never a FALSE recovered;
-#   * it NEVER auto-deletes a namespace (cleanup confirms with the owner);
+#   * it still ASKS the audit tool (`szl-ns-scratch list-unlabeled`);
+#   * it is EDGE-triggered (reads + writes a last_status state file) so it pages
+#     exactly once on OK->problem and once on RECOVERED, never every cycle;
+#   * it NO-OPs (exit 0, no page) when the cluster is absent/unreachable;
 #   * it stays WIRED into install.sh (copied + timer enabled) and documented in
 #     README.md, or a box rebuild silently ships without the alarm.
 # A sibling refactor of the script, install.sh, or README could quietly drop any
 # of these, re-opening the exact "an untracked scratch goes unalerted" hole this
 # alarm closed.
 #
-# This guard mirrors ns-scratch-stale-watch-guard.yml: instead of a pure
-# text/lint check, scripts/ns-scratch-watch-guard-checks.sh EXERCISES the real
-# script — it builds a hermetic sandbox (stub k3d/kubectl, a fake `szl-ns-scratch
-# list-unlabeled`, a capturing notifier) and actually RUNS the alarm against
-# fixture scenarios (unknown present, none present, cluster absent/unreachable,
-# scratch no-op), asserting the observed behaviour. The logic was extracted from
-# this workflow so it can be UNIT TESTED:
-# scripts/ns-scratch-watch-guard-checks.test.sh feeds each check a
-# deliberately-BROKEN copy of the script and asserts the check FAILS, plus that
-# the pristine repo PASSES. That self-test runs as the `self-test` job below, so a
-# future edit that neuters a check (passing vacuously — green while guarding
-# nothing) is caught here.
+# The check logic lives in scripts/ns-scratch-watch-guard-checks.sh. chk1..chk6
+# are a pure text/lint pass (no cluster); chk7..chk8 EXERCISE the real script
+# through the shared alarm-guard harness (scripts/lib/alarm-guard-sandbox.sh —
+# the same sandbox + edge-lifecycle / no-op runners the sibling
+# ns-scratch-stale-watch-guard uses), driving it against fixture scenarios and
+# asserting the observed behaviour. The checks were extracted from this workflow
+# so they can be UNIT TESTED: scripts/ns-scratch-watch-guard-checks.test.sh feeds
+# each check a deliberately-BROKEN fixture and asserts the check FAILS, plus
+# asserts the pristine repo PASSES. That self-test runs as the `self-test` job
+# below, so a future edit that neuters a check (passing vacuously — green while
+# guarding nothing) is caught here.
 #
 # The asserted invariants:
 #   chk1  szl-ns-scratch-watch exists and parses clean (bash -n)
 #   chk2  it shells out to `$SCRATCH_BIN list-unlabeled` (the audit tool)
-#   chk3  edge lifecycle: unknown->ALERT(1), still-present de-dupe(0),
-#         recovered(1), steady-OK(0)
-#   chk4  cluster absent / unreachable / scratch no-op each exit 0, never page,
-#         never false-recover
-#   chk5  never auto-deletes (no `kubectl delete` in source or at runtime)
-#   chk6  wired into install.sh (script + units copied, timer enabled)
-#   chk7  documented in README.md (scratch-namespace alarm section)
+#   chk3  edge-triggered: reads+writes last_status, both edge guards present, and
+#         makes EXACTLY TWO notify calls (one OK->ALERT, one RECOVERED)
+#   chk4  cluster-absent AND cluster-unreachable paths both no-op (exit 0)
+#   chk5  wired into install.sh (script + units copied, timer enabled)
+#   chk6  documented in README.md (scratch-namespace alarm section)
+#   chk7  edge lifecycle (BEHAVIOURAL): unlabeled->ALERT(1), still-present
+#         de-dupe(0), recovered(1), steady-OK(0)
+#   chk8  no-op safety (BEHAVIOURAL): cluster absent / unreachable / scratch
+#         no-op each exit 0, never page, never false-recover
 
 name: NS Scratch Watch Guard
 
@@ -86,20 +85,23 @@ jobs:
       - name: Check 2 — shells out to szl-ns-scratch list-unlabeled
         run: bash scripts/ns-scratch-watch-guard-checks.sh chk2 .
 
-      - name: Check 3 — edge lifecycle (alert / de-dupe / recovered / steady)
+      - name: Check 3 — edge-triggered (state file + exactly two pushes)
         run: bash scripts/ns-scratch-watch-guard-checks.sh chk3 .
 
-      - name: Check 4 — cluster-absent / unreachable / scratch no-op
+      - name: Check 4 — cluster-absent / unreachable no-op
         run: bash scripts/ns-scratch-watch-guard-checks.sh chk4 .
 
-      - name: Check 5 — never auto-deletes
+      - name: Check 5 — wired into install.sh (script + timer enabled)
         run: bash scripts/ns-scratch-watch-guard-checks.sh chk5 .
 
-      - name: Check 6 — wired into install.sh (script + timer enabled)
+      - name: Check 6 — documented in README.md
         run: bash scripts/ns-scratch-watch-guard-checks.sh chk6 .
 
-      - name: Check 7 — documented in README.md
+      - name: Check 7 — edge lifecycle (behavioural; alert / de-dupe / recovered / steady)
         run: bash scripts/ns-scratch-watch-guard-checks.sh chk7 .
+
+      - name: Check 8 — cluster-absent / unreachable / scratch no-op (behavioural)
+        run: bash scripts/ns-scratch-watch-guard-checks.sh chk8 .
 
       - name: Scratch-namespace alarm is intact
         run: echo "The szl-ns-scratch-watch untracked-scratch-namespace alarm is intact."
