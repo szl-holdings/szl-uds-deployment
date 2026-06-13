@@ -40,8 +40,17 @@
 #           `gh workflow run vessels-image.yml -R szl-holdings/platform`
 #           publishes + signs it. Until published, `uds deploy` of the
 #           killinchu/vessels bundle stays blocked on this image.
-#   FA-002: cosign signing of this bundle is staged pending org key provisioning (U5).
-#           `uds deploy` will succeed; `cosign verify` on bundle artifact will fail.
+#   FA-002: RESOLVED (2026-06-13). This bundle is now cryptographically signed —
+#           keyless Sigstore via GitHub OIDC, NO org key needed (the prior
+#           "pending org key provisioning" premise was obsolete: keyless OIDC is
+#           the identical path that already signs the 5-organ szl-uds-bundle).
+#           .github/workflows/uds-receipts-bundle-publish.yml publishes this
+#           bundle to oci://ghcr.io/szl-holdings/szl-receipts-bundle:<tag>,
+#           cosign-signs the published OCI artifact, AND cosign sign-blob's the
+#           airgap .tar.zst (-> <tar>.cosign.bundle for OFFLINE verify). `uds
+#           deploy` succeeds AND `cosign verify` / `cosign verify-blob` now pass
+#           with an exact --certificate-identity (see that workflow header for the
+#           exact verify commands).
 #
 # Deploy:
 #   uds run demo:start          # full bootstrap

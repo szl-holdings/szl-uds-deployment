@@ -1,0 +1,353 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# uds-receipts-bundle-publish.yml
+#
+# Publishes + cryptographically signs the DEPLOYABLE receipts bundle — the root
+# `uds-bundle.yaml` (metadata.name: szl-receipts-bundle) that wraps Zarf init +
+# UDS Core (slim) + the szl-receipts add-on into ONE airgap-deployable artifact:
+#
+#     uds-bundle-szl-receipts-bundle-amd64-<version>.tar.zst
+#     oci://ghcr.io/szl-holdings/szl-receipts-bundle:<tag>   (+ :latest)
+#
+# Why this exists (closes FA-002):
+#   The zarf PACKAGE inside the bundle is already cosign-signed by
+#   `zarf-package-sign.yml`, but the WHOLE bundle artifact was NOT signed — a
+#   verifier of the airgap tarball (or the published OCI bundle) could only check
+#   the inner package layer, not the bundle's provenance. This workflow signs the
+#   bundle itself, mirroring exactly how the 5-organ bundle is signed in
+#   `uds-bundle-publish.yml` and how the package is signed in `zarf-package-sign.yml`.
+#
+# Signing is keyless Sigstore via GitHub OIDC — NO private key / org key needed
+# (the FA-002 "gated on org signing key" premise is obsolete: keyless OIDC is the
+# same path already proven by uds-bundle-publish.yml). Two complementary signatures
+# are produced:
+#   1. OCI signature on the published ghcr.io bundle ref (`cosign sign`)
+#   2. Detached airgap signature on the local .tar.zst (`cosign sign-blob` ->
+#      <tar>.cosign.bundle), so a pulled/airgapped tarball verifies OFFLINE with
+#      `cosign verify-blob` (no registry needed).
+# An SBOM (syft) is attached as a keyless DSSE attestation to both.
+#
+# Verify the published OCI bundle (no key file, no login once public):
+#   cosign verify ghcr.io/szl-holdings/szl-receipts-bundle:<tag> \
+#     --certificate-identity "https://github.com/szl-holdings/szl-uds-deployment/.github/workflows/uds-receipts-bundle-publish.yml@refs/heads/main" \
+#     --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+#
+# Verify the airgap tarball OFFLINE:
+#   cosign verify-blob \
+#     --bundle uds-bundle-szl-receipts-bundle-amd64-<version>.tar.zst.cosign.bundle \
+#     --certificate-identity "https://github.com/szl-holdings/szl-uds-deployment/.github/workflows/uds-receipts-bundle-publish.yml@refs/heads/main" \
+#     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+#     uds-bundle-szl-receipts-bundle-amd64-<version>.tar.zst
+#
+# Supply-chain posture: SLSA L1/L2 (honest) — keyless Sigstore (Fulcio cert +
+# Rekor transparency log) + Syft SBOM. NO SLSA L3 / Iron Bank / FedRAMP.
+#
+# References:
+#   UDS CLI:   https://github.com/defenseunicorns/uds-cli
+#   Zarf:      https://github.com/zarf-dev/zarf/releases/tag/v0.77.0
+#   Keyless:   https://docs.sigstore.dev/cosign/signing/keyless/
+
+name: UDS Receipts Bundle Publish + Sign
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Bundle OCI tag (e.g. uds-v0.4.0)'
+        required: true
+        default: 'uds-v0.4.0'
+  push:
+    tags:
+      - 'receipts-bundle-v*'
+
+permissions:
+  contents: read
+
+env:
+  ZARF_VERSION: "v0.77.0"
+  UDS_CLI_VERSION: "v0.31.0"
+  COSIGN_VERSION: "v2.4.3"
+  SYFT_VERSION: "v1.18.1"
+  REGISTRY: "ghcr.io"
+  ORG: "szl-holdings"
+  BUNDLE_NAME: "szl-receipts-bundle"
+
+jobs:
+  publish-sign:
+    name: Build, Publish & Sign Receipts Bundle (amd64)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read     # checkout
+      id-token: write    # keyless cosign OIDC token exchange (Fulcio)
+      packages: write    # push bundle + signatures to ghcr.io
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android || true
+          df -h /
+
+      # ── Resolve OCI tag + bundle metadata version ──────────────────────────
+      # The OCI tag is e.g. uds-v0.4.0; the bundle metadata version (read from
+      # uds-bundle.yaml) names the built tarball, so derive it instead of
+      # hardcoding so a future bundle version bump flows through automatically.
+      - name: Resolve version
+        id: version
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME#receipts-bundle-}"
+          fi
+          # Bundle metadata version (top-level metadata: version: X.Y.Z in uds-bundle.yaml)
+          META_VERSION="$(awk '/^metadata:/{m=1} m&&/^[[:space:]]+version:/{gsub(/[" ]/,"",$2);print $2;exit}' uds-bundle.yaml)"
+          : "${META_VERSION:=0.4.0}"
+          echo "tag=${TAG}"                  >> "$GITHUB_OUTPUT"
+          echo "meta_version=${META_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Resolved OCI tag=${TAG}  bundle metadata version=${META_VERSION}"
+
+      # ── Install Zarf (direct download; no action dependency) ───────────────
+      - name: Install Zarf ${{ env.ZARF_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/zarf-dev/zarf/releases/download/${ZARF_VERSION}/zarf_${ZARF_VERSION}_Linux_amd64" -o zarf
+          sudo install -m 0755 zarf /usr/local/bin/zarf
+          zarf version
+
+      # ── Build uds-cli from source ──────────────────────────────────────────
+      # The 196MB uds-cli release binary truncates to 0 bytes on hardened GitHub
+      # runners (HTTP 200, curl_exit=23). Both uds-bundle-publish.yml and
+      # bundle-build-guard.yml build it from source via the Go module proxy (many
+      # small objects); mirror that proven path here.
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: "1.26.0"
+          cache: false
+      - name: Build uds-cli ${{ env.UDS_CLI_VERSION }} from source
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          set -uo pipefail
+          echo "uds-cli build: clone+build ${UDS_CLI_VERSION}"
+          go version
+          set +e
+          git clone --depth 1 --branch "${UDS_CLI_VERSION}" \
+            https://github.com/defenseunicorns/uds-cli.git uds-cli-src
+          CRC=$?
+          echo "uds-cli clone rc=${CRC}"
+          if [ "${CRC}" -eq 0 ]; then
+            ( cd uds-cli-src && \
+              go build -ldflags "-s -w -X github.com/defenseunicorns/uds-cli/src/config.CLIVersion=${UDS_CLI_VERSION}" \
+                -o /tmp/uds main.go )
+            echo "uds-cli go_build rc=$?"
+          fi
+          set -e
+          SZ=0; [ -f /tmp/uds ] && SZ=$(stat -c%s /tmp/uds 2>/dev/null || echo 0)
+          echo "uds-cli bin_size=${SZ}"
+          if [ ! -f /tmp/uds ] || [ "${SZ}" -lt 50000000 ]; then
+            echo "::error title=uds-cli-build-failed::source build did not produce a usable binary"
+            exit 1
+          fi
+          sudo install -m 0755 /tmp/uds /usr/local/bin/uds
+      - name: Verify uds-cli
+        run: |
+          set -euo pipefail
+          test -x /usr/local/bin/uds
+          uds version || echo "(uds version self-check returned non-zero; binary is installed, continuing)"
+
+      # ── Install cosign + syft ──────────────────────────────────────────────
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+      - name: Verify cosign
+        run: cosign version
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          syft-version: ${{ env.SYFT_VERSION }}
+
+      # ── Log in to ghcr.io ──────────────────────────────────────────────────
+      # Prefer the org-owner PAT (can always CREATE a new org package); fall back
+      # to the built-in GITHUB_TOKEN (a package created by THIS repo's Actions is
+      # auto-linked to the repo and therefore writable by the built-in token —
+      # the same path that lets zarf-package-sign.yml publish szl-receipts).
+      # uds publish (oras) reuses these docker credentials.
+      - name: Log in to ghcr.io
+        env:
+          GHCR_PUBLISH_TOKEN: ${{ secrets.GHCR_PUBLISH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${GHCR_PUBLISH_TOKEN:-}" ]; then
+            echo "${GHCR_PUBLISH_TOKEN}" | docker login "${REGISTRY}" -u "${GITHUB_REPOSITORY_OWNER}" --password-stdin
+            echo "Logged in to ${REGISTRY} with org-owner GHCR_PUBLISH_TOKEN"
+          else
+            echo "${GITHUB_TOKEN}" | docker login "${REGISTRY}" -u "${GITHUB_ACTOR}" --password-stdin
+            echo "Logged in to ${REGISTRY} with built-in GITHUB_TOKEN (package auto-links to this repo)"
+          fi
+
+      # ── Build the szl-receipts member Zarf package (flavor=upstream) ───────
+      # The bundle's only LOCAL member is ./packages/szl-receipts (ref:
+      # 0.4.0-upstream). uds create resolves it as
+      # packages/szl-receipts/zarf-package-szl-receipts-amd64-<ref>.tar.zst, so it
+      # MUST be built --flavor upstream (the szl-receipts-server component is
+      # only.flavor: upstream) and emitted INTO packages/szl-receipts/. init +
+      # core-* members are pulled from their OCI refs by `uds create`.
+      - name: Build szl-receipts member package
+        run: |
+          set -euo pipefail
+          # szl-receipts-pepr-policy optionally imports ../../dist/pepr; create a
+          # minimal placeholder so zarf lint resolves the import in a clean CI
+          # checkout (mirrors zarf-package-sign.yml).
+          mkdir -p dist/pepr
+          printf 'kind: ZarfPackageConfig\nmetadata:\n  name: szl-receipt-policy\n  version: "0.0.0"\n  description: "CI placeholder"\ncomponents:\n  - name: szl-receipt-policy\n    required: false\n    description: "CI placeholder component"\n' > dist/pepr/zarf.yaml
+          zarf package create packages/szl-receipts \
+            --flavor upstream \
+            --architecture amd64 \
+            --output packages/szl-receipts \
+            --confirm \
+            --no-progress
+          ls -lh packages/szl-receipts/zarf-package-szl-receipts-*.tar.zst
+
+      # ── Compose the deployable receipts bundle ─────────────────────────────
+      # init + core-* are keyless-signed by DIFFERENT identities (zarf-dev /
+      # defenseunicorns), so --skip-signature-validation is required for compose
+      # (mirrors the `uds run bundle` task). The OUR-side provenance is the bundle
+      # signature this workflow then applies.
+      - name: Create UDS receipts bundle
+        run: |
+          set -euo pipefail
+          uds create . \
+            --skip-signature-validation \
+            --confirm \
+            --no-progress \
+            --output dist
+          echo "Bundle tarball:"
+          ls -lh dist/uds-bundle-${BUNDLE_NAME}-amd64-*.tar.zst
+
+      - name: Resolve bundle tarball path
+        id: bundle
+        run: |
+          set -euo pipefail
+          BUNDLE_TAR="$(ls dist/uds-bundle-${BUNDLE_NAME}-amd64-*.tar.zst | head -1)"
+          test -f "$BUNDLE_TAR"
+          echo "tar=${BUNDLE_TAR}" >> "$GITHUB_OUTPUT"
+          echo "Resolved bundle tar: ${BUNDLE_TAR}"
+
+      # ── Publish bundle to ghcr.io (<tag> + latest) ─────────────────────────
+      - name: Publish bundle to ghcr.io
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          BUNDLE_TAR: ${{ steps.bundle.outputs.tar }}
+        run: |
+          set -euo pipefail
+          uds publish "${BUNDLE_TAR}" "oci://${REGISTRY}/${ORG}" \
+            --version "${TAG}" \
+            --no-progress
+          uds publish "${BUNDLE_TAR}" "oci://${REGISTRY}/${ORG}" \
+            --version "latest" \
+            --no-progress
+          echo "Published: oci://${REGISTRY}/${ORG}/${BUNDLE_NAME}:${TAG}"
+          echo "Published: oci://${REGISTRY}/${ORG}/${BUNDLE_NAME}:latest"
+
+      # ── Keyless cosign sign of the published bundle OCI artifact ────────────
+      - name: Sign published bundle OCI artifact (keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          REF="${REGISTRY}/${ORG}/${BUNDLE_NAME}:${TAG}"
+          echo "Signing ${REF} keylessly via GitHub OIDC..."
+          cosign sign --yes "${REF}"
+
+          CERT_IDENTITY="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/uds-receipts-bundle-publish.yml@${GITHUB_REF}"
+          CERT_ISSUER="https://token.actions.githubusercontent.com"
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ### Receipts bundle published + signed
+
+          \`oci://${REGISTRY}/${ORG}/${BUNDLE_NAME}:${TAG}\` (+ \`:latest\`)
+
+          Deploy:
+          \`\`\`bash
+          uds deploy oci://${REGISTRY}/${ORG}/${BUNDLE_NAME}:${TAG} --confirm
+          \`\`\`
+
+          Verify the OCI bundle signature (keyless):
+          \`\`\`bash
+          cosign verify ${REGISTRY}/${ORG}/${BUNDLE_NAME}:${TAG} \\
+            --certificate-identity "${CERT_IDENTITY}" \\
+            --certificate-oidc-issuer "${CERT_ISSUER}"
+          \`\`\`
+          EOF
+
+      # ── SBOM (syft) + keyless DSSE attestation on the OCI bundle ────────────
+      - name: Generate + attest SBOM on OCI bundle (keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          REF="${REGISTRY}/${ORG}/${BUNDLE_NAME}:${TAG}"
+          SBOM="sbom-${BUNDLE_NAME}-amd64-${{ steps.version.outputs.meta_version }}.spdx.json"
+          syft "${{ steps.bundle.outputs.tar }}" -o spdx-json --file "${SBOM}"
+          cosign attest --yes --predicate "${SBOM}" --type spdxjson "${REF}"
+          echo "Attested SBOM ${SBOM} to ${REF}"
+          echo "SBOM=${SBOM}" >> "$GITHUB_ENV"
+
+      # ── Keyless sign-blob of the AIRGAP tarball (offline verification) ──────
+      # The receipts bundle is shipped as a .tar.zst for airgapped installs, so a
+      # detached cosign bundle lets a downstream verify the WHOLE artifact offline
+      # with `cosign verify-blob` (no registry needed) — this is the half FA-002
+      # was missing for airgap consumers.
+      - name: Sign airgap bundle tarball (keyless OIDC, offline)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          BUNDLE_TAR: ${{ steps.bundle.outputs.tar }}
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes --bundle "${BUNDLE_TAR}.cosign.bundle" "${BUNDLE_TAR}"
+          # Attach the SBOM as a detached DSSE attestation bundle too.
+          if [ -f "${SBOM}" ]; then
+            cosign attest-blob --yes --predicate "${SBOM}" --type spdxjson \
+              --bundle "${BUNDLE_TAR}.sbom.bundle" "${BUNDLE_TAR}"
+          fi
+
+          CERT_IDENTITY="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/uds-receipts-bundle-publish.yml@${GITHUB_REF}"
+          CERT_ISSUER="https://token.actions.githubusercontent.com"
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+
+          ### Airgap tarball signature
+
+          Verify a pulled \`${BUNDLE_TAR##*/}\` OFFLINE with:
+          \`\`\`bash
+          cosign verify-blob \\
+            --bundle ${BUNDLE_TAR##*/}.cosign.bundle \\
+            --certificate-identity "${CERT_IDENTITY}" \\
+            --certificate-oidc-issuer "${CERT_ISSUER}" \\
+            ${BUNDLE_TAR##*/}
+          \`\`\`
+          EOF
+
+      # ── Upload local artifacts for traceability ─────────────────────────────
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: uds-receipts-bundle-signed-amd64
+          retention-days: 14
+          path: |
+            dist/uds-bundle-*.tar.zst
+            dist/uds-bundle-*.tar.zst.cosign.bundle
+            dist/uds-bundle-*.tar.zst.sbom.bundle
+            sbom-*.spdx.json
