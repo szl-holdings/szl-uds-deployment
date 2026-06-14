@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+#
+# a11oy-readiness-watch — alert a human when the a11oy Operational Readiness
+# page stops loading through the secure (admin Istio) gateway, or the supporting
+# SSO login services (Keycloak + authservice) go down, on the single-node
+# uds-szl-demo k3d cluster (box 167.233.50.75).
+#
+# WHY THIS EXISTS
+# scripts/verify-a11oy-readiness-sso.sh already PROVES, on demand, that the
+# Operational Readiness tab + /api/a11oy/v1/readiness are reachable through the
+# cluster's admin gateway and that Keycloak + authservice are Ready. Until now it
+# only ran when a human ran it — so a readiness/login outage was discovered live
+# during a demo, not before. This watcher closes that loop: it runs ONLY the
+# read-only phases 0 + 1 of that script on a schedule and fires a REAL push
+# notification on a sustained failure, via the SAME notifier + creds file the
+# a11oy-uptime / dns-drift / signing-health monitors already use.
+#
+# READ-ONLY BY CONSTRUCTION
+# RUN_FULL_E2E is deliberately NEVER set, so the verify script runs phases 0 + 1
+# only — phase 2 (which would enable SSO + perform a live login) stays gated and
+# is never reached. Nothing in the cluster is enabled or mutated; the watcher
+# only reads (kubectl get / curl GET / helm template).
+#
+# WHAT COUNTS AS A FAILURE (phases 0 + 1)
+#   * Keycloak or authservice not Ready,
+#   * the a11oy UDS Package not phase=Ready,
+#   * /api/a11oy/v1/readiness (or the console) not returning 200 through the
+#     admin gateway.
+# The verify script exits non-zero on any of these (its WARN conditions — e.g. a
+# waypoint PROGRAMMED=False, or helm/chart unavailable — do NOT fail it, so they
+# never page; that waypoint fix is a separate workstream).
+#
+# GRACE WINDOW + DE-DUP
+# A failure must persist >= THRESHOLD_SECS (default 300s = 5 min) before it
+# pages, so a brief blip during a redeploy never alerts. Alerts fire only on the
+# (sustained-failure) EDGE and on RECOVERED — a persisting failure is de-duped
+# (recurring alerts = the owner only), the same transition-de-dup the sibling
+# box monitors use.
+#
+# NO-OP WHEN THE CLUSTER IS DOWN
+# k3d nodes are --restart no on this box, so a rebooted box where the cluster is
+# intentionally down is a NO-OP, not an alert (same convention as
+# szl-signing-health-check).
+#
+# Installed at /usr/local/sbin/a11oy-readiness-watch, driven by
+# a11oy-readiness-watch.timer. Versioned in repo box-scripts/.
+set -uo pipefail
+
+# ---- config (overridable via env for testing) -------------------------------
+CLUSTER="${CLUSTER:-uds-szl-demo}"
+REPO_DIR="${REPO_DIR:-/opt/szl/szl-uds-deployment}"
+VERIFY_SCRIPT="${VERIFY_SCRIPT:-$REPO_DIR/scripts/verify-a11oy-readiness-sso.sh}"
+KREQ_TIMEOUT="${KREQ_TIMEOUT:-20s}"
+# Hard ceiling on the verify run. The verify script's gateway curls have no
+# --max-time of their own, so a wedged admin gateway could otherwise hang the
+# run until systemd SIGTERMs the oneshot (a SILENT miss). A timeout turns a hang
+# into a deterministic non-zero exit -> DOWN, which the grace window + de-dup
+# then handle like any other failure. Keep this < the unit's TimeoutStartSec.
+VERIFY_TIMEOUT="${VERIFY_TIMEOUT:-90}"
+
+THRESHOLD_SECS="${THRESHOLD_SECS:-300}"     # how long a failure must persist before paging
+
+STATE_DIR="${STATE_DIR:-/var/lib/a11oy-readiness-watch}"
+LOG_DIR="${LOG_DIR:-/var/log/a11oy-readiness-watch}"
+LOG="${LOG:-$LOG_DIR/a11oy-readiness-watch.log}"
+STATUS="${STATUS:-$STATE_DIR/status.json}"
+SIG_FILE="${SIG_FILE:-$STATE_DIR/problem.sig}"
+SINCE_FILE="${SINCE_FILE:-$STATE_DIR/unhealthy_since}"
+NOTIFY_CMD="${NOTIFY_CMD:-}"                 # external notifier (stdin = message); fail-soft
+ALERT_PREFIX="${ALERT_PREFIX:-}"            # e.g. "[TEST-ignore] " to test without alarming
+
+# Test seam: when VERIFY_CMD is set we run IT instead of resolving the live
+# cluster + invoking the verify script. Its exit code drives the watcher:
+#   0  = healthy, non-zero = readiness/SSO failure, 99 = cluster-down no-op.
+# In production VERIFY_CMD is empty and the watcher does the real thing.
+VERIFY_CMD="${VERIFY_CMD:-}"
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
+
+now_epoch=$(date -u +%s)
+now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+log() { printf '%s %s\n' "$now_iso" "$*" >>"$LOG"; }
+
+# push(): fire the external notifier (stdin = message). Fail-soft — a missing or
+# broken notifier never hides the edge, which is always recorded in the log too.
+push() {
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed"
+}
+
+# run_check(): emit the verify output on stdout and return:
+#   0  = phases 0+1 all passed (readiness + SSO services healthy)
+#   1  = a readiness/SSO failure (verify script exit non-zero)
+#   99 = cluster down / not applicable -> caller treats as NO-OP
+run_check() {
+  if [ -n "$VERIFY_CMD" ]; then
+    eval "$VERIFY_CMD"
+    return $?
+  fi
+  [ -r "$VERIFY_SCRIPT" ] || { echo "missing verify script: $VERIFY_SCRIPT"; return 1; }
+  command -v k3d >/dev/null 2>&1 || { echo "k3d not installed"; return 99; }
+  local kc
+  kc="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" || return 99
+  export KUBECONFIG="$kc"
+  # Sanity: can we actually reach the API? If not, treat as cluster-down no-op.
+  if ! kubectl --request-timeout="$KREQ_TIMEOUT" get ns >/dev/null 2>&1; then
+    return 99
+  fi
+  # Phases 0+1 only — RUN_FULL_E2E stays unset so phase 2 never runs. Bounded by
+  # timeout so a wedged gateway curl can't hang the oneshot (124 -> DOWN).
+  if command -v timeout >/dev/null 2>&1; then
+    env -u RUN_FULL_E2E timeout -k 10 "$VERIFY_TIMEOUT" bash "$VERIFY_SCRIPT"
+  else
+    env -u RUN_FULL_E2E bash "$VERIFY_SCRIPT"
+  fi
+  return $?
+}
+
+out="$(run_check 2>&1)"; rc=$?
+
+# ---- cluster down / not applicable: NO-OP (never a false page) --------------
+if [ "$rc" -eq 99 ]; then
+  log "STATE cluster=$CLUSTER absent/unreachable — readiness not applicable, no-op"
+  exit 0
+fi
+
+# ---- classify result --------------------------------------------------------
+summary="$(printf '%s\n' "$out" | grep -E '^SUMMARY:' | tail -1)"
+fails="$(printf '%s\n' "$out" | grep -E '^[[:space:]]*FAIL[[:space:]]' | sed -E 's/^[[:space:]]*FAIL[[:space:]]+//')"
+fail_count=0
+[ -n "$fails" ] && fail_count="$(printf '%s\n' "$fails" | grep -c .)"
+
+overall="OK"
+[ "$rc" -ne 0 ] && overall="DOWN"
+
+# ---- write status file (always) --------------------------------------------
+status_summary="${summary:-(no summary line)}"
+{
+  printf '{\n'
+  printf '  "checked_at": "%s",\n' "$now_iso"
+  printf '  "cluster": "%s",\n' "$CLUSTER"
+  printf '  "overall": "%s",\n' "$overall"
+  printf '  "exit_code": %s,\n' "$rc"
+  printf '  "fail_count": %s,\n' "$fail_count"
+  printf '  "summary": "%s",\n' "$(printf '%s' "$status_summary" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  printf '  "threshold_secs": %s,\n' "$THRESHOLD_SECS"
+  printf '  "alerting": %s\n' "$( [ "$overall" = "DOWN" ] && echo true || echo false )"
+  printf '}\n'
+} >"$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
+
+prev_sig=""; [ -r "$SIG_FILE" ] && prev_sig=$(cat "$SIG_FILE" 2>/dev/null)
+
+# ---- healthy: clear timers, emit RECOVERED if we had paged -------------------
+if [ "$overall" = "OK" ]; then
+  rm -f "$SINCE_FILE"
+  if [ -n "$prev_sig" ]; then
+    rec="a11oy Operational Readiness RECOVERED on $CLUSTER (readiness 200 through admin gateway; Keycloak + authservice Ready). ${summary}"
+    log "RECOVERED $rec"
+    push "$rec"
+    rm -f "$SIG_FILE"
+  fi
+  log "STATE overall=OK ${summary}"
+  exit 0
+fi
+
+# ---- unhealthy: enforce the grace window before paging ----------------------
+since_epoch=""
+[ -r "$SINCE_FILE" ] && since_epoch=$(cat "$SINCE_FILE" 2>/dev/null)
+case "$since_epoch" in ''|*[!0-9]*) since_epoch="$now_epoch"; printf '%s' "$now_epoch" >"$SINCE_FILE" ;; esac
+elapsed=$(( now_epoch - since_epoch ))
+
+if [ -n "$fails" ]; then
+  problem_text="$(printf '%s' "$fails" | paste -sd';' - | sed 's/;/; /g')"
+else
+  problem_text="verify-a11oy-readiness-sso.sh exited $rc with no FAIL lines (script/tooling error?)"
+fi
+cur_sig=$(printf '%s\n%s\n' "$rc" "$fails" | sort | md5sum | awk '{print $1}')
+
+if [ "$elapsed" -lt "$THRESHOLD_SECS" ]; then
+  log "(pending ${elapsed}s/${THRESHOLD_SECS}s) $problem_text"
+  exit 0
+fi
+
+if [ "$cur_sig" = "$prev_sig" ]; then
+  log "(persisting ${elapsed}s) $problem_text"
+else
+  body="a11oy Operational Readiness DOWN through the secure gateway on $CLUSTER for ${elapsed}s: $problem_text"
+  log "ALERT $body"
+  push "$body"
+  printf '%s' "$cur_sig" >"$SIG_FILE"
+fi
+exit 0

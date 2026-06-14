@@ -1,0 +1,24 @@
+[Unit]
+Description=a11oy Operational Readiness watcher (alerts when the Readiness page stops loading through the secure admin gateway, or Keycloak/authservice go down, on uds-szl-demo)
+Documentation=file:///usr/local/sbin/a11oy-readiness-watch
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Give the read-only verify run room to finish; the watcher itself caps the
+# verify invocation at VERIFY_TIMEOUT (90s) so this is only a backstop.
+TimeoutStartSec=150
+# Real push notifications use the SAME notifier + credentials file as the
+# a11oy-uptime / dns-drift / signing-health monitors (ntfy / Telegram /
+# Slack-Discord webhook). The leading "-" makes the env file optional, so the
+# watcher still runs (logging only) before any channel is configured.
+EnvironmentFile=-/etc/a11oy-uptime.env
+# Distinct ntfy title so readiness alerts read differently from the others.
+# Quoted: systemd splits Environment= on whitespace, so the space needs quotes.
+Environment="NOTIFY_TITLE=a11oy readiness"
+# Always invoke the shared notifier on every sustained-failure edge / RECOVERED.
+# It is fail-soft: with no channel configured it just exits and the alert is
+# still logged, so wiring this is harmless before the env file is filled in.
+Environment=NOTIFY_CMD=/usr/local/sbin/a11oy-uptime-notify
+ExecStart=/usr/local/sbin/a11oy-readiness-watch

@@ -1,0 +1,16 @@
+[Unit]
+Description=Periodically verify the a11oy Operational Readiness page loads through the secure admin gateway (read-only phases 0+1) and alert on a sustained failure
+
+[Timer]
+# First check shortly after boot, then every 10 minutes. The check itself only
+# pages once a failure has persisted past THRESHOLD_SECS (default 5 min), so a
+# brief blip during a redeploy never alerts. Read-only: RUN_FULL_E2E is never
+# set, so phase 2 (enable SSO + live login) is never reached.
+OnBootSec=4min
+OnUnitActiveSec=10min
+AccuracySec=30s
+Persistent=true
+Unit=a11oy-readiness-watch.service
+
+[Install]
+WantedBy=timers.target

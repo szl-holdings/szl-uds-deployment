@@ -1,0 +1,64 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# a11oy-readiness-watch-guard.yml — Guard the a11oy-readiness-watch alarm (the
+# scheduled watcher that catches when the a11oy Operational Readiness page stops
+# loading through the cluster's secure admin gateway, or Keycloak/authservice go
+# down, on uds-szl-demo) from silently regressing.
+#
+# box-scripts/sbin/a11oy-readiness-watch runs ONLY the read-only phases 0+1 of
+# scripts/verify-a11oy-readiness-sso.sh on a schedule and pages a human on a
+# sustained failure. Its alert / de-dup / RECOVERED / grace-window /
+# cluster-down-no-op behaviour all produce NO visible symptom when broken until a
+# real readiness/login outage goes unalerted (or a cluster-down reboot false-
+# pages). A sibling refactor could quietly neuter any of those paths and nothing
+# would notice.
+#
+# scripts/a11oy-readiness-watch-guard.sh lifts the README test recipe into CI: it
+# RUNS the real watcher end-to-end against a temp tree (no cluster, no root) via
+# its overridable env seams (STATE_DIR/LOG_DIR/THRESHOLD_SECS, NOTIFY_CMD=cat,
+# ALERT_PREFIX, VERIFY_CMD) and asserts the actual behaviour.
+#
+# scripts/a11oy-readiness-watch-guard.test.sh is a negative-fixture self-test: it
+# applies deliberate regressions to a COPY of the watcher (neuter push, defeat
+# de-dup, drop RECOVERED, drop the grace window, drop the cluster-down no-op) and
+# asserts the guard FAILS on each, so the guard can't pass vacuously. It runs as
+# the `self-test` job below, which the guard job depends on.
+
+name: a11oy Readiness Watch Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    name: Self-test the guard (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/a11oy-readiness-watch-guard.test.sh
+
+  guard:
+    name: Drive a11oy-readiness-watch end-to-end
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Watcher parses clean (bash -n)
+        run: bash -n box-scripts/sbin/a11oy-readiness-watch
+
+      - name: Alert / de-dup / RECOVERED / grace / no-op behave correctly
+        run: bash scripts/a11oy-readiness-watch-guard.sh
+
+      - name: a11oy-readiness-watch alerting is intact
+        run: echo "The a11oy-readiness-watch edge-alert, de-dup, RECOVERED, grace-window and cluster-down no-op paths are intact."

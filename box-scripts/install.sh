@@ -74,6 +74,7 @@ install -m 0755 "$here/sbin/szl-receipt-checkpoint"     /usr/local/sbin/szl-rece
 install -m 0755 "$here/sbin/bundle-digest-watch"       /usr/local/sbin/bundle-digest-watch
 install -m 0755 "$here/sbin/bundle-digest-recut"       /usr/local/sbin/bundle-digest-recut
 install -m 0755 "$here/sbin/szl-image-stale-watch"     /usr/local/sbin/szl-image-stale-watch
+install -m 0755 "$here/sbin/a11oy-readiness-watch"     /usr/local/sbin/a11oy-readiness-watch
 
 echo "[install] copying systemd units to /etc/systemd/system ..."
 install -m 0644 "$here/systemd/a11oy-coexist.service"        /etc/systemd/system/a11oy-coexist.service
@@ -126,6 +127,8 @@ install -m 0644 "$here/systemd/a11oy-contracting-tool-watch.service" /etc/system
 install -m 0644 "$here/systemd/a11oy-contracting-tool-watch.timer"   /etc/systemd/system/a11oy-contracting-tool-watch.timer
 install -m 0644 "$here/systemd/szl-receipts-orphan-watch.service" /etc/systemd/system/szl-receipts-orphan-watch.service
 install -m 0644 "$here/systemd/szl-receipts-orphan-watch.timer"   /etc/systemd/system/szl-receipts-orphan-watch.timer
+install -m 0644 "$here/systemd/a11oy-readiness-watch.service" /etc/systemd/system/a11oy-readiness-watch.service
+install -m 0644 "$here/systemd/a11oy-readiness-watch.timer"   /etc/systemd/system/a11oy-readiness-watch.timer
 install -m 0644 "$here/systemd/vault-auto-unseal.service"   /etc/systemd/system/vault-auto-unseal.service
 install -m 0644 "$here/systemd/vault-auto-unseal.timer"     /etc/systemd/system/vault-auto-unseal.timer
 install -m 0644 "$here/systemd/vault-keystore-offbox-backup.service" /etc/systemd/system/vault-keystore-offbox-backup.service
@@ -467,6 +470,7 @@ systemctl enable --now szl-signing-health-check.timer
 systemctl enable --now a11oy-signing-key-watch.timer
 systemctl enable --now a11oy-contracting-tool-watch.timer
 systemctl enable --now szl-receipts-orphan-watch.timer
+systemctl enable --now a11oy-readiness-watch.timer
 systemctl enable --now szl-receipt-checkpoint.timer
 systemctl enable --now bundle-digest-watch.timer
 systemctl enable --now bundle-digest-recut.timer
@@ -497,6 +501,7 @@ done
 [ -x /usr/local/sbin/szl-alert-relay-watch ] && /usr/local/sbin/szl-alert-relay-watch || true
 [ -x /usr/local/sbin/szl-signing-health-check ] && /usr/local/sbin/szl-signing-health-check || true
 [ -x /usr/local/sbin/szl-receipts-orphan-watch ] && /usr/local/sbin/szl-receipts-orphan-watch || true
+[ -x /usr/local/sbin/a11oy-readiness-watch ] && /usr/local/sbin/a11oy-readiness-watch || true
 # Validate the newest live eval-arena recorded run once now (idempotent: endpoint
 # down / empty history = honest no-op, no false page).
 [ -x /usr/local/sbin/eval-arena-trend-watch ] && /usr/local/sbin/eval-arena-trend-watch || true
