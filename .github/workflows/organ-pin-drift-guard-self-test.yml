@@ -1,0 +1,52 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# organ-pin-drift-guard-self-test.yml — Self-test the ORGAN pin-drift guard:
+#   (1) the drift CHECK actually catches a stale pin, and
+#   (2) the PAGER in organ-pin-drift-guard.yml is not silently widened/broken.
+#
+# Why this exists
+# ---------------
+# organ-pin-drift-guard.yml resolves each a11oy/killinchu tag's CURRENT GHCR
+# digest and fails when a committed @sha256 pin has gone stale (the tag was
+# re-pushed after a rebuild). That guard is only trustworthy if two things hold:
+#
+#   * the drift check (scripts/pin-organ-image-digest.sh --check) genuinely FAILS
+#     on a stale pin — not a vacuous green. scripts/pin-organ-image-digest.test.sh
+#     builds a synthetic mini-repo, feeds the check a known "published" digest via
+#     the offline --digest override (no GHCR, no docker), and asserts a stale pin
+#     in EACH place a pin lives fails the check and names organ+tag+fix.
+#
+#   * the pager only fires on the unattended scheduled run when it actually finds
+#     drift. That rests on one `if:` expression
+#     (always() && github.event_name == 'schedule' && drift == '1'); drop a term
+#     and it spams PRs / pages on green / goes silent. scripts/
+#     organ-pin-drift-guard-checks.sh asserts the alert if + the check-step
+#     contract (set +e, drift/stale exports) + the final independent gate;
+#     scripts/organ-pin-drift-guard-checks.test.sh feeds each a broken copy of the
+#     workflow and asserts it FAILS.
+#
+# Both negative-fixture self-tests run as the scaffold's `self-test` job; the
+# `guard` job (which re-runs the pager checks against the live workflow) depends on
+# it, so a neutered check is caught before it can wave a regression through. Pure
+# text/offline — no cluster, no registry.
+
+name: Organ Pin Drift Guard Self-Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    uses: ./.github/workflows/guard-scaffold.yml
+    with:
+      test-command: bash scripts/pin-organ-image-digest.test.sh && bash scripts/organ-pin-drift-guard-checks.test.sh
+      checks-command: bash scripts/organ-pin-drift-guard-checks.sh
+      checks-args: "chk1 chk2 chk3 chk4 chk5"
+      success-message: "The organ pin-drift check catches stale pins and its pager only fires on scheduled drift (alert if + check contract + gate intact)."

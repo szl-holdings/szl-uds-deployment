@@ -1,0 +1,166 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# organ-pin-drift-guard.yml — Catch a STALE a11oy / killinchu digest pin before
+# it sits unnoticed on main after a rebuild.
+#
+# Why this exists
+# ---------------
+# The organ tags ghcr.io/szl-holdings/{a11oy,killinchu}:uds-vX.Y.Z are RE-PUSHED
+# with a brand-new digest every time the app is rebuilt. The deployment files pin
+# a specific @sha256 digest (so a re-pushed/mutated tag cannot change what runs),
+# which means after ANY rebuild those pins silently go STALE: the deployed image
+# no longer matches the tag's current contents. Sibling guards already protect
+# OTHER properties of the organ pins:
+#   * image-pin-guard.yml / a11oy-package-guard.yml — the pin is a single-platform
+#     manifest (not a multi-arch index) and the chart/zarf digests byte-match.
+# Neither asserts the pinned digest STILL MATCHES the digest the published tag
+# resolves to today. The receipts-server image already has this exact check
+# (receipts-pin-drift-guard.yml); this is the organ equivalent.
+#
+# This workflow runs `scripts/pin-organ-image-digest.sh --check`, which resolves
+# each organ tag's CURRENT GHCR digest and exits non-zero (printing the one-line
+# fix command) when any committed pin across the deployment files differs.
+#
+# Pure registry inspection (docker buildx imagetools + jq) — no cluster, no
+# kubectl, airgap-friendly (it only talks to the image registry, exactly like the
+# re-pin tool it wraps).
+#
+# Direct alerting
+# ---------------
+# On its DAILY scheduled run a drift failure must page the team, not just turn the
+# Actions tab red — nobody watches the tab, and a freshly re-published organ tag
+# can leave main's pins stale for a day before anyone notices. A scheduled-run
+# failure posts one clean line through the shared szl-alert-relay -> ntfy path
+# (SLACK_WEBHOOK_URL secret), exactly like receipts-pin-drift-guard. PR runs do
+# NOT alert (the contributor already sees the red check), so the relay only fires
+# on the unattended schedule.
+
+name: Organ Pin Drift Guard
+
+on:
+  pull_request:
+    paths:
+      - "packages/a11oy/zarf.yaml"
+      - "packages/a11oy/zarf-mesh-ready.yaml"
+      - "packages/a11oy/manifests/deployment.yaml"
+      - "packages/a11oy/manifests/receipt-key-init.yaml"
+      - "charts/a11oy/values.yaml"
+      - "packages/killinchu/zarf.yaml"
+      - "packages/killinchu/zarf-mesh-ready.yaml"
+      - "packages/killinchu/manifests/deployment.yaml"
+      - "scripts/pin-organ-image-digest.sh"
+      - ".github/workflows/organ-pin-drift-guard.yml"
+  schedule:
+    # Daily — catches a freshly re-published organ tag whose new digest main
+    # hasn't picked up yet (no PR touches the pinned files in that case). Offset
+    # from the receipts pin-drift cron (23 7) to spread registry load.
+    - cron: "41 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  organ-pin-drift-guard:
+    name: Committed organ pins match the published images
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Ensure jq is available
+        run: |
+          set -euo pipefail
+          command -v jq >/dev/null 2>&1 || sudo apt-get update -qq && sudo apt-get install -y -qq jq
+          jq --version
+          docker buildx version
+
+      # docker buildx imagetools needs auth to inspect the (org-private) GHCR
+      # organ packages. The repo-scoped GITHUB_TOKEN has packages: read on images
+      # published from this org.
+      - name: Authenticate to GHCR
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      # Run the drift check WITHOUT aborting, so a scheduled-run failure can be
+      # turned into a direct alert before the run is failed by the gate below.
+      - name: Check committed pins against the published organ images
+        id: check
+        run: |
+          set +e
+          out="$(scripts/pin-organ-image-digest.sh --check 2>&1)"
+          rc=$?
+          echo "${out}"
+
+          # Build a multi-line list of the stale organs (organ + tag + fix cmd) the
+          # script printed, so the alert can name each one. Empty when none drift.
+          stale="$(printf '%s\n' "${out}" | grep -E '^STALE: ' || true)"
+          {
+            echo "stale<<EOF"
+            echo "${stale}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "${rc}" -ne 0 ]; then
+            echo "drift=1" >> "$GITHUB_OUTPUT"
+            echo "::warning::Organ digest pins are STALE vs the published images."
+          else
+            echo "drift=0" >> "$GITHUB_OUTPUT"
+            echo "OK: committed organ pins match the published images."
+          fi
+          exit 0
+
+      # Direct push notification so a stale pin found by the UNATTENDED daily run
+      # is noticed within a day, not whenever someone next looks at the Actions
+      # tab. Fires ONLY on a SCHEDULED run that found drift — contributor PR
+      # failures already show a red check, so they never page the team. Posts a
+      # Slack-compatible payload via curl (no third-party action, so it stays
+      # within the org's github-owned/verified-actions-only policy) to the shared
+      # szl-alert-relay -> ntfy webhook. If the webhook secret is unset it logs a
+      # notice and soft-skips; the gate below still fails the run.
+      - name: Alert the team on a scheduled-run drift failure
+        if: ${{ always() && github.event_name == 'schedule' && steps.check.outputs.drift == '1' }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          STALE: ${{ steps.check.outputs.stale }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_WEBHOOK_URL}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL secret not configured — skipping direct alert. The failed run still stands."
+            exit 0
+          fi
+
+          # One clean block naming the repo and each stale organ + its fix command.
+          text=":rotating_light: *Organ pin-drift guard FAILED* in ${REPO} — one or more committed organ digest pins are STALE vs their published tag (the tag was re-pushed after a rebuild). Stale:
+          ${STALE}
+          Run: ${RUN_URL}"
+
+          # JSON-encode with jq so quotes/backticks can't break the payload.
+          payload=$(jq -n --arg text "$text" '{text: $text}')
+
+          echo "Posting organ pin-drift alert to the szl-alert-relay webhook..."
+          code=$(curl -sS -o /tmp/relay_resp.txt -w '%{http_code}' \
+                   -X POST -H 'Content-Type: application/json' \
+                   --max-time 20 --data "${payload}" "${SLACK_WEBHOOK_URL}")
+          echo "Webhook responded HTTP ${code}."
+          if [ "${code}" -lt 200 ] || [ "${code}" -ge 300 ]; then
+            echo "::error::Direct alert webhook POST failed (HTTP ${code}): $(cat /tmp/relay_resp.txt)"
+            exit 1
+          fi
+          echo "Direct alert delivered."
+
+      - name: Fail the run if committed pins are stale
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.check.outputs.drift }}" = "1" ]; then
+            echo "::error::Organ digest pins are STALE vs the published images. Run the printed fix command(s) and commit the result."
+            exit 1
+          fi
+          echo "OK: committed organ pins match the published images."
