@@ -465,6 +465,14 @@ tasks:
             echo "::error::baseline deploy did not create a szl-receipts helm release — cannot test an upgrade"
             exit 1
           fi
+      - description: "Capture baseline trust state BEFORE upgrade (signing keyid + persisted chain head)"
+        cmd: |
+          set -euo pipefail
+          # Task #924: prove receipts + signing key SURVIVE the upgrade. While the
+          # BASELINE release is running, snapshot the live signing keyid/pubkey and
+          # the persisted chain head index so the post-upgrade assert can detect a
+          # silent key rotation or a chain truncation/reset.
+          bash scripts/verify_upgrade_durability.sh capture "${BUILD_TMPDIR}/upgrade-durability"
       - description: "Build and deploy the current branch package (upgrades the baseline release in place)"
         cmd: |
           zarf package create . --confirm && \
@@ -484,6 +492,17 @@ tasks:
             exit 1
           fi
           echo "Confirmed: current branch upgraded an existing release (>=2 helm revisions)."
+      - description: "PROVE receipts + signing key survived the upgrade (key unchanged, chain verifies, chain_index did not regress)"
+        cmd: |
+          set -euo pipefail
+          # Task #924: an upgrade that silently rotated the Ed25519 signing key or
+          # reset the receipt chain would still pass the helm-revision check above.
+          # This reads the LIVE signing key (/pubkey), re-verifies the PERSISTED
+          # chain end-to-end (the server's verify-store audit, run in-pod against the
+          # PVC) and reads the disk-backed chain head (/metrics szl_chain_index), then
+          # FAILS LOUDLY on key rotation or chain truncation/reset. (verify-store runs
+          # inside the receipts-server pod, which ships python3 'cryptography'.)
+          bash scripts/verify_upgrade_durability.sh assert "${BUILD_TMPDIR}/upgrade-durability"
       - description: "Run Playwright journey tests post-upgrade"
         task: test:all
 
