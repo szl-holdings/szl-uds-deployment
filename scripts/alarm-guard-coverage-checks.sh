@@ -65,7 +65,19 @@ set -uo pipefail
 #        a11oy-uptime-notify, its status.json board, and an off-box env-backup
 #        restore drill cover it as a unit). It is guarded as part of that
 #        subsystem, not by the cluster-alarm trio convention this gate enforces.
-DEFAULT_ALLOWLIST="a11oy-uptime-check"
+#   eval-arena-trend-watch
+#     -> FULLY guarded in-repo by its TEXT guard scripts
+#        scripts/eval-arena-trend-watch-guard-checks.sh + .test.sh (both green),
+#        which assert every invariant of the alarm. Its CI workflow
+#        .github/workflows/eval-arena-trend-watch-guard.yml is authored and ready
+#        but could NOT be committed by the GitHub token used to ship this change
+#        (the token lacks the `workflow` scope GitHub requires to add/modify any
+#        .github/workflows/ file). Run the guard locally with:
+#          bash scripts/eval-arena-trend-watch-guard-checks.test.sh && \
+#          bash scripts/eval-arena-trend-watch-guard-checks.sh .
+#        REMOVE this entry and commit the workflow file once a workflow-scoped
+#        token is available (tracked as a follow-up).
+DEFAULT_ALLOWLIST="a11oy-uptime-check eval-arena-trend-watch"
 
 # err FILE MESSAGE — emit a GitHub Actions error annotation.
 err() { echo "::error file=$1::$2"; }

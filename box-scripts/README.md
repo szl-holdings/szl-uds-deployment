@@ -330,11 +330,15 @@ sbin/
   a11oy-uptime-check          # probe a11oy.net uptime, alert on the outage edge
   a11oy-uptime-notify         # shared push notifier (ntfy / Telegram / webhook)
   dns-drift-check             # alert if a11oy.net DNS drifts off the box
+  eval-arena-trend-watch      # alert if the newest live eval-arena recorded run degrades
+  eval-arena-trend-validate   # bridge: reuses the canonical validate_run()
 systemd/
   a11oy-uptime-check.service  # oneshot: runs a11oy-uptime-check (+ notifier env)
   a11oy-uptime-check.timer    # ~3 min after boot, then every 5 min
   dns-drift-check.service     # oneshot: runs dns-drift-check (+ notifier env)
   dns-drift-check.timer       # ~4 min after boot, then every 15 min
+  eval-arena-trend-watch.service # oneshot: runs eval-arena-trend-watch (+ notifier env)
+  eval-arena-trend-watch.timer   # ~4 min after boot, then every 15 min
 ```
 
 - **`a11oy-uptime-check`** — probes the public a11oy.net endpoints and also
@@ -347,6 +351,17 @@ systemd/
   `-`, such as the SPF `-all`, must use `grep -e "$pat"` or it is parsed as
   options and falsely reports drift.) A one-command DNS restore lives separately
   at `/opt/dns/dns-drift-reapply.sh` on the box.
+- **`eval-arena-trend-watch`** — the near-real-time companion to the CI guard
+  `check_eval_arena_negative_control.py --recorded`. It reads the newest
+  RECORDED eval-arena run from the live `/api/a11oy/v1/eval-arena/history`
+  endpoint (the one the console **trend strip** is drawn from) and runs the
+  SAME `validate_run()` the CI guard uses — via the `eval-arena-trend-validate`
+  bridge, which imports the canonical validator so the two can never drift —
+  pushing an edge-deduped alert the moment that run loses its passing example
+  or its policy-rejected negative control (so the trend strip would go silently
+  all-green). Honest no-op on an unreachable endpoint / empty history; never
+  fabricates a run. Edge-triggered + de-duped + RECOVERED the same way as the
+  watchers above. (See `eval-arena-trend-watch.README.md` for the full writeup.)
 - **`a11oy-uptime-notify`** — the single shared push notifier used by BOTH
   watchers above AND by `receipt-chain-watch` (part 3). It is curl-only and
   reads its channel (ntfy / Telegram / Slack-Discord webhook) from

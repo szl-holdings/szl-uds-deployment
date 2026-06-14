@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+#
+# eval-arena-trend-watch — near-real-time honesty guard for the LIVE eval-arena
+# recorded-run history that backs the a11oy console "trend strip".
+#
+# WHY THIS EXISTS
+#   scripts/check_eval_arena_negative_control.py --recorded already validates the
+#   newest RECORDED eval-arena run in CI, but only when CI happens to run. That
+#   same recorded history is served live at
+#       /api/a11oy/v1/eval-arena/history
+#   and rendered as the console trend strip. A recorded run that degrades BETWEEN
+#   CI runs (loses its passing example, or loses its policy-rejected negative
+#   control) would paint an all-green strip until the next workflow trigger —
+#   exactly the "red fail line silently goes green" failure the CI guard exists to
+#   prevent, but live and unwatched. This box-side timer closes that window: it
+#   reads the newest recorded run from the live endpoint and runs the SAME
+#   validate_run() the CI guard uses, pushing an edge-deduped a11oy-uptime ntfy
+#   alert the moment the trend degrades.
+#
+# WHAT COUNTS AS DEGRADED (validate_run, reused VERBATIM from the a11oy repo via
+# the eval-arena-trend-validate bridge — this watcher never re-implements it)
+#   the newest recorded run must keep BOTH at least one PASSING scenario AND at
+#   least one genuine policy-rejected FAILING scenario (pass=false, overall<0.85,
+#   non-empty policy_signals). Missing either => ALERT.
+#
+# HONEST NO-OP (matches the CI guard's own soft-skip semantics)
+#   * endpoint unreachable / non-2xx / empty body  -> log SKIP, no alert, state untouched
+#   * recorded history empty (count 0 / runs:[])    -> log SKIP, no alert, state untouched
+#   * validator unavailable / payload unparsable    -> log SKIP, no alert, state untouched
+#   the watcher NEVER fabricates a run and NEVER pages on "I could not look".
+#
+# EDGE-DEDUP + RECOVERED (identical contract to a11oy-uptime-check)
+#   alerts ONLY on the healthy->degraded edge (md5 signature of the problem set);
+#   a persisting problem logs quietly; a return to healthy logs+pushes RECOVERED
+#   and clears the signature so a fresh degradation re-alerts.
+#
+# Idempotent and safe to run on a short timer.
+set -uo pipefail
+
+# ---- config (overridable via env for testing) -------------------------------
+HISTORY_URL="${HISTORY_URL:-https://a11oy.net/api/a11oy/v1/eval-arena/history?limit=1}"
+HISTORY_FILE="${HISTORY_FILE:-}"   # test override: read the history JSON from a file instead of curl
+A11OY_SCRIPTS_DIR="${A11OY_SCRIPTS_DIR:-/opt/szl/a11oy/scripts}"  # where the canonical validator lives
+VALIDATE_CMD="${VALIDATE_CMD:-/usr/local/sbin/eval-arena-trend-validate}"  # reads history JSON on stdin
+STATE_DIR="${STATE_DIR:-/var/lib/a11oy-uptime}"
+LOG_DIR="${LOG_DIR:-/var/log/a11oy-uptime}"
+LOG="${LOG:-$LOG_DIR/eval-arena-trend.log}"
+STATUS="${STATUS:-$STATE_DIR/eval-arena-trend.status.json}"
+SIG_FILE="${SIG_FILE:-$STATE_DIR/eval-arena-trend.sig}"
+CURL_TIMEOUT="${CURL_TIMEOUT:-15}"
+NOTIFY_CMD="${NOTIFY_CMD:-}"          # optional external notifier (stdin = message)
+ALERT_PREFIX="${ALERT_PREFIX:-}"      # e.g. "[TEST-ignore] " to test without alarming
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
+
+now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+log() { printf '%s %s\n' "$now_iso" "$*" >>"$LOG"; }
+
+# push(): fire the external notifier (stdin = message). Fail-soft — a missing or
+# broken notifier never hides the edge, which is always recorded in the log too.
+push() {
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed"
+}
+
+# json_str STR -> a JSON-quoted string (python is a hard dep of this watcher via
+# the validator bridge, so relying on it here is safe).
+json_str() { printf '%s' "${1:-}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '""'; }
+
+# write the status file (always) so the monitor-liveness meta-monitor can watch
+# this watcher's checked_at the same way it watches the other a11oy-uptime checks.
+write_status() {  # $1=state  $2=detail
+  local src
+  if [ -n "$HISTORY_FILE" ]; then src="file:$HISTORY_FILE"; else src="$HISTORY_URL"; fi
+  {
+    printf '{\n'
+    printf '  "checked_at": "%s",\n' "$now_iso"
+    printf '  "source": %s,\n' "$(json_str "$src")"
+    printf '  "state": "%s",\n' "$1"
+    printf '  "detail": %s\n' "$(json_str "$2")"
+    printf '}\n'
+  } >"$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
+}
+
+# ---- 1. fetch the newest recorded run --------------------------------------
+http="000"
+body=""
+if [ -n "$HISTORY_FILE" ]; then
+  if [ -r "$HISTORY_FILE" ]; then http="200"; body=$(cat "$HISTORY_FILE" 2>/dev/null); fi
+else
+  tmp=$(mktemp)
+  http=$(curl -sS -L -o "$tmp" -w '%{http_code}' --max-time "$CURL_TIMEOUT" "$HISTORY_URL" 2>>"$LOG") || http="000"
+  [ -z "$http" ] && http="000"
+  body=$(cat "$tmp" 2>/dev/null)
+  rm -f "$tmp"
+fi
+
+# Honest no-op on an unreachable / non-2xx / empty endpoint: never page on "I
+# could not look", never touch the signature (so a real recovery still pages).
+if ! { [ "$http" -ge 200 ] 2>/dev/null && [ "$http" -lt 300 ] 2>/dev/null; } || [ -z "$body" ]; then
+  log "SKIP eval-arena history unreachable (http=$http); no alert, state untouched"
+  write_status "unreachable" "eval-arena history endpoint unreachable (http=$http)"
+  exit 0
+fi
+
+# ---- 2. validate the newest recorded run with the CANONICAL validate_run() ---
+# The bridge reads the history JSON on stdin and exits:
+#   0 healthy | 1 degraded(+problem lines on stdout) | 2 empty history | 3 cannot validate
+problems=$(printf '%s' "$body" | A11OY_SCRIPTS_DIR="$A11OY_SCRIPTS_DIR" $VALIDATE_CMD 2>>"$LOG")
+rc=$?
+
+prev_sig=""
+[ -r "$SIG_FILE" ] && prev_sig=$(cat "$SIG_FILE" 2>/dev/null)
+
+case "$rc" in
+  0)
+    # healthy now: newest recorded run keeps a passing example AND a policy-rejected fail
+    if [ -n "$prev_sig" ]; then
+      recovered_msg="eval-arena trend RECOVERED: the newest recorded run again keeps a passing example AND a policy-rejected negative control"
+      log "RECOVERED eval-arena trend healthy again (newest recorded run keeps pass + policy-rejected fail)"
+      push "$recovered_msg"
+      rm -f "$SIG_FILE"
+    fi
+    write_status "ok" "newest recorded run keeps a passing example AND a policy-rejected negative control"
+    log "STATE overall=ok (newest recorded run keeps pass + policy-rejected fail)"
+    ;;
+  1)
+    # degraded: the trend strip would go silently all-green
+    problem_text=$(printf '%s' "$problems" | tr '\n' ' ' | sed 's/  */ /g; s/^ *//; s/ *$//')
+    [ -z "$problem_text" ] && problem_text="newest recorded run lacks a passing example or a policy-rejected negative control"
+    cur_sig=$(printf '%s' "$problems" | sort | md5sum | awk '{print $1}')
+    if [ "$cur_sig" = "$prev_sig" ]; then
+      log "(persisting) eval-arena trend degraded: $problem_text"
+    else
+      log "ALERT eval-arena trend degraded: $problem_text"
+      push "eval-arena trend degraded (recorded-run history strip would go all-green): $problem_text"
+      printf '%s' "$cur_sig" >"$SIG_FILE"
+    fi
+    write_status "degraded" "$problem_text"
+    ;;
+  2)
+    # empty history: nothing recorded to validate — soft-skip, nothing fabricated
+    log "SKIP eval-arena history empty (no recorded run to validate); no alert, state untouched"
+    write_status "empty" "recorded eval-arena history is empty (nothing to validate)"
+    ;;
+  *)
+    # validator unavailable / payload unparsable (rc=3 or unexpected): honest no-op
+    log "SKIP eval-arena history not validatable (rc=$rc); no alert, state untouched"
+    write_status "unknown" "could not validate the newest recorded run (validator rc=$rc)"
+    ;;
+esac
+
+exit 0

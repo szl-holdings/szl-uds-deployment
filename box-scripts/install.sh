@@ -20,6 +20,11 @@
 #        a11oy-uptime-check   — probe a11oy.net uptime, alert on the outage edge
 #        a11oy-uptime-notify  — shared push notifier (ntfy/Telegram/webhook)
 #        dns-drift-check      — alert if a11oy.net DNS stops pointing at the box
+#        eval-arena-trend-watch — alert if the newest LIVE eval-arena recorded run
+#                               degrades (loses its passing example or its policy-
+#                               rejected negative control) so the console trend strip
+#                               would go silently all-green; reuses the CI validate_run()
+#        eval-arena-trend-validate — bridge that reuses the canonical validate_run()
 #        box-scripts-drift-check — alert if a host sbin/unit drifts from its committed box-scripts/ copy
 #   4. szl-ns-scratch — scratch-namespace cleanup-safety tool (on-demand
 #        operator helper, see docs/SCRATCH_NAMESPACE_CONVENTION.md), plus
@@ -52,6 +57,8 @@ install -m 0755 "$here/sbin/szl-ns-scratch-stale-watch" /usr/local/sbin/szl-ns-s
 install -m 0755 "$here/sbin/a11oy-uptime-check"        /usr/local/sbin/a11oy-uptime-check
 install -m 0755 "$here/sbin/a11oy-uptime-notify"       /usr/local/sbin/a11oy-uptime-notify
 install -m 0755 "$here/sbin/dns-drift-check"           /usr/local/sbin/dns-drift-check
+install -m 0755 "$here/sbin/eval-arena-trend-watch"    /usr/local/sbin/eval-arena-trend-watch
+install -m 0755 "$here/sbin/eval-arena-trend-validate" /usr/local/sbin/eval-arena-trend-validate
 install -m 0755 "$here/sbin/box-scripts-drift-check"     /usr/local/sbin/box-scripts-drift-check
 install -m 0755 "$here/sbin/szl-alert-relay"           /usr/local/sbin/szl-alert-relay
 install -m 0755 "$here/sbin/szl-alert-relay-watch"     /usr/local/sbin/szl-alert-relay-watch
@@ -98,6 +105,8 @@ install -m 0644 "$here/systemd/a11oy-uptime-check.service"  /etc/systemd/system/
 install -m 0644 "$here/systemd/a11oy-uptime-check.timer"    /etc/systemd/system/a11oy-uptime-check.timer
 install -m 0644 "$here/systemd/dns-drift-check.service"     /etc/systemd/system/dns-drift-check.service
 install -m 0644 "$here/systemd/dns-drift-check.timer"       /etc/systemd/system/dns-drift-check.timer
+install -m 0644 "$here/systemd/eval-arena-trend-watch.service" /etc/systemd/system/eval-arena-trend-watch.service
+install -m 0644 "$here/systemd/eval-arena-trend-watch.timer"   /etc/systemd/system/eval-arena-trend-watch.timer
 install -m 0644 "$here/systemd/box-scripts-drift-check.service" /etc/systemd/system/box-scripts-drift-check.service
 install -m 0644 "$here/systemd/box-scripts-drift-check.timer"   /etc/systemd/system/box-scripts-drift-check.timer
 install -m 0644 "$here/systemd/szl-alert-relay.service"      /etc/systemd/system/szl-alert-relay.service
@@ -440,6 +449,7 @@ systemctl enable --now szl-ns-scratch-watch.timer
 systemctl enable --now szl-ns-scratch-stale-watch.timer
 systemctl enable --now a11oy-uptime-check.timer
 systemctl enable --now dns-drift-check.timer
+systemctl enable --now eval-arena-trend-watch.timer
 systemctl enable --now box-scripts-drift-check.timer
 systemctl enable --now vault-auto-unseal.timer
 systemctl enable --now vault-keystore-offbox-backup.timer
@@ -479,6 +489,9 @@ done
 [ -x /usr/local/sbin/szl-alert-relay-watch ] && /usr/local/sbin/szl-alert-relay-watch || true
 [ -x /usr/local/sbin/szl-signing-health-check ] && /usr/local/sbin/szl-signing-health-check || true
 [ -x /usr/local/sbin/szl-receipts-orphan-watch ] && /usr/local/sbin/szl-receipts-orphan-watch || true
+# Validate the newest live eval-arena recorded run once now (idempotent: endpoint
+# down / empty history = honest no-op, no false page).
+[ -x /usr/local/sbin/eval-arena-trend-watch ] && /usr/local/sbin/eval-arena-trend-watch || true
 # Flag a stale image digest baked into a locally-built deploy tarball (a repin
 # without a re-cut). Idempotent no-op when no tarball is built or no pin exists.
 [ -x /usr/local/sbin/bundle-digest-watch ] && /usr/local/sbin/bundle-digest-watch || true

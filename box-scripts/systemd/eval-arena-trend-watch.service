@@ -1,0 +1,16 @@
+[Unit]
+Description=Validate the newest recorded eval-arena run (console trend strip) and alert on degradation
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Real push notifications: the notifier reads credentials from this env file
+# (ntfy / Telegram / Slack-Discord webhook). The leading "-" makes it optional,
+# so the watcher still runs (logging only) before any channel is configured.
+EnvironmentFile=-/etc/a11oy-uptime.env
+# Always invoke the shipped notifier on every edge alert / RECOVERED. It is
+# fail-soft: with no channel configured it just exits and the alert is still
+# logged, so wiring this is harmless before the env file is filled in.
+Environment=NOTIFY_CMD=/usr/local/sbin/a11oy-uptime-notify
+ExecStart=/usr/local/sbin/eval-arena-trend-watch

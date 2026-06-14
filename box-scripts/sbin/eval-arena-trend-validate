@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# eval-arena-trend-validate — the validation BRIDGE behind eval-arena-trend-watch.
+#
+# It reuses the EXACT validator the CI negative-control guard uses — it imports
+# validate_run() / _normalize_recorded_run() / _pick_latest_recorded() from the
+# a11oy repo's scripts/check_eval_arena_negative_control.py rather than
+# re-implementing the "must keep a passing example AND a policy-rejected fail"
+# contract here (one source of truth; the two can never drift).
+#
+# Reads a /api/a11oy/v1/eval-arena/history JSON payload on stdin and exits:
+#   0  healthy   — the newest RECORDED run keeps a passing example AND a
+#                  policy-rejected negative control
+#   1  degraded  — prints the human-readable problem lines on stdout
+#   2  empty     — recorded history is empty (soft skip; nothing to validate,
+#                  nothing fabricated)
+#   3  unusable  — the payload is unparsable OR the canonical validator cannot be
+#                  imported (the watcher treats this as an honest no-op, never a page)
+#
+# The canonical validator's top-level imports are stdlib-only (serve.py is
+# imported lazily, only by its in-image --recorded path), so importing these
+# three functions here is cheap and side-effect-free.
+import json
+import os
+import sys
+
+scripts_dir = os.environ.get("A11OY_SCRIPTS_DIR", "/opt/szl/a11oy/scripts")
+if scripts_dir and scripts_dir not in sys.path:
+    sys.path.insert(0, scripts_dir)
+
+try:
+    from check_eval_arena_negative_control import (  # noqa: E402
+        _normalize_recorded_run,
+        _pick_latest_recorded,
+        validate_run,
+    )
+except Exception as exc:  # noqa: BLE001  validator unavailable -> no-op upstream
+    sys.stderr.write(
+        "eval-arena-trend-validate: cannot import the canonical validator from "
+        "%r: %r\n" % (scripts_dir, exc)
+    )
+    sys.exit(3)
+
+
+def main() -> int:
+    raw = sys.stdin.read()
+    try:
+        payload = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write("eval-arena-trend-validate: history JSON unparsable: %r\n" % exc)
+        return 3
+
+    runs = payload.get("runs") if isinstance(payload, dict) else None
+    latest = _pick_latest_recorded(runs)
+    if latest is None:
+        return 2  # empty history — soft skip
+
+    ok, problems = validate_run(_normalize_recorded_run(latest))
+    if ok:
+        print("run_id=%s ok (keeps a passing example AND a policy-rejected negative control)"
+              % latest.get("run_id"))
+        return 0
+    for p in problems:
+        print(p)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

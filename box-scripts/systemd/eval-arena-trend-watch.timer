@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically validate the live eval-arena recorded-run history (trend strip honesty)
+
+[Timer]
+# First check shortly after boot, then every 15 minutes thereafter.
+OnBootSec=4min
+OnUnitActiveSec=15min
+AccuracySec=30s
+Unit=eval-arena-trend-watch.service
+
+[Install]
+WantedBy=timers.target

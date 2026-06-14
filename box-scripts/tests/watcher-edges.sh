@@ -102,7 +102,7 @@ assert_edge() {
 # Per-watcher fresh state dir so prev-state == OK and the edge fires.
 mkstate() { local d="$WORK/state/$1"; mkdir -p "$d/log"; printf '%s' "$d"; }
 
-echo "== driving 7 watcher OK->ALERT edges via a capture stub (no real channel) =="
+echo "== driving 8 watcher OK->ALERT edges via a capture stub (no real channel) =="
 
 # ---- 1. a11oy-uptime-check : unresolvable host -> DOWN -----------------------
 (
@@ -200,12 +200,36 @@ CSTUB
   assert_edge "a11oy-contracting-tool-watch" "$SBIN/a11oy-contracting-tool-watch"
 ) || true
 
+# ---- 8. eval-arena-trend-watch : newest recorded run lacks its negative control
+(
+  s="$(mkstate evalarena)"
+  # stub validator: stand in for the canonical bridge, reporting the newest
+  # recorded run DEGRADED (exit 1) with a stable problem line so the edge fires
+  # and then de-dupes. (The REAL bridge's reuse of validate_run() is proven on
+  # the box against the live endpoint; here we exercise the watcher plumbing.)
+  vstub="$WORK/eval-validate-stub"
+  cat > "$vstub" <<'VSTUB'
+#!/usr/bin/env bash
+echo "no FAILING policy-rejected scenario (the trend strip would go all-green)"
+exit 1
+VSTUB
+  chmod +x "$vstub"
+  hist="$WORK/eval-history.json"
+  printf '%s' '{"count":1,"runs":[{"run_id":"x","scenarios":[{"scenario":"a","overall":0.97,"pass":true,"policy_signals":[]}]}]}' > "$hist"
+  export PATH="$ORIG_PATH"
+  export HISTORY_FILE="$hist" VALIDATE_CMD="$vstub" A11OY_SCRIPTS_DIR="$WORK/no-such-dir"
+  export STATE_DIR="$s" LOG_DIR="$s/log" LOG="$s/log/x.log" STATUS="$s/status.json" SIG_FILE="$s/problem.sig"
+  export CAPTURE_FILE="$WORK/cap.evalarena" NOTIFY_CMD="$CAPTURE_STUB" ALERT_PREFIX="$PREFIX"
+  assert_edge "eval-arena-trend-watch" "$SBIN/eval-arena-trend-watch"
+) || true
+
+
 echo
 checks=$(wc -l < "$RESULTS" | tr -d ' ')
 fails=$(grep -cx fail "$RESULTS" || true)
-# 7 watchers x 2 assertions (fire edge + de-dup) = 14. A short count means a
+# 8 watchers x 2 assertions (fire edge + de-dup) = 16. A short count means a
 # subshell died before recording its result — treat that as a failure too.
-EXPECTED=14
+EXPECTED=16
 if [ "$checks" -ne "$EXPECTED" ]; then
   echo "  FAIL expected $EXPECTED assertions but only $checks ran (a watcher block aborted early)"
   fails=$((fails + (EXPECTED - checks)))
