@@ -193,9 +193,12 @@ mv "$F/$ZARF.tmp" "$F/$ZARF"
 expect_fail inv4 "$F" "inv4: exemption reordered after key-init"
 
 # --- Invariant 4: server image tag downgraded ---
+# Version-AGNOSTIC: downgrade WHATEVER the current tag is to a bogus uds-v0.0.0 so
+# this fixture never needs touching when the receipts version is bumped (a bump
+# moves the real tag + the inv4 literal in lockstep; this just has to differ).
 F="$(new_fixture)"
-sed -i 's#szl-receipts-server:uds-v0.4.1#szl-receipts-server:uds-v0.3.1#g' "$F/$ZARF"
-expect_fail inv4 "$F" "inv4: image tag downgraded to uds-v0.3.1"
+sed -i -E 's#(szl-receipts-server:uds-v)[0-9]+\.[0-9]+\.[0-9]+#\10.0.0#g' "$F/$ZARF"
+expect_fail inv4 "$F" "inv4: image tag downgraded to uds-v0.0.0"
 
 # --- Invariant 5: SMALL_SERVER_RIGHTSIZE variable removed ---
 F="$(new_fixture)"
