@@ -12,6 +12,16 @@ replicas: 1
 image:
   repository: ghcr.io/szl-holdings/killinchu
   tag: "uds-v0.2.0"
+  # Optional exact-image digest pin -- the single-platform linux/amd64 manifest
+  # of uds-v0.2.0 (killinchu publishes a single-arch manifest, NOT an OCI index).
+  # When set, the Deployment renders repository:tag@sha256:... so the live
+  # workload becomes content-addressed: a re-pinned digest changes the pod
+  # template and triggers a normal rollout (no manual `kubectl set image`), and a
+  # re-pushed/mutated uds-v0.2.0 tag can no longer silently keep serving an old
+  # cached layer under imagePullPolicy: IfNotPresent. MUST byte-match the digest
+  # baked in packages/killinchu/zarf.yaml images: (chart-zarf-digest-match guard)
+  # or the Zarf agent image rewrite breaks. Empty = tag-only.
+  digest: "sha256:f6fd13ed28c65a195fd96369861adb2bba9ec2d1717ea494442fc0a79e5d6f85"
   pullPolicy: IfNotPresent
 
 service:
