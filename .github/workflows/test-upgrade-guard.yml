@@ -1,0 +1,70 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# test-upgrade-guard.yml — keep the `test-upgrade` task from silently skipping its
+# published baseline again.
+#
+# Task #484 fixed the `test-upgrade` task so it deploys a REAL published prior
+# release and then PROVES a genuine upgrade happened. It used to deploy the
+# baseline with a non-fatal `zarf package deploy ... || echo "WARN ... skipping"`
+# fallback, so whenever the OCI tag was momentarily absent the baseline deployed
+# NOTHING, the next deploy became a fresh install instead of an upgrade, and the
+# whole test went HOLLOW — green while proving nothing. The fix made the baseline
+# deploy FATAL and added a post-upgrade proof that the szl-receipts helm release
+# advanced to >=2 revisions (a real upgrade, not a fresh install).
+#
+# Nothing statically guarded that fix, so a future refactor of tasks.yaml could
+# quietly re-introduce the `|| echo ... skipping` fallback or drop the
+# helm-revision proof, re-opening the exact hole. This guard turns either
+# regression into a seconds-long, cluster-free CI failure.
+#
+# The check logic lives in scripts/test-upgrade-guard-checks.sh (pure text/lint,
+# no cluster). It was extracted from this workflow so it can be UNIT TESTED:
+# scripts/test-upgrade-guard-checks.test.sh feeds each check a deliberately-BROKEN
+# fixture and asserts the check FAILS, plus asserts the pristine repo PASSES. The
+# shared run-checks-then-self-test scaffolding lives in the reusable
+# .github/workflows/guard-scaffold.yml; this workflow is a thin caller that passes
+# its test + checks scripts. The self-test gates the guard run, so a future edit
+# that neuters a check (passing vacuously — green while guarding nothing) is
+# caught before the guard can wave it through.
+#
+# The asserted invariants:
+#   chk1  the test-upgrade task still deploys the published baseline
+#         (UPGRADE_BASELINE_REF) and that deploy is FATAL — no non-fatal fallback
+#         (`|| echo`, `2>/dev/null ||`, `|| true`, ...) that would let an
+#         absent/failed baseline silently become a fresh install.
+#   chk2  the post-upgrade proof step still counts the szl-receipts helm release
+#         revisions (owner=helm,name=szl-receipts Secrets) and FAILS the task
+#         unless there are >=2 (a real upgrade, not a fresh install).
+
+name: Test-Upgrade Guard
+
+on:
+  pull_request:
+    paths:
+      - "tasks.yaml"
+      - "scripts/test-upgrade-guard-checks.sh"
+      - "scripts/test-upgrade-guard-checks.test.sh"
+      - ".github/workflows/test-upgrade-guard.yml"
+      - ".github/workflows/guard-scaffold.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tasks.yaml"
+      - "scripts/test-upgrade-guard-checks.sh"
+      - "scripts/test-upgrade-guard-checks.test.sh"
+      - ".github/workflows/test-upgrade-guard.yml"
+      - ".github/workflows/guard-scaffold.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    uses: ./.github/workflows/guard-scaffold.yml
+    with:
+      test-command: bash scripts/test-upgrade-guard-checks.test.sh
+      checks-command: bash scripts/test-upgrade-guard-checks.sh
+      checks-args: "chk1 chk2"
+      success-message: "The test-upgrade baseline-honesty guard is intact (fatal baseline deploy + >=2 helm-revision proof)."
