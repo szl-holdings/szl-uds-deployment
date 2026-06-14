@@ -1,0 +1,20 @@
+[Unit]
+Description=Alert when a live self-hosted container (a11oy:7861 / killinchu:7862) on box 167.233.50.75 falls behind published origin/main
+Documentation=file:///usr/local/sbin/szl-image-stale-watch
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=oneshot
+# Real push notifications reuse the SAME notifier + credentials file as the
+# a11oy-uptime / dns-drift / receipt-chain-watch / szl-ns-scratch-stale-watch
+# watchers (ntfy / Telegram / Slack-Discord webhook). The leading "-" makes the
+# env file optional, so this still runs (logging only) before any channel is
+# configured.
+EnvironmentFile=-/etc/a11oy-uptime.env
+# Distinct ntfy title so "live image is stale" alerts read differently.
+Environment=NOTIFY_TITLE=a11oy/killinchu image-stale watch
+# Always invoke the shared notifier on every edge. It is fail-soft: with no
+# channel configured it just exits and the alert is still logged.
+Environment=NOTIFY_CMD=/usr/local/sbin/a11oy-uptime-notify
+ExecStart=/usr/local/sbin/szl-image-stale-watch

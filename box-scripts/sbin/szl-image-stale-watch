@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+#
+# szl-image-stale-watch — alert the team when a LIVE container on box
+# 167.233.50.75 has fallen BEHIND its published origin/main: the running image
+# no longer matches code that has ALREADY been merged. It watches the two
+# self-hosted services that are rebuilt from a GitHub tree on this box:
+#   a11oy     (a11oy.net,  container on :7861)  via /usr/local/sbin/a11oy-rebuild
+#   killinchu (killinchu,  container on :7862)  via /usr/local/sbin/killinchu-rebuild
+#
+# WHY: both <svc>-rebuild helpers can already answer "is the running image in
+# sync with origin/main?" via their `--verify-only` mode (exit 0 = PASS/in sync,
+# exit 5 = FAIL/drift — it git-fetches origin/$BRANCH first, then diffs the live
+# image against it WITHOUT rebuilding). But nothing RUNS that check on a
+# schedule, so a merge that never got rebuilt onto the box silently serves stale
+# code until a human happens to notice. This watcher is the push half: it runs
+# `--verify-only` for each service every ~15 min and pages the team on the
+# healthy->drift edge, naming the repo and the lagging commit, so the rebuild
+# actually happens.
+#
+# IT NEVER REBUILDS. It only ever invokes the helper with `--verify-only` — a
+# read-only comparison. A rebuild recreates the live container and must be an
+# operator decision; this guard only surfaces the drift so the operator can act
+# (mirrors szl-ns-scratch-stale-watch, which surfaces but never deletes).
+#
+# ALERTING (matches the receipt-chain-watch / szl-ns-scratch-stale-watch
+# convention): per service, edge-triggered + de-duped via its OWN state file.
+#   * drift first seen (verify-only FAIL)  -> ALERT, page EXACTLY once
+#   * still drifted (prev ALERT)           -> DE-DUPE, never re-page
+#   * back in sync (verify-only PASS)      -> RECOVERED, page once, then quiet
+# Every run still appends to the log, so a broken notifier can never hide drift.
+# The push channel is the box's shared notifier /usr/local/sbin/a11oy-uptime-
+# notify (ntfy / Telegram / Slack-Discord), wired through NOTIFY_CMD. Fail-soft:
+# with no channel configured the alert is still logged.
+#
+# FAIL-SOFT / NO-OP (so a transient outage never false-alarms and never loses
+# the baseline):
+#   * a rebuild helper that is MISSING / not executable (box or service absent)
+#     -> true no-op for that service: log + skip, no page, baseline untouched.
+#   * verify-only returning ANY exit code other than 0 or 5 (repo missing=2,
+#     git fetch failed=3, docker down, ...) -> "could not determine": log a
+#     WARN, no page, baseline PRESERVED (never a false RECOVERED).
+# Each service is independent: a11oy being unreachable never affects killinchu.
+#
+# Driven by szl-image-stale-watch.timer (every ~15 min).
+#
+# Intentionally NOT `set -e`: this must always finish every service and exit 0.
+set -uo pipefail
+
+# Services to watch (space-separated). Each <svc> maps to a <svc>-rebuild helper
+# in REBUILD_DIR and a source tree in <SVC>_REPO_DIR (used only to NAME the
+# lagging commit). Overridable for testing.
+TARGETS="${TARGETS:-a11oy killinchu}"
+REBUILD_DIR="${REBUILD_DIR:-/usr/local/sbin}"
+BOX="${BOX:-167.233.50.75}"
+
+STATE_DIR="${STATE_DIR:-/var/lib/szl-image-stale-watch}"
+LOG_DIR="${LOG_DIR:-/var/log/szl-image-stale-watch}"
+LOG="${LOG:-$LOG_DIR/szl-image-stale-watch.log}"
+
+# Notifier: stdin = message. Default to the box's working push channel.
+NOTIFY_CMD="${NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
+ALERT_PREFIX="${ALERT_PREFIX:-}"
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
+
+log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$1" >>"$LOG" 2>/dev/null; }
+
+notify() {
+  # $1 = message. Fail-soft: log a warning if the notifier is missing/fails.
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed (alert was logged only)"
+}
+
+# upper-snake of a service name, for per-service env overrides (a11oy -> A11OY).
+envkey() { printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_'; }
+
+# describe_commits REPO BRANCH — best-effort, SIDE-EFFECT-FREE commit naming.
+# --verify-only has just `git fetch`ed origin/$BRANCH, so the locally-known
+# origin/$BRANCH ref is current; we never fetch here. Falls back to "unknown".
+describe_commits() {
+  local repo="$1" branch="$2" run pub
+  run="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  pub="$(git -C "$repo" rev-parse --short "origin/$branch" 2>/dev/null || echo unknown)"
+  printf 'running=%s published=origin/%s@%s' "$run" "$branch" "$pub"
+}
+
+# check_one_target SVC — run verify-only for one service and edge-trigger.
+check_one_target() {
+  local t="$1" key binvar repovar branchvar bin repo branch last_file prev out rc tail
+  key="$(envkey "$t")"
+  binvar="${key}_REBUILD_BIN"; repovar="${key}_REPO_DIR"; branchvar="${key}_BRANCH"
+  bin="${!binvar:-$REBUILD_DIR/$t-rebuild}"
+  repo="${!repovar:-/opt/szl/$t}"
+  branch="${!branchvar:-main}"
+  last_file="$STATE_DIR/last_status.$t"
+
+  # box/service absent -> true no-op (no page, baseline preserved).
+  if [ ! -x "$bin" ]; then
+    log "INFO [$t] rebuild helper '$bin' missing/not executable — skip (no-op)"
+    return 0
+  fi
+
+  # READ-ONLY verify. NEVER rebuild: the ONLY invocation of $bin carries
+  # --verify-only. exit 0 = in sync, 5 = drift/behind, anything else = could
+  # not determine (repo missing=2, fetch failed=3, docker down, ...).
+  out="$("$bin" --verify-only 2>&1)"; rc=$?
+  prev="$(cat "$last_file" 2>/dev/null || echo OK)"
+
+  if [ "$rc" -eq 0 ]; then
+    log "STATE [$t] OK (verify-only PASS) — live image in sync with origin/$branch"
+    if [ "$prev" = "ALERT" ]; then
+      notify "RECOVERED: $t live container on box $BOX is back IN SYNC with published origin/$branch (the image was rebuilt). $(describe_commits "$repo" "$branch")."
+      log "EDGE [$t] ALERT->OK recovered, notified"
+    fi
+    echo OK >"$last_file" 2>/dev/null
+  elif [ "$rc" -eq 5 ]; then
+    tail="$(printf '%s\n' "$out" | grep -E 'VERIFY (FAIL|SUMMARY)|verify-only: FAIL' | tail -n 4 | paste -sd ' | ' - 2>/dev/null)"
+    log "STATE [$t] ALERT (verify-only FAIL) — image BEHIND origin/$branch :: ${tail:-<no detail>}"
+    if [ "$prev" != "ALERT" ]; then
+      notify "ALERT: $t live container on box $BOX is STALE — the running image is BEHIND published origin/$branch (already-merged code is not live). repo=$t ($repo) $(describe_commits "$repo" "$branch").${tail:+ detail: $tail.} Rebuild on the box: '$t-rebuild'. This watcher only verifies, it never rebuilds."
+      log "EDGE [$t] OK->ALERT notified"
+    else
+      log "DEDUP [$t] still ALERT — no re-notify"
+    fi
+    echo ALERT >"$last_file" 2>/dev/null
+  else
+    # Could-not-determine. Fail soft: log, do NOT page, do NOT touch the
+    # baseline (so a transient outage never emits a FALSE recovered).
+    log "WARN [$t] verify-only could not determine sync state (rc=$rc) — skip (baseline preserved) :: $(printf '%s' "$out" | tail -n 2 | paste -sd ' | ' - 2>/dev/null)"
+  fi
+  return 0
+}
+
+any=0
+for t in $TARGETS; do
+  any=1
+  check_one_target "$t"
+done
+[ "$any" -eq 1 ] || log "INFO no services configured (TARGETS empty) — nothing to watch"
+
+exit 0

@@ -1259,3 +1259,73 @@ sudo systemctl enable --now szl-box-sync-conflict-watch.timer
 sudo /usr/local/sbin/szl-box-sync-conflict-watch
 cat /var/lib/szl-box-sync-conflict/status.json
 ```
+
+---
+
+## szl-image-stale-watch — live image staleness alarm (a11oy + killinchu)
+
+`szl-image-stale-watch` (`box-scripts/sbin/szl-image-stale-watch`, driven by
+`szl-image-stale-watch.timer` every ~15 min) pages the team when a **live
+container on this box has fallen BEHIND its published `origin/main`** — i.e. code
+that has already been merged is not yet running. It watches the two self-hosted
+services that are rebuilt from a GitHub tree on the box:
+
+| service   | live container | rebuild helper                      | source tree (naming) |
+|-----------|----------------|-------------------------------------|----------------------|
+| a11oy     | `:7861`        | `/usr/local/sbin/a11oy-rebuild`     | `/opt/szl/a11oy`     |
+| killinchu | `:7862`        | `/usr/local/sbin/killinchu-rebuild` | `/opt/szl/killinchu` |
+
+Each run invokes `<svc>-rebuild --verify-only`, which `git fetch`es
+`origin/main` and then diffs the **running image** against it **without
+rebuilding** (exit `0` = in sync, `5` = drift/behind, anything else = could not
+determine). The watcher turns that on-demand check into a scheduled,
+edge-triggered alert.
+
+**It NEVER rebuilds.** It only ever calls the helper with `--verify-only` (a
+read-only comparison). A rebuild recreates the live container and stays an
+operator decision — this alarm only *surfaces* the drift (mirrors
+`szl-ns-scratch-stale-watch`, which surfaces expired namespaces but never
+deletes).
+
+**Alerting** (same convention as `receipt-chain-watch` /
+`szl-ns-scratch-stale-watch`): per service, edge-triggered + de-duped via its own
+state file under `/var/lib/szl-image-stale-watch/last_status.<svc>`:
+
+- drift first seen → **ALERT**, paged exactly once, **naming the repo and the
+  lagging commit** (`repo=<svc>`, `running=<sha> published=origin/main@<sha>`);
+- still drifted → **de-dupe**, never re-pages;
+- back in sync → **RECOVERED** once, then quiet.
+
+The push channel is the box's shared notifier `/usr/local/sbin/a11oy-uptime-notify`
+(reads `/etc/a11oy-uptime.env`), the same one the uptime / DNS / receipt-chain
+watchers use. Fail-soft: a missing/failed notifier still logs the alert. A
+missing rebuild helper (service/box absent) or a verify rc other than `0`/`5`
+(repo missing, `git fetch` failed, docker down) is a true **no-op** — logged, not
+paged, and the baseline is preserved so a transient outage never emits a false
+RECOVERED. Every run appends to `/var/log/szl-image-stale-watch/`.
+
+### Reinstall (after a box rebuild / reimage)
+
+```bash
+sudo install -m 0755 sbin/szl-image-stale-watch       /usr/local/sbin/
+sudo install -m 0644 systemd/szl-image-stale-watch.service /etc/systemd/system/
+sudo install -m 0644 systemd/szl-image-stale-watch.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now szl-image-stale-watch.timer
+```
+
+(`install.sh` does all of the above.)
+
+### Verify (safe, read-only — runs verify-only, never a rebuild)
+
+```bash
+sudo /usr/local/sbin/szl-image-stale-watch
+cat /var/lib/szl-image-stale-watch/last_status.a11oy
+cat /var/lib/szl-image-stale-watch/last_status.killinchu
+tail /var/log/szl-image-stale-watch/szl-image-stale-watch.log
+```
+
+Guarded against silent regression by the trio
+`scripts/image-stale-watch-guard-checks.sh` + `.test.sh` +
+`.github/workflows/image-stale-watch-guard.yml` (and counted by
+`alarm-guard-coverage`).

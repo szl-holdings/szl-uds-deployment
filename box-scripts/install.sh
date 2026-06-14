@@ -73,6 +73,7 @@ install -m 0755 "$here/sbin/authelia-rotate-demo"      /usr/local/sbin/authelia-
 install -m 0755 "$here/sbin/szl-receipt-checkpoint"     /usr/local/sbin/szl-receipt-checkpoint
 install -m 0755 "$here/sbin/bundle-digest-watch"       /usr/local/sbin/bundle-digest-watch
 install -m 0755 "$here/sbin/bundle-digest-recut"       /usr/local/sbin/bundle-digest-recut
+install -m 0755 "$here/sbin/szl-image-stale-watch"     /usr/local/sbin/szl-image-stale-watch
 
 echo "[install] copying systemd units to /etc/systemd/system ..."
 install -m 0644 "$here/systemd/a11oy-coexist.service"        /etc/systemd/system/a11oy-coexist.service
@@ -102,6 +103,8 @@ install -m 0644 "$here/systemd/szl-ns-scratch-watch.service" /etc/systemd/system
 install -m 0644 "$here/systemd/szl-ns-scratch-watch.timer"   /etc/systemd/system/szl-ns-scratch-watch.timer
 install -m 0644 "$here/systemd/szl-ns-scratch-stale-watch.service" /etc/systemd/system/szl-ns-scratch-stale-watch.service
 install -m 0644 "$here/systemd/szl-ns-scratch-stale-watch.timer"   /etc/systemd/system/szl-ns-scratch-stale-watch.timer
+install -m 0644 "$here/systemd/szl-image-stale-watch.service" /etc/systemd/system/szl-image-stale-watch.service
+install -m 0644 "$here/systemd/szl-image-stale-watch.timer"   /etc/systemd/system/szl-image-stale-watch.timer
 install -m 0644 "$here/systemd/a11oy-uptime-check.service"  /etc/systemd/system/a11oy-uptime-check.service
 install -m 0644 "$here/systemd/a11oy-uptime-check.timer"    /etc/systemd/system/a11oy-uptime-check.timer
 install -m 0644 "$here/systemd/dns-drift-check.service"     /etc/systemd/system/dns-drift-check.service
@@ -467,6 +470,7 @@ systemctl enable --now szl-receipts-orphan-watch.timer
 systemctl enable --now szl-receipt-checkpoint.timer
 systemctl enable --now bundle-digest-watch.timer
 systemctl enable --now bundle-digest-recut.timer
+systemctl enable --now szl-image-stale-watch.timer
 
 # Bring the cluster guards into a conformant state right now (idempotent no-ops
 # if the cluster is down or already conformant).

@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodically verify the live a11oy/killinchu images against published origin/main and alert on the drift edge
+
+[Timer]
+# First check a few minutes after boot (after docker is up), then every 15 min.
+# Cheap: each run is a `git fetch` + an image-vs-tree diff via <svc>-rebuild
+# --verify-only (no rebuild). Offset from the other watchers' boot delays.
+OnBootSec=7min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

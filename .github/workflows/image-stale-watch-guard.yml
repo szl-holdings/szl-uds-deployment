@@ -1,0 +1,95 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# image-stale-watch-guard.yml — Guard the `szl-image-stale-watch` box alarm (the
+# LIVE-IMAGE-BEHIND-origin/main alarm for a11oy:7861 + killinchu:7862 on box
+# 167.233.50.75) from silently regressing.
+#
+# szl-image-stale-watch (box-scripts/sbin/szl-image-stale-watch) runs
+# `<svc>-rebuild --verify-only` for a11oy and killinchu every ~15 min and pages
+# the team when a live container's image has fallen BEHIND published origin/main
+# (already-merged code that was never rebuilt onto the box). Its value rests on a
+# few fragile behaviours that produce NO visible symptom when broken until real
+# drift goes un-alerted:
+#   * drift first seen pages EXACTLY once (OK->ALERT edge);
+#   * while still drifted it DE-DUPEs (never re-pages — no alert storm);
+#   * once rebuilt it pages RECOVERED once, then stays quiet;
+#   * a missing rebuild helper / a verify rc other than 0|5 is a true NO-OP
+#     (exit 0, no page) and never a FALSE recovered;
+#   * it NEVER rebuilds — it only ever calls the helper with --verify-only;
+#   * the alert NAMES the repo and the lagging commit;
+#   * it stays WIRED into install.sh (script + units copied, timer enabled) and
+#     documented in README.md.
+# A sibling refactor of the script, install.sh, or README could quietly drop any
+# of these, re-opening the exact "the box serves stale merged code, un-alerted"
+# hole this alarm closed.
+#
+# The check logic was extracted from this workflow so it can be UNIT TESTED:
+# scripts/image-stale-watch-guard-checks.test.sh feeds each check a
+# deliberately-BROKEN copy of the script and asserts the check FAILS, plus that
+# the pristine repo PASSES. That self-test runs as the `self-test` job below, so
+# a future edit that neuters a check (passing vacuously) is caught here.
+#
+# The asserted invariants:
+#   chk1  szl-image-stale-watch exists and parses clean (bash -n)
+#   chk2  it runs `$bin --verify-only` (the in-sync/drift verdict source)
+#   chk3  edge lifecycle: drift->ALERT(1, named), still-drift de-dupe(0),
+#         recovered(1), steady-OK(0)
+#   chk4  helper-absent / verify-error each exit 0, never page, never
+#         false-recover
+#   chk5  never rebuilds (every rebuild-helper call carried --verify-only)
+#   chk6  wired into install.sh (script + units copied, timer enabled)
+#   chk7  documented in README.md (live image staleness alarm section)
+
+name: Image Stale Watch Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/image-stale-watch-guard-checks.test.sh
+
+  guard:
+    name: Assert the live-image-staleness alarm is intact
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check 1 — szl-image-stale-watch exists and parses clean
+        run: bash scripts/image-stale-watch-guard-checks.sh chk1 .
+
+      - name: Check 2 — runs the rebuild helper with --verify-only
+        run: bash scripts/image-stale-watch-guard-checks.sh chk2 .
+
+      - name: Check 3 — edge lifecycle (alert / de-dupe / recovered / steady)
+        run: bash scripts/image-stale-watch-guard-checks.sh chk3 .
+
+      - name: Check 4 — helper-absent / verify-error no-op
+        run: bash scripts/image-stale-watch-guard-checks.sh chk4 .
+
+      - name: Check 5 — never rebuilds
+        run: bash scripts/image-stale-watch-guard-checks.sh chk5 .
+
+      - name: Check 6 — wired into install.sh (script + timer enabled)
+        run: bash scripts/image-stale-watch-guard-checks.sh chk6 .
+
+      - name: Check 7 — documented in README.md
+        run: bash scripts/image-stale-watch-guard-checks.sh chk7 .
+
+      - name: Live-image-staleness alarm is intact
+        run: echo "The szl-image-stale-watch live-image-staleness alarm is intact."
