@@ -77,7 +77,19 @@ set -uo pipefail
 #          bash scripts/eval-arena-trend-watch-guard-checks.sh .
 #        REMOVE this entry and commit the workflow file once a workflow-scoped
 #        token is available (tracked as a follow-up).
-DEFAULT_ALLOWLIST="a11oy-uptime-check eval-arena-trend-watch"
+#   szl-box-sync-conflict-watch
+#     -> FULLY guarded in-repo by its TEXT guard scripts
+#        scripts/szl-box-sync-conflict-watch-guard-checks.sh + .test.sh (both
+#        green), which assert every invariant of the alarm. Its CI workflow
+#        .github/workflows/szl-box-sync-conflict-watch-guard.yml is authored and
+#        ready but could NOT be committed by the GitHub token used to ship this
+#        change (the token lacks the `workflow` scope GitHub requires to
+#        add/modify any .github/workflows/ file). Run the guard locally with:
+#          bash scripts/szl-box-sync-conflict-watch-guard-checks.test.sh && \
+#          bash scripts/szl-box-sync-conflict-watch-guard-checks.sh all .
+#        REMOVE this entry and commit the workflow file once a workflow-scoped
+#        token is available (tracked as a follow-up).
+DEFAULT_ALLOWLIST="a11oy-uptime-check eval-arena-trend-watch szl-box-sync-conflict-watch"
 
 # err FILE MESSAGE — emit a GitHub Actions error annotation.
 err() { echo "::error file=$1::$2"; }

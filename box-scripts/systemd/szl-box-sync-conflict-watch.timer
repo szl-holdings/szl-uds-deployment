@@ -1,0 +1,17 @@
+[Unit]
+Description=Periodically check the box szl-uds-deployment tree for an unresolved auto-sync conflict / retained stash
+
+[Timer]
+# szl-box-sync-pull.timer runs at OnBootSec=6min then every 15min. Land this
+# check ~1 min AFTER each pull so it observes the freshly-reconciled tree. The
+# watcher reads tree state directly (a conflict/stash persists until a human
+# resolves it), so exact alignment is not required — it will catch the state on
+# any cycle, and the szl-box-sync-pull.service ExecStartPost hook also runs it
+# immediately after each pull.
+OnBootSec=7min
+OnUnitActiveSec=15min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

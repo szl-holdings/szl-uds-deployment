@@ -1,0 +1,20 @@
+[Unit]
+Description=Alert when the box szl-uds-deployment auto-sync left an unresolved conflict / retained stash
+Documentation=file:///usr/local/sbin/szl-box-sync-conflict-watch
+After=network-online.target szl-box-sync-pull.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Real push notifications use the SAME notifier + credentials file as the
+# a11oy-uptime monitor (ntfy / Telegram / Slack-Discord webhook). The leading
+# "-" makes the env file optional, so the watcher still runs (logging only)
+# before any channel is configured.
+EnvironmentFile=-/etc/a11oy-uptime.env
+# Distinct ntfy title so box-sync conflict alerts read differently from others.
+Environment=NOTIFY_TITLE=szl-box-sync conflict
+# Always invoke the shared notifier on every conflict edge / RECOVERED. It is
+# fail-soft: with no channel configured it just exits and the alert is still
+# logged, so wiring this is harmless before the env file is filled in.
+Environment=NOTIFY_CMD=/usr/local/sbin/a11oy-uptime-notify
+ExecStart=/usr/local/sbin/szl-box-sync-conflict-watch

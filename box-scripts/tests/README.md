@@ -14,7 +14,7 @@ sudo CONFIRM=1 box-scripts/tests/run-all.sh  # full proof, on the box
 
 ## `watcher-edges.sh` — CI-safe, no root/cluster/network
 
-Drives all six watchers' healthy→ALERT edge through a capture-stub `NOTIFY_CMD`
+Drives all nine watchers' healthy→ALERT edge through a capture-stub `NOTIFY_CMD`
 and asserts each one (a) fires exactly once on the OK→ALERT transition and
 (b) de-dupes while the problem persists:
 
@@ -26,11 +26,14 @@ and asserts each one (a) fires exactly once on the OK→ALERT transition and
 | `szl-ns-scratch-watch` | stub audit tool reports an untracked namespace |
 | `szl-ns-scratch-stale-watch` | stub audit tool reports a past-TTL namespace |
 | `receipt-chain-watch` | `kubectl` stub: pepr present, receipts sink missing |
+| `a11oy-contracting-tool-watch` | stub `docker` yields an empty baked module |
+| `eval-arena-trend-watch` | stub validator reports the newest run DEGRADED |
+| `szl-box-sync-conflict-watch` | inline git repo left with a UU path + a retained `szl-box-sync autostash` stash |
 
 Cluster-bound watchers get past their cluster-up gate via PATH stubs for `k3d`
 and `kubectl`; the drift fixture (a tiny `.git` repo) is built inline. The
 script tests the committed copies in `box-scripts/sbin`, so it verifies the
-source of truth. Exit `0` = all 12 assertions passed, non-zero = any miss.
+source of truth. Exit `0` = all 18 assertions passed, non-zero = any miss.
 
 ## `restore-fleet.sh` — destructive, needs root + systemd (run on the box)
 

@@ -58,6 +58,7 @@ install -m 0755 "$here/sbin/a11oy-uptime-check"        /usr/local/sbin/a11oy-upt
 install -m 0755 "$here/sbin/a11oy-uptime-notify"       /usr/local/sbin/a11oy-uptime-notify
 install -m 0755 "$here/sbin/dns-drift-check"           /usr/local/sbin/dns-drift-check
 install -m 0755 "$here/sbin/eval-arena-trend-watch"    /usr/local/sbin/eval-arena-trend-watch
+install -m 0755 "$here/sbin/szl-box-sync-conflict-watch" /usr/local/sbin/szl-box-sync-conflict-watch
 install -m 0755 "$here/sbin/eval-arena-trend-validate" /usr/local/sbin/eval-arena-trend-validate
 install -m 0755 "$here/sbin/box-scripts-drift-check"     /usr/local/sbin/box-scripts-drift-check
 install -m 0755 "$here/sbin/szl-alert-relay"           /usr/local/sbin/szl-alert-relay
@@ -107,6 +108,8 @@ install -m 0644 "$here/systemd/dns-drift-check.service"     /etc/systemd/system/
 install -m 0644 "$here/systemd/dns-drift-check.timer"       /etc/systemd/system/dns-drift-check.timer
 install -m 0644 "$here/systemd/eval-arena-trend-watch.service" /etc/systemd/system/eval-arena-trend-watch.service
 install -m 0644 "$here/systemd/eval-arena-trend-watch.timer"   /etc/systemd/system/eval-arena-trend-watch.timer
+install -m 0644 "$here/systemd/szl-box-sync-conflict-watch.service" /etc/systemd/system/szl-box-sync-conflict-watch.service
+install -m 0644 "$here/systemd/szl-box-sync-conflict-watch.timer"   /etc/systemd/system/szl-box-sync-conflict-watch.timer
 install -m 0644 "$here/systemd/box-scripts-drift-check.service" /etc/systemd/system/box-scripts-drift-check.service
 install -m 0644 "$here/systemd/box-scripts-drift-check.timer"   /etc/systemd/system/box-scripts-drift-check.timer
 install -m 0644 "$here/systemd/szl-alert-relay.service"      /etc/systemd/system/szl-alert-relay.service
@@ -450,6 +453,7 @@ systemctl enable --now szl-ns-scratch-stale-watch.timer
 systemctl enable --now a11oy-uptime-check.timer
 systemctl enable --now dns-drift-check.timer
 systemctl enable --now eval-arena-trend-watch.timer
+systemctl enable --now szl-box-sync-conflict-watch.timer
 systemctl enable --now box-scripts-drift-check.timer
 systemctl enable --now vault-auto-unseal.timer
 systemctl enable --now vault-keystore-offbox-backup.timer
@@ -492,6 +496,9 @@ done
 # Validate the newest live eval-arena recorded run once now (idempotent: endpoint
 # down / empty history = honest no-op, no false page).
 [ -x /usr/local/sbin/eval-arena-trend-watch ] && /usr/local/sbin/eval-arena-trend-watch || true
+# Surface a half-merged box tree left by the auto-sync (UU paths / retained
+# szl-box-sync autostash). Idempotent: clean tree / no repo = honest no-op.
+[ -x /usr/local/sbin/szl-box-sync-conflict-watch ] && /usr/local/sbin/szl-box-sync-conflict-watch || true
 # Flag a stale image digest baked into a locally-built deploy tarball (a repin
 # without a re-cut). Idempotent no-op when no tarball is built or no pin exists.
 [ -x /usr/local/sbin/bundle-digest-watch ] && /usr/local/sbin/bundle-digest-watch || true

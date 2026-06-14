@@ -1213,3 +1213,49 @@ once). A box rebuild reinstalls it with the rest of the fleet.
 systemctl list-timers bundle-digest-watch.timer
 /usr/local/sbin/bundle-digest-watch; cat /var/lib/bundle-digest-watch/status.json
 ```
+
+# szl-box-sync-conflict-watch (auto-sync conflict / retained-stash alarm)
+
+Alerts when the box `szl-uds-deployment` auto-sync (`szl-box-sync` /
+`szl-box-sync-pull.timer`) could **not** cleanly reconcile the shared tree with
+`origin/main` and has left it in a **silent, half-merged state** — UU (unmerged)
+paths and/or a retained `szl-box-sync autostash` stash. The sync is
+non-destructive (no work is lost), but nobody is told the tree is conflict-marked
+and a sibling's edits are sitting in a stash; across many 15-min cycles those
+accumulate. This watcher makes that loud.
+
+## What it detects (any one -> ALERT)
+
+- one or more **unmerged (UU) paths** (`git ls-files -u`)
+- one or more **retained `szl-box-sync autostash` stashes** (`git stash list`,
+  matched to the EXACT autostash label so unrelated MANUAL stashes never trip it)
+
+It is **read-only** — it never pops/drops/clears a stash or resets the tree
+(auto-resolving would destroy a sibling's preserved work). It is edge-triggered
+(one page per distinct conflict, one on RECOVERED) and uses the same
+`a11oy-uptime-notify` channel as the other watchers. Full detail:
+`szl-box-sync-conflict-watch.README.md`.
+
+## Files
+
+```
+sbin/szl-box-sync-conflict-watch              # the alarm (read-only)
+systemd/szl-box-sync-conflict-watch.service   # oneshot: runs it (+ notifier env)
+systemd/szl-box-sync-conflict-watch.timer     # ~7 min after boot, then every 15 min
+```
+
+`szl-box-sync-pull.service` also carries an `ExecStartPost` hook that starts this
+watcher right after every pull, so a conflict is surfaced on the cycle that
+created it.
+
+## Reinstall / Verify
+
+```bash
+sudo install -m 0755 sbin/szl-box-sync-conflict-watch /usr/local/sbin/szl-box-sync-conflict-watch
+sudo install -m 0644 systemd/szl-box-sync-conflict-watch.service /etc/systemd/system/
+sudo install -m 0644 systemd/szl-box-sync-conflict-watch.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now szl-box-sync-conflict-watch.timer
+sudo /usr/local/sbin/szl-box-sync-conflict-watch
+cat /var/lib/szl-box-sync-conflict/status.json
+```

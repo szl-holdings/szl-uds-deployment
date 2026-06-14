@@ -102,7 +102,7 @@ assert_edge() {
 # Per-watcher fresh state dir so prev-state == OK and the edge fires.
 mkstate() { local d="$WORK/state/$1"; mkdir -p "$d/log"; printf '%s' "$d"; }
 
-echo "== driving 8 watcher OK->ALERT edges via a capture stub (no real channel) =="
+echo "== driving 9 watcher OK->ALERT edges via a capture stub (no real channel) =="
 
 # ---- 1. a11oy-uptime-check : unresolvable host -> DOWN -----------------------
 (
@@ -224,12 +224,31 @@ VSTUB
 ) || true
 
 
+# ---- 9. szl-box-sync-conflict-watch : UU conflict + retained autostash -------
+(
+  s="$(mkstate boxsyncconflict)"
+  export PATH="$ORIG_PATH"
+  repo="$WORK/boxsync/repo"; mkdir -p "$repo"
+  git -C "$repo" init -q
+  git -C "$repo" config user.email t@t; git -C "$repo" config user.name t
+  printf 'v1\n' > "$repo/f"; git -C "$repo" add f; git -C "$repo" commit -qm init
+  printf 'sibling-edit\n' > "$repo/f"
+  # the EXACT label szl-box-sync's reset_in_line writes (manual stashes ignored)
+  git -C "$repo" stash push -q -m "szl-box-sync autostash 2026-06-14T00:00:00Z"
+  printf 'origin-change\n' > "$repo/f"; git -C "$repo" add f; git -C "$repo" commit -qm ff
+  git -C "$repo" stash pop -q >/dev/null 2>&1 || true   # conflicts -> UU + stash retained
+  export REPO="$repo"
+  export STATE_DIR="$s" LOG_DIR="$s/log" LOG="$s/log/x.log" STATUS="$s/status.json" SIG_FILE="$s/problem.sig"
+  export CAPTURE_FILE="$WORK/cap.boxsyncconflict" NOTIFY_CMD="$CAPTURE_STUB" ALERT_PREFIX="$PREFIX"
+  assert_edge "szl-box-sync-conflict-watch" "$SBIN/szl-box-sync-conflict-watch"
+) || true
+
 echo
 checks=$(wc -l < "$RESULTS" | tr -d ' ')
 fails=$(grep -cx fail "$RESULTS" || true)
-# 8 watchers x 2 assertions (fire edge + de-dup) = 16. A short count means a
+# 9 watchers x 2 assertions (fire edge + de-dup) = 18. A short count means a
 # subshell died before recording its result — treat that as a failure too.
-EXPECTED=16
+EXPECTED=18
 if [ "$checks" -ne "$EXPECTED" ]; then
   echo "  FAIL expected $EXPECTED assertions but only $checks ran (a watcher block aborted early)"
   fails=$((fails + (EXPECTED - checks)))

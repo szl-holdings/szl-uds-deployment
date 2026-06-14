@@ -11,3 +11,9 @@ Type=oneshot
 # logged) when the box is AHEAD or holds unique committed work. It never pushes
 # and never discards unique work without --force, so it is safe to run unattended.
 ExecStart=/usr/local/sbin/szl-box-sync pull
+# After each pull, surface a half-merged tree (UU paths / a retained
+# `szl-box-sync autostash` stash) immediately via the conflict watcher.
+# Leading "-" so a pull is never marked failed by this post-hook;
+# --no-block avoids a start-job deadlock. Harmless no-op on a box where
+# the watcher unit is not installed.
+ExecStartPost=-/usr/bin/systemctl start --no-block szl-box-sync-conflict-watch.service
