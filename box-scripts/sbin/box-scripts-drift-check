@@ -117,17 +117,17 @@ WATCH_EXCLUDE="${WATCH_EXCLUDE:-}"
 # uptime/DNS trio. Derivation (above) remains the PRIMARY, self-maintaining path
 # for normal operation; this list only has to be touched if install.sh is
 # unreadable AND a new helper must be covered in that degraded mode.
-FALLBACK_SBIN="a11oy-contracting-tool-watch a11oy-mode a11oy-port-guard a11oy-serverlb-deconflict \
+FALLBACK_SBIN="a11oy-contracting-tool-watch a11oy-mode a11oy-port-guard a11oy-readiness-watch a11oy-serverlb-deconflict \
 a11oy-signing-key-watch a11oy-uptime-check a11oy-uptime-notify \
 authelia-rotate-demo box-scripts-drift-check bundle-digest-recut bundle-digest-watch dns-drift-check \
 eval-arena-trend-validate eval-arena-trend-watch \
 istiod-fit-strategy receipt-chain-watch receipt-flood-watch receipt-throttle-watch \
 szl-alert-relay szl-alert-relay-watch szl-box-sync-conflict-watch szl-core-rightsize szl-ns-scratch \
-szl-ns-scratch-stale-watch szl-ns-scratch-watch szl-receipt-checkpoint \
+szl-image-stale-watch szl-ns-scratch-stale-watch szl-ns-scratch-watch szl-receipt-checkpoint \
 szl-receipts-cold-offsite szl-receipts-orphan-watch szl-receipts-retention \
 szl-signing-health-check vault-auto-unseal vault-keystore-offbox-backup"
 FALLBACK_UNITS="a11oy-coexist.service a11oy-contracting-tool-watch.service a11oy-contracting-tool-watch.timer \
-a11oy-port-guard.service a11oy-port-guard.timer a11oy-signing-key-watch.service \
+a11oy-port-guard.service a11oy-port-guard.timer a11oy-readiness-watch.service a11oy-readiness-watch.timer a11oy-signing-key-watch.service \
 a11oy-signing-key-watch.timer a11oy-uptime-check.service a11oy-uptime-check.timer \
 authelia-rotate-demo.service authelia-rotate-demo.timer box-scripts-drift-check.service \
 box-scripts-drift-check.timer bundle-digest-recut.service bundle-digest-recut.timer \
@@ -140,7 +140,7 @@ receipt-flood-watch@.timer receipt-throttle-watch.service receipt-throttle-watch
 receipt-throttle-watch.timer receipt-throttle-watch@.timer szl-alert-relay.service \
 szl-alert-relay-watch.service szl-alert-relay-watch.timer szl-core-rightsize.service \
 szl-box-sync-conflict-watch.service szl-box-sync-conflict-watch.timer \
-szl-core-rightsize.timer szl-ns-scratch-stale-watch.service szl-ns-scratch-stale-watch.timer \
+szl-core-rightsize.timer szl-image-stale-watch.service szl-image-stale-watch.timer szl-ns-scratch-stale-watch.service szl-ns-scratch-stale-watch.timer \
 szl-ns-scratch-watch.service szl-ns-scratch-watch.timer szl-receipt-checkpoint.service \
 szl-receipt-checkpoint.timer szl-receipts-cold-offsite.service \
 szl-receipts-cold-offsite.timer szl-receipts-orphan-watch.service \
