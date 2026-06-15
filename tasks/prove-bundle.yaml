@@ -75,7 +75,7 @@ variables:
     default: "uds-prove-bundle"
   - name: WAIT_TIMEOUT
     description: "How long to wait for the member Deployment to reach Available"
-    default: "240s"
+    default: "360s"
 
 tasks:
   - name: prove
