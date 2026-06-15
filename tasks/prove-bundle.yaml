@@ -76,6 +76,13 @@ variables:
   - name: WAIT_TIMEOUT
     description: "How long to wait for the member Deployment to reach Available"
     default: "360s"
+  - name: DOMAIN
+    description: >-
+      Ingress domain used to render each member's SSO redirect URIs. Must be a
+      valid host so Keycloak/pepr-uds-core accept the OIDC client (an empty
+      domain yields an invalid redirect URI and the Package admission webhook
+      rejects it). Matches the canonical source package's a11oy.uds.dev.
+    default: "uds.dev"
 
 tasks:
   - name: prove
@@ -242,3 +249,4 @@ tasks:
           echo "        Available). HONEST SCOPE: pull + signature + individual deployability only — this"
           echo "        does NOT claim all five organs boot together (co-residency is not claimed)."
           echo "Cluster left intact for inspection: ${PROVE_CLUSTER}-${ORGAN} (delete with: k3d cluster delete ${PROVE_CLUSTER}-${ORGAN})"
+
