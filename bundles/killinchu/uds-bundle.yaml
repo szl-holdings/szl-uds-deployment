@@ -15,13 +15,22 @@
 #     uds zarf package create ../../packages/killinchu -f zarf-mesh-ready.yaml \
 #       --set DOMAIN=uds.dev -a amd64 --flavor upstream --confirm
 #
-# HONEST STATUS:
-#   - killinchu-bundle:0.5.0 PUBLISHED on GHCR is CURRENT (re-probed
-#     sha256:e59921332c37408fb5a62b270eeeafb1f1ab44aebb350f18662c37aa2c67426f,
-#     HTTP 200). Unlike a11oy-bundle, killinchu-bundle does NOT need a re-pin.
-#   - killinchu organ image uds-v0.2.0 VERIFIED-LIVE
-#     (sha256:e0fb6c3a...). The edge relay sidecar image (killinchu-relay:0.5.0)
-#     is NOT yet published (404) — verify before deploy.
+# HONEST STATUS (re-verified 2026-06-15 via GitHub Packages API):
+#   - killinchu ORGAN image is FRESH: ghcr.io/szl-holdings/killinchu:uds-v0.2.0
+#     digest sha256:946f1fc9675933a373364d372a03f4f8314ebee6a8adcd97926fa52b081af7cc
+#     (rebuilt 2026-06-15T14:52Z; "GHCR Build + Push" workflow GREEN, run
+#     21171eec success). This supersedes the old placeholder digest (e0fb6c3a...)
+#     this note previously carried.
+#   - killinchu-bundle:0.5.0 PUBLISHED on GHCR is
+#     sha256:e59921332c37408fb5a62b270eeeafb1f1ab44aebb350f18662c37aa2c67426f
+#     (pushed 2026-06-06). NOTE: the killinchu organ has since been rebuilt
+#     (14:52Z), so the published bundle now predates the current organ. To be
+#     fully fresh it should be RE-PUBLISHED + cosign-signed (FA-001, FOUNDER-ONLY)
+#     alongside a11oy-bundle. This member resolves via path: build below, so
+#     `uds create` already composes the FRESH organ; only the published OCI
+#     artifact lags.
+#   - The edge relay sidecar image (killinchu-relay:0.5.0) is NOT yet published
+#     (no GHCR package) — verify before any relay-dependent deploy.
 #
 # Deploy: uds deploy oci://ghcr.io/szl-holdings/killinchu-bundle:0.5.0 --confirm
 kind: UDSBundle
