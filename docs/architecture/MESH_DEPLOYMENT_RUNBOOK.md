@@ -31,13 +31,13 @@ uds version                 # uds-cli present (for Package CR apply via operator
 kubectl apply -f mesh/namespaces.yaml
 
 # Equivalent imperative form for namespaces that already exist:
-for ns in szl-rosie szl-a11oy szl-amaru szl-sentra szl-vessels; do
+for ns in szl-rosie szl-a11oy szl-amaru szl-sentra szl-killinchu; do
   kubectl label namespace "$ns" istio-injection=enabled --overwrite
 done
 
 # Confirm the label took:
 kubectl get namespace -L istio-injection \
-  szl-rosie szl-a11oy szl-amaru szl-sentra szl-vessels szl-receipts
+  szl-rosie szl-a11oy szl-amaru szl-sentra szl-killinchu szl-receipts
 ```
 
 The `istio-injection=enabled` label triggers automatic sidecar injection on subsequent pod creation ([Istio sidecar injection](https://istio.io/latest/docs/setup/additional-setup/sidecar-injection/)).
@@ -50,7 +50,7 @@ The `istio-injection=enabled` label triggers automatic sidecar injection on subs
 
 ```bash
 # Injection happens at pod creation time, so existing pods must be recreated.
-for ns in szl-rosie szl-a11oy szl-amaru szl-sentra szl-vessels szl-receipts; do
+for ns in szl-rosie szl-a11oy szl-amaru szl-sentra szl-killinchu szl-receipts; do
   kubectl rollout restart deployment -n "$ns"
   kubectl rollout status  deployment -n "$ns" --timeout=120s
 done
@@ -70,7 +70,7 @@ kubectl apply -f packages/rosie/uds-package.yaml
 kubectl apply -f packages/a11oy/uds-package.yaml
 kubectl apply -f packages/amaru/uds-package.yaml
 kubectl apply -f packages/sentra/uds-package.yaml
-kubectl apply -f packages/vessels/uds-package.yaml
+kubectl apply -f packages/killinchu/uds-package.yaml
 
 # The UDS Operator (Pepr) reconciles each Package into VirtualService +
 # NetworkPolicy + Keycloak client + authservice protection + ServiceMonitor.
@@ -102,7 +102,7 @@ STRICT requires every inbound connection to the namespace's workloads to be an m
 kubectl apply -f mesh/authpolicies/
 
 kubectl get authorizationpolicies -A | grep allow-mesh-to
-# expect: allow-mesh-to-rosie / -a11oy / -amaru / -sentra / -vessels / -receipts
+# expect: allow-mesh-to-rosie / -a11oy / -amaru / -sentra / -killinchu / -receipts
 ```
 
 Each `AuthorizationPolicy` is an `ALLOW` policy listing the permitted caller SPIFFE principals for one callee workload; the implicit deny (everything not allowed is rejected) enforces the 14 DENY pairs ([Istio AuthorizationPolicy](https://istio.io/latest/docs/reference/config/security/authorization-policy/), [Istio security best practices](https://istio.io/latest/docs/ops/best-practices/security/)).
@@ -123,7 +123,7 @@ kubectl exec -n szl-a11oy deploy/a11oy -c a11oy -- \
 # 6c. Denied path is blocked by AuthorizationPolicy (AC-2)
 kubectl exec -n szl-amaru deploy/amaru -c amaru -- \
   curl -s -o /dev/null -w '%{http_code}\n' \
-  http://vessels.szl-vessels.svc.cluster.local:8080/healthz  # expect 403
+  http://killinchu.szl-killinchu.svc.cluster.local:8080/healthz  # expect 403
 
 # 6d. Receipt chain reachable + Ed25519-verifiable (AC-3)
 kubectl exec -n szl-a11oy deploy/a11oy -c a11oy -- \
@@ -144,7 +144,7 @@ Full pass/fail definitions are in [`MESH_ACCEPTANCE_CRITERIA.md`](./MESH_ACCEPTA
 kubectl delete -f mesh/authpolicies/
 kubectl delete -f mesh/peerauth/peerauthentication-strict.yaml
 # Optionally revert namespaces to no injection and restart:
-for ns in szl-rosie szl-a11oy szl-amaru szl-sentra szl-vessels; do
+for ns in szl-rosie szl-a11oy szl-amaru szl-sentra szl-killinchu; do
   kubectl label namespace "$ns" istio-injection- 
   kubectl rollout restart deployment -n "$ns"
 done
@@ -162,7 +162,7 @@ Before any cluster apply, validate the YAML offline. With cluster access, use th
 # Server-side schema validation (requires cluster + CRDs installed):
 kubectl apply --dry-run=server -f mesh/peerauth/peerauthentication-strict.yaml
 kubectl apply --dry-run=server -f mesh/authpolicies/
-for p in rosie a11oy amaru sentra vessels; do
+for p in rosie a11oy amaru sentra killinchu; do
   kubectl apply --dry-run=server -f packages/$p/uds-package.yaml
 done
 
