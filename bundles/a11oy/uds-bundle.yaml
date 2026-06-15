@@ -16,14 +16,24 @@
 #     uds zarf package create ../../packages/a11oy -f zarf-mesh-ready.yaml \
 #       --set DOMAIN=uds.dev -a amd64 --flavor upstream --confirm
 #
-# HONEST STATUS:
-#   - a11oy-bundle:0.5.0 currently PUBLISHED on GHCR is STALE
-#     (sha256:d801f8e4...; built against an older a11oy organ image; the organ
-#     image was rebuilt — re-probed digest is now sha256:99e4ded1...).
-#     Re-publish this bundle (uds-canonical-bundles-publish.yml, bundle=a11oy)
-#     and re-verify the new digest (must differ from d801f8e4...) before deploy.
+# HONEST STATUS (re-verified 2026-06-15 via GitHub Packages API):
+#   - a11oy ORGAN image is now FRESH: ghcr.io/szl-holdings/a11oy:uds-v0.3.0
+#     digest sha256:088f8da12625eda3f43b459aa4da8d908a01137d9c3cdbf4b71a8e48bab2bf6e
+#     (rebuilt 2026-06-15T16:38Z by the now-GREEN "GHCR Build + Push" workflow,
+#     run 27041cf2/eb972068 success; earlier 81e54c3f run was RED and has since
+#     been fixed by the sibling a11oy-build dev). This supersedes the old
+#     placeholder digest (99e4ded1...) that this note previously carried.
+#   - a11oy-bundle:0.5.0 currently PUBLISHED on GHCR is STILL STALE
+#     (sha256:d801f8e461dfd519b5f8593322e75b89a1e66d4da9f6d72d0937c8ff2de64b51,
+#     pushed 2026-06-06; built against the OLD organ image). It must be
+#     RE-PUBLISHED against the fresh organ above, then cosign-signed with the
+#     FA-001 key (FOUNDER-ONLY — see UDS_COSIGN_FOUNDER_HANDOFF.md). This member
+#     resolves via path: build below, so `uds create` picks up the fresh organ
+#     automatically; the staleness is in the PUBLISHED OCI artifact only.
+#     After republish, the new bundle digest MUST differ from d801f8e4...
 #   - For a maintained all-in-one today, prefer: szl-mesh:0.4.0
-#     (sha256:7f5fce32...; VERIFIED-LIVE).
+#     (sha256:7f5fce3238ce3d255b322340bbe18cad1eb656e677065a2757637337300cac7f;
+#     VERIFIED-LIVE).
 #
 # Deploy: uds deploy oci://ghcr.io/szl-holdings/a11oy-bundle:0.5.0 --confirm
 kind: UDSBundle
