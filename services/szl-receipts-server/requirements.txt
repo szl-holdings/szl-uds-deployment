@@ -6,7 +6,7 @@
 # a follow-up PR can add a hashed lockfile for fully reproducible builds.
 
 # Ed25519 signing (PhD Crypto Finding A2 fix).
-cryptography>=48.0.0
+cryptography>=49.0.0
 
 # Real OpenTelemetry spans exported via OTLP/gRPC (PhD Systems Scope 9 fix).
 opentelemetry-sdk>=1.42.1
