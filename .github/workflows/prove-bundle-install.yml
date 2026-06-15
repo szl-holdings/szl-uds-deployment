@@ -78,7 +78,7 @@ permissions:
 
 env:
   ZARF_VERSION: "v0.77.0"
-  UDS_CLI_VERSION: "v0.31.0"
+  UDS_CLI_VERSION: "v0.32.0"
   COSIGN_VERSION: "v2.4.3"
   REGISTRY: "ghcr.io"
   ORG: "szl-holdings"
