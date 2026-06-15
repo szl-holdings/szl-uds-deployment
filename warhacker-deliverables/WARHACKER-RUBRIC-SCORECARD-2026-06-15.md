@@ -126,10 +126,13 @@ without the meter.
    pushing.)*
 4. **Energy MEASURED joules (roadmap).** On-box NVML exporter + signed JouleCharge
    receipt chain. Until then: honestly SAMPLE.
-5. **SLSA / ATO.** L1 honest, L2 where `attest-build-provenance` runs + `cosign
-   verify-attestation` succeeds, L3 roadmap; ATO-aligned roadmap only — never a real
-   ATO. Bundle-level build-provenance is not earned (CI token lacks
-   `attestations:write`); the cosign signature is the bundle provenance.
+5. **SLSA / ATO.** L1 honest across all bundles. Level-2 build-provenance is roadmap,
+   not yet earned: only the shipping products a11oy and killinchu wire
+   `attest-build-provenance`, and even there `cosign verify-attestation` returns no
+   matching attestation yet (org-level `attestations:write` pending). L3 roadmap;
+   ATO-aligned roadmap only — never a real ATO. Bundle-level build-provenance is not
+   earned (CI token lacks `attestations:write`); the cosign signature is the bundle
+   provenance.
 
 ## Live deploy proof already in hand (independent of the CI harness)
 From `UDS-ECOSYSTEM-ALIGNMENT-AND-DEPLOY-PROOF-2026-06-15.md`: in live k3d
