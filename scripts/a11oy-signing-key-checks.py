@@ -26,6 +26,14 @@
 #   4. udspackage-gated  — the uds.dev/v1alpha1 Package renders only when
 #                          .Values.udsPackage.enabled (off the UDS-Core mesh the CRD
 #                          is absent, so an always-on Package fails `helm install`).
+#   5. no-istio-annotation — the key-init Job carries NO sidecar.istio.io/* (istio
+#                          sidecar-injection) annotation. uds-core (pepr-uds-core)
+#                          DENIES these annotations on mesh-governed namespaces, so
+#                          the admission webhook REJECTS the Job, it never runs, the
+#                          signing-key Secret is never provisioned and a11oy falls
+#                          back to an ephemeral key. The cluster runs Istio in
+#                          AMBIENT mode (ztunnel, no per-pod sidecar) so the Job
+#                          needs no istio annotation at all. This was the bug.
 #
 # These mirror scripts/chart-guard-checks.py: the bespoke assertion logic lives
 # here so a11oy-signing-key-checks.test.py can feed each check deliberately-broken
@@ -38,6 +46,7 @@
 #   a11oy-signing-key-checks.py secret-name-match <rendered.yaml>
 #   a11oy-signing-key-checks.py zarf-agent-ignore <render-on.yaml> <render-off.yaml>
 #   a11oy-signing-key-checks.py udspackage-gated  <render-on.yaml> <render-off.yaml>
+#   a11oy-signing-key-checks.py no-istio-annotation <rendered.yaml>
 #
 # Each subcommand exits 0 when its property holds and 1 (printing a GitHub
 # ::error annotation) when it is regressed.
@@ -67,6 +76,13 @@ def _pod_template_labels(doc):
     return (
         ((doc.get("spec") or {}).get("template") or {}).get("metadata") or {}
     ).get("labels") or {}
+
+
+def _pod_template_annotations(doc):
+    """Pod-template annotations of a workload doc ({} if none)."""
+    return (
+        ((doc.get("spec") or {}).get("template") or {}).get("metadata") or {}
+    ).get("annotations") or {}
 
 
 def _containers(doc):
@@ -255,6 +271,60 @@ def udspackage_gated(render_on, render_off):
     return 0
 
 
+# ── no-istio-annotation ───────────────────────────────────────────────────────
+# uds-core (pepr-uds-core) DENIES istio sidecar-injection annotations
+# (sidecar.istio.io/*) on every mesh-governed namespace — the admission webhook
+# REJECTS the object regardless of the annotation's value ("true" OR "false").
+# When this lands on the receipt-key-init Job the Job is rejected, never runs, the
+# signing-key Secret is never provisioned and a11oy silently falls back to an
+# ephemeral key. The cluster runs Istio in AMBIENT mode (ztunnel, no per-pod
+# sidecar) so the Job needs no istio annotation at all. This was the actual bug;
+# the existing checks above (curve, filenames, secret-name) all stayed GREEN while
+# it shipped — hence this dedicated invariant.
+ISTIO_ANNOTATION_MARKER = ".istio.io/"
+
+
+def _istio_annotations(annotations):
+    return {k: v for k, v in (annotations or {}).items()
+            if ISTIO_ANNOTATION_MARKER in str(k)}
+
+
+def no_istio_annotation(rendered):
+    docs = _load_all(rendered)
+    job, _ = _keygen_job(docs)
+    if job is None:
+        return err(
+            "no receipt-key-init Job with a 'keygen' container found in %s — "
+            "cannot confirm it carries no istio sidecar-injection annotation "
+            "(the key-init Job must exist for a11oy to get a persistent key)"
+            % rendered
+        )
+    # The sidecar-injection annotation is read off the POD template, but uds-core
+    # rejects an istio annotation anywhere on the object, so check the Job's own
+    # metadata too — either placement reproduces the bug.
+    job_meta = (job.get("metadata") or {}).get("annotations") or {}
+    pod_meta = _pod_template_annotations(job)
+    offenders = {}
+    offenders.update({"Job." + k: v for k, v in _istio_annotations(job_meta).items()})
+    offenders.update({"pod." + k: v for k, v in _istio_annotations(pod_meta).items()})
+    if offenders:
+        listed = ", ".join("%s=%r" % (k, v) for k, v in sorted(offenders.items()))
+        return err(
+            "receipt-key-init Job carries istio sidecar-injection annotation(s) "
+            "{%s} — uds-core (pepr-uds-core) DENIES sidecar.istio.io/* annotations "
+            "(any value) on mesh-governed namespaces, so the admission webhook "
+            "REJECTS the key-init Job: it never runs, the signing-key Secret is "
+            "never provisioned and a11oy silently falls back to an ephemeral key "
+            "that changes on every restart. The cluster runs Istio in AMBIENT mode "
+            "(ztunnel, no per-pod sidecar) so the Job needs no istio annotation at "
+            "all — remove it (mirrors the proven szl-receipts key-init pattern)."
+            % listed
+        )
+    print("OK: no-istio-annotation — receipt-key-init Job carries no "
+          "sidecar.istio.io/* annotation (neither Job metadata nor pod template)")
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -269,6 +339,8 @@ def main():
     s = sub.add_parser("udspackage-gated")
     s.add_argument("render_on")
     s.add_argument("render_off")
+    s = sub.add_parser("no-istio-annotation")
+    s.add_argument("rendered")
 
     a = p.parse_args()
     if a.cmd == "keyinit-ecdsa":
@@ -279,6 +351,8 @@ def main():
         return zarf_agent_ignore(a.render_on, a.render_off)
     if a.cmd == "udspackage-gated":
         return udspackage_gated(a.render_on, a.render_off)
+    if a.cmd == "no-istio-annotation":
+        return no_istio_annotation(a.rendered)
     return err("unknown subcommand")
 
 
