@@ -63,7 +63,7 @@ components:
         files:
           - manifests/receipt-key-init.yaml
     images:
-      - ghcr.io/szl-holdings/a11oy:uds-v0.3.0@sha256:82ee4c3217b864a9205a21d6cdf11cde977810ef108fc7c9248003308c135272
+      - ghcr.io/szl-holdings/a11oy:uds-v0.3.0@sha256:715e0af70307115cfa3238da1a8f02e4cd872318b5f83582b7af1daca0a90e10
     actions:
       onDeploy:
         after:
@@ -94,7 +94,7 @@ components:
           - manifests/deployment.yaml
     images:
       # VERIFIED-LIVE on GHCR (HTTP 200). Digest pinned for supply-chain integrity.
-      - ghcr.io/szl-holdings/a11oy:uds-v0.3.0@sha256:82ee4c3217b864a9205a21d6cdf11cde977810ef108fc7c9248003308c135272
+      - ghcr.io/szl-holdings/a11oy:uds-v0.3.0@sha256:715e0af70307115cfa3238da1a8f02e4cd872318b5f83582b7af1daca0a90e10
     actions:
       onDeploy:
         after:
