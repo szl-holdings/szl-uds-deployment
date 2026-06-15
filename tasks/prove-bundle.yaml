@@ -165,6 +165,7 @@ tasks:
           fi
           echo "Deploying substrate bundle: ${BUNDLE}"
           uds deploy "${BUNDLE}" \
+            --skip-signature-validation \
             --set DOMAIN="${DOMAIN}" \
             --set INSECURE_ADMIN_PASSWORD_GENERATION=true \
             --confirm \
