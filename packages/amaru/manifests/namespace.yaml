@@ -8,8 +8,21 @@ metadata:
   labels:
     app.kubernetes.io/name: amaru
     szl.io/component: uds-workload
-    # UDS Operator + Istio sidecar injection
-    istio-injection: enabled
-    # Pod Security Standards: restricted enforcement (doctrine)
-    pod-security.kubernetes.io/enforce: restricted
+    # UDS Core runs Istio in AMBIENT mode (ztunnel, no per-pod sidecar/init).
+    # A sidecar would add a privileged istio-init container (NET_ADMIN/NET_RAW,
+    # runAsUser 0) that violates restricted PodSecurity and gets every pod in the
+    # namespace rejected. Mirrors charts/<organ> + the proven szl-receipts ns.
+    istio.io/dataplane-mode: ambient
+    # SSO (authservice) is enabled on this Package, so UDS Core creates a
+    # per-namespace ambient waypoint (istio-proxy). The istiod-generated waypoint
+    # pod does NOT set seccompProfile=RuntimeDefault, so `restricted` rejects it
+    # at the ReplicaSet and the operator never programs the gateway. Enforce
+    # `baseline` so the waypoint schedules; keep audit/warn at `restricted` so the
+    # app pod's own compliance is still surfaced. The organ app pod itself is
+    # fully restricted-compliant (runAsNonRoot, seccompProfile, drop ALL).
+    pod-security.kubernetes.io/enforce: baseline
     pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest

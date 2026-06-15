@@ -84,11 +84,11 @@ components:
       flavor: upstream
     manifests:
       - name: szl-a11oy-uds-package
-        namespace: a11oy
+        namespace: szl-a11oy
         files:
           - uds-package-mesh-ready.yaml
       - name: szl-a11oy-workload
-        namespace: a11oy
+        namespace: szl-a11oy
         files:
           - manifests/namespace.yaml
           - manifests/deployment.yaml
@@ -104,7 +104,7 @@ components:
               cluster:
                 kind: Deployment
                 name: a11oy
-                namespace: a11oy
+                namespace: szl-a11oy
                 condition: Available
 
   # ── unicorn flavor: minimal CVE baseline (Chainguard/Wolfi) ─────────────────
@@ -116,11 +116,11 @@ components:
       flavor: unicorn
     manifests:
       - name: szl-a11oy-uds-package
-        namespace: a11oy
+        namespace: szl-a11oy
         files:
           - uds-package-mesh-ready.yaml
       - name: szl-a11oy-workload
-        namespace: a11oy
+        namespace: szl-a11oy
         files:
           - manifests/namespace.yaml
           - manifests/deployment.yaml
@@ -136,7 +136,7 @@ components:
               cluster:
                 kind: Deployment
                 name: a11oy
-                namespace: a11oy
+                namespace: szl-a11oy
                 condition: Available
 
   # ── SBOM attestation component — DISABLED by Forge 2026-06-15 ───────────────

@@ -32,7 +32,7 @@ apiVersion: uds.dev/v1alpha1
 kind: Package
 metadata:
   name: a11oy
-  namespace: a11oy
+  namespace: szl-a11oy
   labels:
     app.kubernetes.io/name: a11oy
     szl.io/component: uds-package
@@ -112,7 +112,7 @@ spec:
 
       # Append-only ledger Postgres egress (in-namespace)
       - direction: Egress
-        remoteNamespace: a11oy
+        remoteNamespace: szl-a11oy
         remoteSelector:
           app.kubernetes.io/name: postgresql
         selector:
