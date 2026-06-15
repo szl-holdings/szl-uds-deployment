@@ -12,6 +12,8 @@
 #   zarf-agent-ignore : the label is hard-coded on (or never wired) regardless of
 #                       the flag.
 #   udspackage-gated  : the Package renders even when udsPackage.enabled is false.
+#   no-istio-annotation : a sidecar.istio.io/inject annotation creeps back onto the
+#                       key-init Job (uds-core rejects the Job -> ephemeral key).
 #
 # Catches a future edit that neuters a check (green while guarding nothing). Run
 # by the `self-test` job in .github/workflows/a11oy-signing-key-guard.yml. No
@@ -64,12 +66,20 @@ GOOD_KEYGEN_SCRIPT = (
 )
 
 
-def keyinit_doc(script, key_secret="szl-a11oy-receipts-ecdsa-p256"):
+def keyinit_doc(script, key_secret="szl-a11oy-receipts-ecdsa-p256",
+                pod_annotations=None):
+    pod_meta = ""
+    if pod_annotations:
+        pod_meta = (
+            "    metadata:\n      annotations:\n"
+            + "".join("        %s: %s\n" % (k, v)
+                      for k, v in pod_annotations.items())
+        )
     return (
         "apiVersion: batch/v1\n"
         "kind: Job\n"
         "metadata:\n  name: a11oy-receipt-key-init\n"
-        "spec:\n  template:\n    spec:\n      containers:\n"
+        "spec:\n  template:\n" + pod_meta + "    spec:\n      containers:\n"
         "        - name: keygen\n"
         "          env:\n"
         "            - name: KEY_SECRET\n"
@@ -177,6 +187,40 @@ def main():
         # Package renders even with the gate "off".
         rc, out = run("udspackage-gated", pkg_on, pkg_on)
         case("udspackage-gated FAILS when Package ignores the gate", False, rc, out)
+
+        # ── no-istio-annotation ────────────────────────────────────────────────
+        # The actual bug: a sidecar.istio.io/inject annotation on the key-init Job
+        # gets the Job rejected by uds-core's admission webhook (any value), so the
+        # signing-key Secret is never provisioned and a11oy falls back to ephemeral.
+        clean = write(d, "ni-clean.yaml", keyinit_doc(GOOD_KEYGEN_SCRIPT))
+        rc, out = run("no-istio-annotation", clean)
+        case("no-istio-annotation PASSES when no istio annotation present",
+             True, rc, out)
+
+        # The exact regression — sidecar.istio.io/inject: "false" (uds-core rejects
+        # the annotation key regardless of value).
+        inj_false = write(
+            d, "ni-inject-false.yaml",
+            keyinit_doc(GOOD_KEYGEN_SCRIPT,
+                        pod_annotations={"sidecar.istio.io/inject": '"false"'}))
+        rc, out = run("no-istio-annotation", inj_false)
+        case("no-istio-annotation FAILS on sidecar.istio.io/inject=false",
+             False, rc, out)
+
+        # Same annotation with the opposite value is rejected just the same.
+        inj_true = write(
+            d, "ni-inject-true.yaml",
+            keyinit_doc(GOOD_KEYGEN_SCRIPT,
+                        pod_annotations={"sidecar.istio.io/inject": '"true"'}))
+        rc, out = run("no-istio-annotation", inj_true)
+        case("no-istio-annotation FAILS on sidecar.istio.io/inject=true",
+             False, rc, out)
+
+        # No keygen Job at all (the key-init Job must exist for a persistent key).
+        rc, out = run("no-istio-annotation",
+                      write(d, "ni-none.yaml", deployment_doc()))
+        case("no-istio-annotation FAILS when key-init Job is absent",
+             False, rc, out)
 
     print("\n%d passed, %d failed" % (PASS, FAILED))
     return 1 if FAILED else 0

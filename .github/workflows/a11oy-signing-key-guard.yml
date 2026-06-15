@@ -21,6 +21,13 @@
 #      to nothing.
 #   4. The uds.dev/v1alpha1 Package must render only when udsPackage.enabled — it
 #      was rendered unconditionally.
+#   5. The key-init Job must carry NO sidecar.istio.io/* (istio sidecar-injection)
+#      annotation. uds-core (pepr-uds-core) DENIES these annotations on
+#      mesh-governed namespaces (any value), so the admission webhook REJECTS the
+#      Job, it never runs and the signing-key Secret is never provisioned. The
+#      cluster runs Istio in AMBIENT mode (ztunnel, no per-pod sidecar) so the Job
+#      needs no istio annotation at all — this was the actual bug, and the four
+#      checks above all stayed GREEN while it shipped.
 #
 # a11oy ships through TWO deploy paths, each with its OWN key provisioner, so a
 # fix on one does not cover the other — BOTH are guarded here:
@@ -118,6 +125,9 @@ jobs:
       - name: 4. uds.dev Package renders only when udsPackage.enabled
         run: python3 scripts/a11oy-signing-key-checks.py udspackage-gated /tmp/render-default.yaml /tmp/render-uds-off.yaml
 
+      - name: 5. key-init Job carries no istio sidecar-injection annotation
+        run: python3 scripts/a11oy-signing-key-checks.py no-istio-annotation /tmp/render-default.yaml
+
       # ── raw-manifest (bundle) deploy path ──────────────────────────────────
       # The bundle path has no Helm hook; its key provisioner + workload are
       # plain YAML (packages/a11oy/manifests/). The key-init Job is always
@@ -132,11 +142,14 @@ jobs:
               packages/a11oy/manifests/deployment.yaml > /tmp/raw-manifest.yaml
           echo "OK: assembled raw-manifest receipt-key-init + deployment"
 
-      - name: 5. raw-manifest key-init provisions an ECDSA P-256 Secret (not Ed25519/RSA)
+      - name: 6. raw-manifest key-init provisions an ECDSA P-256 Secret (not Ed25519/RSA)
         run: python3 scripts/a11oy-signing-key-checks.py keyinit-ecdsa /tmp/raw-manifest.yaml
 
-      - name: 6. raw-manifest mounted Secret name matches the provisioned Secret name
+      - name: 7. raw-manifest mounted Secret name matches the provisioned Secret name
         run: python3 scripts/a11oy-signing-key-checks.py secret-name-match /tmp/raw-manifest.yaml
+
+      - name: 8. raw-manifest key-init Job carries no istio sidecar-injection annotation
+        run: python3 scripts/a11oy-signing-key-checks.py no-istio-annotation /tmp/raw-manifest.yaml
 
       - name: All signing-key chart guards passed
         run: echo "charts/a11oy provisions a persistent ECDSA P-256 signing key and mounts it."

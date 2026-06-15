@@ -80,11 +80,13 @@ spec:
       labels:
         app.kubernetes.io/name: a11oy-receipt-key-init
       # No istio annotations: uds-core (pepr-uds-core) DENIES the
-      # `sidecar.istio.io/inject` annotation on every mesh-governed namespace
-      # (admission webhook rejects istio traffic-interception annotations). The
-      # cluster runs Istio in AMBIENT mode (ztunnel, no per-pod sidecar), so this
-      # Job pod terminates normally without it -- mirrors the proven szl-receipts
-      # key-init pattern, which sets no istio annotation.
+      # `sidecar.istio.io/inject` annotation (any value) on every mesh-governed
+      # namespace -- the admission webhook REJECTS the Job, so it never runs and
+      # a11oy's signing-key Secret is never provisioned (silent ephemeral-key
+      # fallback). The cluster runs Istio in AMBIENT mode (ztunnel, no per-pod
+      # sidecar), so this Job pod terminates normally without it -- mirrors the
+      # chart hook and the proven szl-receipts key-init pattern. Guarded by
+      # a11oy-signing-key-guard.yml (no-istio-annotation) so it cannot regress.
     spec:
       serviceAccountName: a11oy-receipt-key-init
       restartPolicy: OnFailure
