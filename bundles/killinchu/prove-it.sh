@@ -176,9 +176,9 @@ step_signing(){
   cat <<'EOF'
   SIGNED (no founder key needed):
     - Organ image is cosign keyless-signed (Sigstore/Fulcio OIDC) by the repo's
-      cosign.yml on push  ->  SLSA L1 honest. Verify:
+      ghcr-build-push.yml on push  ->  SLSA L1 honest. Verify:
         cosign verify ghcr.io/szl-holdings/killinchu:uds-v0.2.0 \
-          --certificate-identity-regexp 'github.com/szl-holdings' \
+          --certificate-identity 'https://github.com/szl-holdings/killinchu/.github/workflows/ghcr-build-push.yml@refs/heads/main' \
           --certificate-oidc-issuer https://token.actions.githubusercontent.com
     - killinchu /api/killinchu/uds/v1/healthz advertises keyid=szlholdings-cosign,
       signing_available=true; /khipu/pubkey (killinchu-cosign,f208cba3…) MATCHES the
