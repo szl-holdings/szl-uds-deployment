@@ -1,0 +1,51 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# prove-organs-guard.yml — Guard the automatic release-proof workflow
+# (.github/workflows/prove-organs.yaml) from silently losing its triggers.
+#
+# prove-organs re-proves that EVERY organ still deploys individually onto a clean
+# UDS substrate — but only because it runs AUTOMATICALLY: on every release tag
+# (v* / uds-v*), nightly (schedule), and pages the team (the `alert` job) when an
+# automatic run fails. Each leg also ALWAYS tears down its throwaway k3d cluster.
+# A future edit to that workflow could quietly drop the push:tags trigger, the
+# nightly cron, the alert job (or weaken its `failure() && not workflow_dispatch`
+# condition), or the teardown's always() — and releases would silently stop being
+# proven, or clusters would leak, with nobody noticing.
+#
+# The check logic lives in scripts/prove-organs-guard-checks.sh (pure text/lint,
+# no cluster). It was extracted from this workflow so it can be UNIT TESTED:
+# scripts/prove-organs-guard-checks.test.sh feeds each check a deliberately-BROKEN
+# fixture and asserts the check FAILS, plus asserts the pristine repo PASSES. The
+# shared run-checks-then-self-test scaffolding lives in the reusable
+# .github/workflows/guard-scaffold.yml; this workflow is a thin caller that passes
+# its test + checks scripts. The self-test still gates the guard run, so a future
+# edit that neuters a check (passing vacuously — green while guarding nothing) is
+# caught before the guard can wave it through.
+#
+# The asserted invariants:
+#   chk1  the push: trigger filters on tags: and includes BOTH v* and uds-v*
+#   chk2  the schedule: trigger defines a cron entry (nightly re-prove)
+#   chk3  the alert job still exists
+#   chk4  the alert job's if: is failure() && github.event_name != workflow_dispatch
+#   chk5  the throwaway-cluster teardown step runs with if: always()
+
+name: Prove Organs Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    uses: ./.github/workflows/guard-scaffold.yml
+    with:
+      test-command: bash scripts/prove-organs-guard-checks.test.sh
+      checks-command: bash scripts/prove-organs-guard-checks.sh
+      checks-args: "chk1 chk2 chk3 chk4 chk5"
+      success-message: "The prove-organs automatic-release-proof triggers are intact."
