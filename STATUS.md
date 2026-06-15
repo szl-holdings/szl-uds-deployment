@@ -50,7 +50,7 @@
   `deprecated: true` in `Chart.yaml`, all sub-components are disabled, and its
   README/NOTES point to the verified UDS bundle. The bundle remains the only
   verified full-stack path; no `uds-v0.3.1` organ image is claimed deployable.
-- **`vessels`** (maritime sibling of killinchu) — preserved as reference, killinchu is the primary defense flagship
+- **`vessels`** (maritime sibling of killinchu) — CONSOLIDATED into killinchu (standalone vessels image retired/unneeded); preserved as reference only, killinchu is the primary defense flagship
 - **`szl-constellation`** — replaced by the `anatomy-3d` 3D viewer
 
 ---

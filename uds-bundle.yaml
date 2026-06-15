@@ -21,25 +21,19 @@
 #                    defenseunicorns/uds-core@v1.5.0/docs/getting-started/production/build-your-bundle.mdx
 #   slim-dev local-demo bundle: oci://ghcr.io/defenseunicorns/bundles/k3d-core-slim-dev:1.5.0
 #
-# STAGED items:
-#   FA-001: Image ghcr.io/szl-holdings/vessels:uds-v0.3.0 — BUILD FIXED + CI-READY,
-#           NOT YET PUBLISHED (one `gh workflow run` away).
-#           The vessels image now builds end-to-end in GitHub Actions via
-#           szl-holdings/platform/.github/workflows/vessels-image.yml (build +
-#           push + cosign keyless OIDC, modeled on receipts-server-image.yml,
-#           using the built-in GITHUB_TOKEN — no founder secret needed to
-#           publish). The prior artifacts/vessels/Dockerfile could not build at
-#           all (node:22 vs root engines>=24, incomplete workspace manifest
-#           COPYs, wrong pnpm filter, wrong Vite outDir); that is now corrected.
-#           Remaining blocker: the first push of the NEW org package
-#           ghcr.io/szl-holdings/vessels returns 403 Forbidden — the
-#           szl-holdings/platform Actions GITHUB_TOKEN is not yet permitted to
-#           CREATE that package in the org. An org admin with admin:packages must
-#           create + link the `vessels` package to szl-holdings/platform once
-#           (as was already done for szl-receipts-server); then
-#           `gh workflow run vessels-image.yml -R szl-holdings/platform`
-#           publishes + signs it. Until published, `uds deploy` of the
-#           killinchu/vessels bundle stays blocked on this image.
+# RESOLVED items:
+#   FA-001: RESOLVED (2026-06-15) — vessels CONSOLIDATED into the killinchu organ.
+#           There is no longer a standalone ghcr.io/szl-holdings/vessels image to
+#           publish: the maritime vessel-intelligence surface (sanctions
+#           screening, dark-vessel detection, voyage/ownership analytics) now
+#           ships inside the published, cosign-signed killinchu organ image
+#           ghcr.io/szl-holdings/killinchu:uds-v0.2.0 (live: GET /vessels and
+#           /sanctions both return 200 on the running organ). killinchu deploys
+#           via bundles/killinchu (killinchu-bundle:0.5.0, PUBLISHED + current).
+#           The prior org admin:packages action for a separate `vessels` package
+#           is therefore no longer required, and no deploy path is blocked on it.
+#           The legacy szl-vessels-demo package (uds/zarf.yaml) + charts/vessels
+#           are retained as REFERENCE only (superseded by the killinchu organ).
 #   FA-002: RESOLVED (2026-06-13). This bundle is now cryptographically signed —
 #           keyless Sigstore via GitHub OIDC, NO org key needed (the prior
 #           "pending org key provisioning" premise was obsolete: keyless OIDC is

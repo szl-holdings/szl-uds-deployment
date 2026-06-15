@@ -67,10 +67,15 @@ Live reachability:
   was therefore NOT exercised on prod. Upgrade-survival is covered by CI
   `uds run test-upgrade` (receipts + signing key survive a helm upgrade on a
   throwaway cluster).
-- **FA-001:** ghcr.io/szl-holdings/vessels image still unpublished (first
-  org-package push returns 403; needs a one-time org admin:packages create+link).
-  The killinchu/vessels bundle path stays blocked on this image. Receipts + a11oy
-  paths are unaffected.
+- **FA-001 — RESOLVED (2026-06-15) by consolidation.** Vessels is folded into
+  the killinchu organ; there is no standalone `ghcr.io/szl-holdings/vessels`
+  image to publish. The maritime/sanctions surface ships inside the published,
+  cosign-signed `killinchu:uds-v0.2.0` organ — live probe: `GET /vessels` and
+  `GET /sanctions` both 200 on the running organ — deployed via
+  `bundles/killinchu` (killinchu-bundle:0.5.0, published + current). No org
+  `admin:packages` action and no blocked deploy path remain. The legacy
+  `uds/zarf.yaml` (szl-vessels-demo) + `charts/vessels` are kept as REFERENCE
+  only (superseded by the killinchu organ).
 - Tenant gateway is ClusterIP **by design** (small-box override); tenant-host
   reachability requires port-forward, not a node LB.
 
@@ -78,6 +83,7 @@ Live reachability:
 UDS payload is aligned with GitHub/GHCR, passes the full guard/validation suite,
 builds into a signed digest-pinned airgap bundle, and is deployed + serving in
 the live UDS environment (a11oy returns 200 through the istio gateway). The only
-hard blockers to a complete multi-organ one-command bring-up are the
-founder-gated vessels package publish (FA-001) and the box resource ceiling for
-a parallel full cluster.
+remaining ceiling on a complete multi-organ one-command bring-up is the box
+resource ceiling for a parallel full cluster. FA-001 is RESOLVED: vessels is
+consolidated into the published, live killinchu organ (see §5), so no
+founder-gated vessels publish is required.
