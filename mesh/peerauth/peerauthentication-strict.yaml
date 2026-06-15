@@ -71,7 +71,7 @@ apiVersion: security.istio.io/v1
 kind: PeerAuthentication
 metadata:
   name: default
-  namespace: szl-vessels
+  namespace: szl-killinchu
   labels:
     szl.io/component: mesh-mtls
     szl.io/mesh-version: v0.4.0

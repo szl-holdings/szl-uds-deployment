@@ -10,7 +10,7 @@
 #
 # It does NOT touch a cluster and performs no network I/O.
 
-MODULES = ["rosie", "a11oy", "amaru", "sentra", "vessels", "receipts"]
+MODULES = ["rosie", "a11oy", "amaru", "sentra", "killinchu", "receipts"]
 
 # Canonical namespace + service-account + DNS for each module.
 NS = {
@@ -18,7 +18,7 @@ NS = {
     "a11oy":    "szl-a11oy",
     "amaru":    "szl-amaru",
     "sentra":   "szl-sentra",
-    "vessels":  "szl-vessels",
+    "killinchu": "szl-killinchu",
     "receipts": "szl-receipts",
 }
 SA = {  # Kubernetes ServiceAccount used as the SPIFFE identity in AuthorizationPolicy
@@ -26,7 +26,7 @@ SA = {  # Kubernetes ServiceAccount used as the SPIFFE identity in Authorization
     "a11oy":    "a11oy",
     "amaru":    "amaru",
     "sentra":   "sentra",
-    "vessels":  "vessels",
+    "killinchu": "killinchu",
     "receipts": "szl-receipts-server",
 }
 
@@ -57,7 +57,7 @@ def decision(caller, callee):
     if caller == "a11oy":
         if callee == "rosie":
             return ("ALLOW", "a11oy emits events to rosie for human display")
-        if callee in ("amaru", "sentra", "vessels"):
+        if callee in ("amaru", "sentra", "killinchu"):
             return ("ALLOW", "a11oy delegates to the organ (memory/immune/skeleton)")
 
     # amaru (memory) only replies upward to a11oy; never reaches sibling organs.
@@ -66,11 +66,12 @@ def decision(caller, callee):
             return ("ALLOW", "amaru responds to a11oy's memory queries")
         return ("DENY", "memory has no need to reach immune/skeleton/operator")
 
-    # vessels (skeleton/deployment fabric) is downstream: it only talks to a11oy
-    # (status up) and the receipts sink. No sibling-organ or operator calls.
-    if caller == "vessels":
+    # killinchu (skeleton/deployment fabric; absorbed the legacy vessels role) is
+    # downstream: it only talks to a11oy (status up) and the receipts sink. No
+    # sibling-organ or operator calls.
+    if caller == "killinchu":
         if callee == "a11oy":
-            return ("ALLOW", "vessels reports deployment status up to a11oy")
+            return ("ALLOW", "killinchu reports deployment status up to a11oy")
         return ("DENY", "deployment fabric is downstream; no sibling/operator calls")
 
     return ("DENY", "no rule grants this pair; default-deny")

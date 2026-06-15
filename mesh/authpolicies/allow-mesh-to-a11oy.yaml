@@ -28,7 +28,7 @@ spec:
               - "cluster.local/ns/szl-rosie/sa/rosie"  # rosie
               - "cluster.local/ns/szl-amaru/sa/amaru"  # amaru
               - "cluster.local/ns/szl-sentra/sa/sentra"  # sentra
-              - "cluster.local/ns/szl-vessels/sa/vessels"  # vessels
+              - "cluster.local/ns/szl-killinchu/sa/killinchu"  # killinchu
       to:
         - operation:
             ports: ["8080", "7860", "8443"]

@@ -10,16 +10,16 @@
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
-  name: allow-mesh-to-vessels
-  namespace: szl-vessels
+  name: allow-mesh-to-killinchu
+  namespace: szl-killinchu
   labels:
-    app.kubernetes.io/name: vessels
+    app.kubernetes.io/name: killinchu
     szl.io/component: mesh-authz
     szl.io/mesh-version: v0.4.0
 spec:
   selector:
     matchLabels:
-      app: vessels
+      app: killinchu
   action: ALLOW
   rules:
     - from:
