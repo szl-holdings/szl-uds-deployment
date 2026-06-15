@@ -27,17 +27,17 @@ kubectl exec -n szl-a11oy deploy/a11oy -c a11oy -- \
 
 ---
 
-## AC-2 — mTLS denied path: amaru → vessels is rejected by AuthorizationPolicy
+## AC-2 — mTLS denied path: amaru → killinchu is rejected by AuthorizationPolicy
 
 **Command**
 
 ```bash
 kubectl exec -n szl-amaru deploy/amaru -c amaru -- \
   curl -s -o /dev/null -w '%{http_code}\n' \
-  http://vessels.szl-vessels.svc.cluster.local:8080/healthz
+  http://killinchu.szl-killinchu.svc.cluster.local:8080/healthz
 ```
 
-**Pass:** HTTP `403` returned by the **vessels sidecar** (not by the app), with body `RBAC: access denied`. The `amaru → vessels` pair is DENY in the matrix (memory has no need to reach the skeleton). Because `allow-mesh-to-vessels` ([`mesh/authpolicies/allow-mesh-to-vessels.yaml`](../../mesh/authpolicies/allow-mesh-to-vessels.yaml)) only lists the `a11oy` and `sentra` principals, amaru's request is not matched by any ALLOW rule and is therefore denied by Istio's implicit-deny behavior ([Istio AuthorizationPolicy](https://istio.io/latest/docs/reference/config/security/authorization-policy/), [Istio security best practices](https://istio.io/latest/docs/ops/best-practices/security/)). A 403 here is the single clearest proof that the mesh enforces authorization rather than merely declaring it.
+**Pass:** HTTP `403` returned by the **killinchu sidecar** (not by the app), with body `RBAC: access denied`. The `amaru → killinchu` pair is DENY in the matrix (memory has no need to reach the skeleton). Because `allow-mesh-to-killinchu` ([`mesh/authpolicies/allow-mesh-to-killinchu.yaml`](../../mesh/authpolicies/allow-mesh-to-killinchu.yaml)) only lists the `a11oy` and `sentra` principals, amaru's request is not matched by any ALLOW rule and is therefore denied by Istio's implicit-deny behavior ([Istio AuthorizationPolicy](https://istio.io/latest/docs/reference/config/security/authorization-policy/), [Istio security best practices](https://istio.io/latest/docs/ops/best-practices/security/)). A 403 here is the single clearest proof that the mesh enforces authorization rather than merely declaring it.
 
 ---
 
@@ -76,12 +76,12 @@ PY
 istioctl proxy-status
 ```
 
-**Pass:** `istioctl proxy-status` lists a proxy (one row per pod) for a workload in **all six** namespaces — `szl-rosie`, `szl-a11oy`, `szl-amaru`, `szl-sentra`, `szl-vessels`, `szl-receipts` — each with `SYNCED` status across CDS/LDS/EDS/RDS. This proves the `istio-injection=enabled` label ([Istio sidecar injection](https://istio.io/latest/docs/setup/additional-setup/sidecar-injection/)) took effect and pods were restarted so the `istio-proxy` sidecar was injected. A namespace missing from the list means its pods predate the label and still need a `kubectl rollout restart`.
+**Pass:** `istioctl proxy-status` lists a proxy (one row per pod) for a workload in **all six** namespaces — `szl-rosie`, `szl-a11oy`, `szl-amaru`, `szl-sentra`, `szl-killinchu`, `szl-receipts` — each with `SYNCED` status across CDS/LDS/EDS/RDS. This proves the `istio-injection=enabled` label ([Istio sidecar injection](https://istio.io/latest/docs/setup/additional-setup/sidecar-injection/)) took effect and pods were restarted so the `istio-proxy` sidecar was injected. A namespace missing from the list means its pods predate the label and still need a `kubectl rollout restart`.
 
 Cross-check:
 
 ```bash
-for ns in szl-rosie szl-a11oy szl-amaru szl-sentra szl-vessels szl-receipts; do
+for ns in szl-rosie szl-a11oy szl-amaru szl-sentra szl-killinchu szl-receipts; do
   echo -n "$ns: "; kubectl get ns "$ns" -o jsonpath='{.metadata.labels.istio-injection}{"\n"}'
 done   # expect "enabled" for all six
 ```
@@ -121,7 +121,7 @@ YAML
 | AC | Proves | Hard dependency |
 |---|---|---|
 | AC-1 | mTLS allow path works (a11oy→amaru, XFCC present) | FA-001 images |
-| AC-2 | Authorization deny works (amaru→vessels → 403) | FA-001 images |
+| AC-2 | Authorization deny works (amaru→killinchu → 403) | FA-001 images |
 | AC-3 | Receipt chain is real + Ed25519-verifiable | FA-001 images + HMAC→Ed25519 migration |
 | AC-4 | Sidecars injected in all 6 namespaces | FA-001 images |
 | AC-5 | Unsigned image denied at admission | PhD SecOps Validate PR |

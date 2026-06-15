@@ -23,7 +23,7 @@ Per the founder's standing rule (2026-05-30 — rosie is the operator console; A
 | 2 (substrate) | **a11oy** | Policy + receipt substrate and the **orchestrator**. Contains 9 of 14 Inca-named organs (YUYAY heart, YAWAR emission, HATUN seal, HATUN-RAID orchestrator, Quantum Mind, R0513 Overwatch, RIMAY proposer, KALLPA substrate, doctrine v7). | `a11oy.szl-a11oy.svc.cluster.local:8080` |
 | 3 (organ) | **amaru** | Memory cortex a11oy queries (YACHAY retrieval + MUSQUY simulation + AMARU shell). | `amaru.szl-amaru.svc.cluster.local:8080` |
 | 3 (organ) | **sentra** | Immune system a11oy delegates security verdicts to (HUKLLA 10 tripwires + SENTRA egress inspector). | `sentra.szl-sentra.svc.cluster.local:8080` |
-| 3 (organ) | **vessels** | Skeleton / structural deployment fabric where the organism runs. Downstream of a11oy. | `vessels.szl-vessels.svc.cluster.local:8080` |
+| 3 (organ) | **killinchu** | Skeleton / structural deployment fabric where the organism runs. Downstream of a11oy. | `killinchu.szl-killinchu.svc.cluster.local:8080` |
 | cross-cutting | **mcp-receipts-server** + **szl-receipts** | RAWI tool surface (17 MCP tools, already live) and the **YAWAR receipt chain authority**. Every module POSTs receipts here. | `szl-receipts.szl-receipts.svc.cluster.local:8080` |
 
 ```
@@ -39,9 +39,9 @@ Per the founder's standing rule (2026-05-30 — rosie is the operator console; A
               query memory │ delegate│         │ command
                            ▼   verdicts        ▼
               ┌────────────────┐ ┌────────────┐ ┌────────────────┐
-              │ amaru (memory) │ │ sentra     │ │ vessels        │
+              │ amaru (memory) │ │ sentra     │ │ killinchu      │
               │ szl-amaru:8080 │ │ (immune)   │ │ (skeleton)     │
-              └───────┬────────┘ │ szl-sentra │ │ szl-vessels    │
+              └───────┬────────┘ │ szl-sentra │ │ szl-killinchu  │
                       │          │ :8080      │ │ :8080          │
                       │          └─────┬──────┘ └───────┬────────┘
                       │  (sentra may inspect ANY module)│
@@ -52,7 +52,7 @@ Per the founder's standing rule (2026-05-30 — rosie is the operator console; A
               └─────────────────────────────────────────────────┘
 ```
 
-The defining property the audit said was missing: **edges exist**. rosie→a11oy, a11oy→{amaru,sentra,vessels}, organs→a11oy, all→szl-receipts. Each edge is a Kubernetes Service call over an mTLS tunnel, gated by an `AuthorizationPolicy`.
+The defining property the audit said was missing: **edges exist**. rosie→a11oy, a11oy→{amaru,sentra,killinchu}, organs→a11oy, all→szl-receipts. Each edge is a Kubernetes Service call over an mTLS tunnel, gated by an `AuthorizationPolicy`.
 
 ---
 
@@ -66,7 +66,7 @@ Every module is reachable by a stable in-cluster DNS name of the form `<service>
 | a11oy | `a11oy` | `a11oy.szl-a11oy.svc.cluster.local:8080` |
 | amaru | `amaru` | `amaru.szl-amaru.svc.cluster.local:8080` |
 | sentra | `sentra` | `sentra.szl-sentra.svc.cluster.local:8080` |
-| vessels | `vessels` | `vessels.szl-vessels.svc.cluster.local:8080` |
+| killinchu | `killinchu` | `killinchu.szl-killinchu.svc.cluster.local:8080` |
 | szl-receipts | `szl-receipts` | `szl-receipts.szl-receipts.svc.cluster.local:8080` |
 
 No bespoke service registry, no orchestrator-maintained endpoint table. a11oy resolves `amaru.szl-amaru.svc.cluster.local` through cluster DNS exactly as the PhD Systems third recommendation prescribed. The `network.allow` egress rule in each Package CR also grants DNS resolution via `remoteGenerated: KubeAPI` ([UDS Package CR — network.allow fields](https://uds.defenseunicorns.com/reference/configuration/custom-resources/packages-v1alpha1-cr/)).
@@ -86,7 +86,7 @@ apiVersion: security.istio.io/v1
 kind: PeerAuthentication
 metadata:
   name: default
-  namespace: szl-a11oy        # repeated for szl-rosie, szl-amaru, szl-sentra, szl-vessels, szl-receipts
+  namespace: szl-a11oy        # repeated for szl-rosie, szl-amaru, szl-sentra, szl-killinchu, szl-receipts
 spec:
   mtls:
     mode: STRICT
@@ -102,14 +102,15 @@ spec:
 
 UDS Core / Istio enforce authorization with `AuthorizationPolicy` (`security.istio.io/v1`). The chosen model is **ALLOW-with-implicit-deny**: per Istio semantics, when at least one `ALLOW` policy selects a workload, any request to that workload that is *not* matched by an ALLOW rule is denied ([Istio AuthorizationPolicy — spec.rules](https://istio.io/latest/docs/reference/config/security/authorization-policy/), [Istio security best practices](https://istio.io/latest/docs/ops/best-practices/security/)). So one `ALLOW` policy per callee, listing the permitted caller SPIFFE principals, fully encodes the matrix without writing explicit `DENY` rules — the deny is the absence of an allow.
 
-> **Naming note (consolidation + rename doctrine).** The `Module` / `ServiceAccount` /
-> namespace identifiers below (`amaru`, `sentra`, `rosie`, `vessels`) are **deploy
-> coordinates** — published GHCR image names and Kubernetes namespace/ServiceAccount
-> identities — retained verbatim so image pulls, SPIFFE principals, and NetworkPolicies
-> keep resolving. Their **user-facing capability names** are Memory (`amaru`),
-> Policy / Safety (`sentra`), and Operator (`rosie`). The former standalone **maritime /
-> vessels** capability is **consolidated into killinchu**; any `vessels` row here reflects
-> the legacy deploy coordinate (founder-gated FA-001), not a separate user-facing product.
+> **Naming note (consolidation complete).** The `Module` / `ServiceAccount` /
+> namespace identifiers below (`amaru`, `sentra`, `rosie`, `killinchu`) are **deploy
+> coordinates** — Kubernetes namespace/ServiceAccount identities and image names that
+> resolve the real workloads. Their **user-facing capability names** are Memory
+> (`amaru`), Policy / Safety (`sentra`), Operator (`rosie`), and the skeleton /
+> deployment fabric (`killinchu`). The former standalone **maritime / vessels**
+> capability has been **consolidated into killinchu**: the standalone vessels module
+> and its packaging were removed, and the deployment-fabric organ now governs as
+> `killinchu` (namespace `szl-killinchu`, ServiceAccount `killinchu`).
 > Product topology = **a11oy + killinchu + mesh** (+ shared governance + receipts).
 
 Caller identity is the SPIFFE principal `cluster.local/ns/<namespace>/sa/<serviceAccount>` ([Istio AuthorizationPolicy — principals](https://istio.io/latest/docs/reference/config/security/authorization-policy/)):
@@ -120,20 +121,20 @@ Caller identity is the SPIFFE principal `cluster.local/ns/<namespace>/sa/<servic
 | a11oy | `a11oy` | `cluster.local/ns/szl-a11oy/sa/a11oy` |
 | amaru | `amaru` | `cluster.local/ns/szl-amaru/sa/amaru` |
 | sentra | `sentra` | `cluster.local/ns/szl-sentra/sa/sentra` |
-| vessels | `vessels` | `cluster.local/ns/szl-vessels/sa/vessels` |
+| killinchu | `killinchu` | `cluster.local/ns/szl-killinchu/sa/killinchu` |
 | szl-receipts | `szl-receipts-server` | `cluster.local/ns/szl-receipts/sa/szl-receipts-server` |
 
 ### 4.2 The full 6×6 matrix
 
 Rows = caller, columns = callee. Self-traffic (diagonal) is implicitly ALLOW (intra-namespace). 36 ordered pair-states total: 6 self-ALLOW + 16 cross-ALLOW + 14 cross-DENY.
 
-| caller \ callee | rosie | a11oy | amaru | sentra | vessels | receipts |
+| caller \ callee | rosie | a11oy | amaru | sentra | killinchu | receipts |
 |---|---|---|---|---|---|---|
 | **rosie** | ALLOW | **ALLOW** | DENY | DENY | DENY | ALLOW |
 | **a11oy** | **ALLOW** | ALLOW | **ALLOW** | **ALLOW** | **ALLOW** | ALLOW |
 | **amaru** | DENY | **ALLOW** | ALLOW | DENY | DENY | ALLOW |
 | **sentra** | ALLOW | ALLOW | ALLOW | ALLOW | ALLOW | ALLOW |
-| **vessels** | DENY | **ALLOW** | DENY | DENY | ALLOW | ALLOW |
+| **killinchu** | DENY | **ALLOW** | DENY | DENY | ALLOW | ALLOW |
 | **receipts** | DENY | DENY | DENY | DENY | DENY | ALLOW |
 
 Per-pair rationale (the 30 cross-pairs):
@@ -143,42 +144,42 @@ Per-pair rationale (the 30 cross-pairs):
 | rosie → a11oy | ALLOW | rosie commands a11oy (operator → policy substrate) |
 | rosie → amaru | DENY | operator commands route through a11oy, never direct to organs |
 | rosie → sentra | DENY | operator commands route through a11oy, never direct to organs |
-| rosie → vessels | DENY | operator commands route through a11oy, never direct to organs |
+| rosie → killinchu | DENY | operator commands route through a11oy, never direct to organs |
 | rosie → receipts | ALLOW | receipt fan-out: rosie emits human-confirmation receipts |
 | a11oy → rosie | ALLOW | a11oy emits events to rosie for human display |
 | a11oy → amaru | ALLOW | a11oy queries memory |
 | a11oy → sentra | ALLOW | a11oy delegates security checks |
-| a11oy → vessels | ALLOW | a11oy commands the deployment fabric |
+| a11oy → killinchu | ALLOW | a11oy commands the deployment fabric |
 | a11oy → receipts | ALLOW | receipt fan-out: a11oy emits gate accept/deny receipts |
 | amaru → rosie | DENY | memory has no need to reach the operator |
 | amaru → a11oy | ALLOW | amaru responds to a11oy memory queries |
 | amaru → sentra | DENY | memory doesn't need to talk to the immune system |
-| amaru → vessels | DENY | memory doesn't need to talk to the skeleton |
+| amaru → killinchu | DENY | memory doesn't need to talk to the skeleton |
 | amaru → receipts | ALLOW | receipt fan-out: amaru emits memory-write receipts |
 | sentra → rosie | ALLOW | sentra is the immune system; may inspect all traffic |
 | sentra → a11oy | ALLOW | immune verdicts + inspection |
 | sentra → amaru | ALLOW | immune inspection |
-| sentra → vessels | ALLOW | immune inspection |
+| sentra → killinchu | ALLOW | immune inspection |
 | sentra → receipts | ALLOW | receipt fan-out: sentra emits egress accept/deny receipts |
-| vessels → rosie | DENY | deployment fabric is downstream; no operator calls |
-| vessels → a11oy | ALLOW | vessels reports deployment status up to a11oy |
-| vessels → amaru | DENY | deployment fabric has no need to reach memory |
-| vessels → sentra | DENY | deployment fabric has no need to reach the immune system |
-| vessels → receipts | ALLOW | receipt fan-out: vessels emits deployment-event receipts |
+| killinchu → rosie | DENY | deployment fabric is downstream; no operator calls |
+| killinchu → a11oy | ALLOW | killinchu reports deployment status up to a11oy |
+| killinchu → amaru | DENY | deployment fabric has no need to reach memory |
+| killinchu → sentra | DENY | deployment fabric has no need to reach the immune system |
+| killinchu → receipts | ALLOW | receipt fan-out: killinchu emits deployment-event receipts |
 | receipts → rosie | DENY | receipts-server is a sink; never initiates calls |
 | receipts → a11oy | DENY | receipts-server is a sink; never initiates calls |
 | receipts → amaru | DENY | receipts-server is a sink; never initiates calls |
 | receipts → sentra | DENY | receipts-server is a sink; never initiates calls |
-| receipts → vessels | DENY | receipts-server is a sink; never initiates calls |
+| receipts → killinchu | DENY | receipts-server is a sink; never initiates calls |
 
 Two policy invariants make this auditable:
 - **sentra row is all-ALLOW** — the immune system may reach every module to inspect traffic (founder rule: *"sentra → ANY: ALLOW"*).
 - **receipts column is all-ALLOW, receipts row is all-DENY** — every module emits to the chain authority; the chain authority never calls back (it is a sink).
-- **vessels is downstream** — inbound only from a11oy (commands) and sentra (inspection); outbound only to a11oy (status) and receipts.
+- **killinchu is downstream** — inbound only from a11oy (commands) and sentra (inspection); outbound only to a11oy (status) and receipts.
 
 ### 4.3 YAML resources
 
-Six `AuthorizationPolicy` resources, one per callee workload, in [`mesh/authpolicies/`](../../mesh/authpolicies/). Each is generated deterministically from the matrix by [`mesh/_authpolicy_gen.py`](../../mesh/_authpolicy_gen.py). Representative example — who may call **a11oy** (rosie, amaru, sentra, vessels — i.e., everyone except receipts):
+Six `AuthorizationPolicy` resources, one per callee workload, in [`mesh/authpolicies/`](../../mesh/authpolicies/). Each is generated deterministically from the matrix by [`mesh/_authpolicy_gen.py`](../../mesh/_authpolicy_gen.py). Representative example — who may call **a11oy** (rosie, amaru, sentra, killinchu — i.e., everyone except receipts):
 
 ```yaml
 apiVersion: security.istio.io/v1
@@ -198,15 +199,15 @@ spec:
               - "cluster.local/ns/szl-rosie/sa/rosie"
               - "cluster.local/ns/szl-amaru/sa/amaru"
               - "cluster.local/ns/szl-sentra/sa/sentra"
-              - "cluster.local/ns/szl-vessels/sa/vessels"
+              - "cluster.local/ns/szl-killinchu/sa/killinchu"
       to:
         - operation:
             ports: ["8080", "7860", "8443"]
 ```
 
-The callee that is *most* restricted is **amaru** (only a11oy and sentra may reach it) and **vessels** (only a11oy and sentra). **receipts** accepts from all five modules. The `to.operation.ports` list constrains the matched ports ([Istio AuthorizationPolicy — to.operation](https://istio.io/latest/docs/reference/config/security/authorization-policy/)).
+The callee that is *most* restricted is **amaru** (only a11oy and sentra may reach it) and **killinchu** (only a11oy and sentra). **receipts** accepts from all five modules. The `to.operation.ports` list constrains the matched ports ([Istio AuthorizationPolicy — to.operation](https://istio.io/latest/docs/reference/config/security/authorization-policy/)).
 
-> **authservice gating.** rosie and vessels expose human UIs and are additionally gated by the authservice sidecar via their Package CR `sso.enableAuthserviceSelector`, so module-to-module traffic is mTLS-gated *and* human traffic is OIDC-gated. See [§5](#5-uds-package-cr-per-module).
+> **authservice gating.** rosie and killinchu expose human UIs and are additionally gated by the authservice sidecar via their Package CR `sso.enableAuthserviceSelector`, so module-to-module traffic is mTLS-gated *and* human traffic is OIDC-gated. See [§5](#5-uds-package-cr-per-module).
 
 ---
 
@@ -224,10 +225,10 @@ Every field used is documented in the [UDS Package CR (v1alpha1) reference](http
 | Module | Package CR | expose | sso | network.allow (egress / ingress) | monitor |
 |---|---|---|---|---|---|
 | rosie | [`packages/rosie/uds-package.yaml`](../../packages/rosie/uds-package.yaml) | tenant gateway `rosie` :7860 | authservice, group `/szl/operators` | egress→a11oy, receipts; ingress←a11oy, sentra | :7860 `/metrics` |
-| a11oy | [`packages/a11oy/uds-package.yaml`](../../packages/a11oy/uds-package.yaml) | none (internal) | machine client (`serviceAccountsEnabled`) | egress→amaru, sentra, vessels, rosie, receipts; ingress←rosie, amaru, sentra, vessels | :8080 `/metrics` |
+| a11oy | [`packages/a11oy/uds-package.yaml`](../../packages/a11oy/uds-package.yaml) | none (internal) | machine client (`serviceAccountsEnabled`) | egress→amaru, sentra, killinchu, rosie, receipts; ingress←rosie, amaru, sentra, killinchu | :8080 `/metrics` |
 | amaru | [`packages/amaru/uds-package.yaml`](../../packages/amaru/uds-package.yaml) | none (internal) | machine client | egress→a11oy, receipts; ingress←a11oy, sentra | :8080 `/metrics` |
-| sentra | [`packages/sentra/uds-package.yaml`](../../packages/sentra/uds-package.yaml) | none (internal) | machine client | egress→a11oy, amaru, vessels, rosie, receipts; ingress←a11oy | :8080 `/metrics` |
-| vessels | [`packages/vessels/uds-package.yaml`](../../packages/vessels/uds-package.yaml) | tenant gateway `vessels` :8080 (read-only) | authservice, group `/szl/operators` | egress→a11oy, receipts; ingress←a11oy, sentra | :8080 `/metrics` |
+| sentra | [`packages/sentra/uds-package.yaml`](../../packages/sentra/uds-package.yaml) | none (internal) | machine client | egress→a11oy, amaru, killinchu, rosie, receipts; ingress←a11oy | :8080 `/metrics` |
+| killinchu | [`packages/killinchu/uds-package.yaml`](../../packages/killinchu/uds-package.yaml) | tenant gateway `killinchu` :8080 (read-only) | authservice, group `/szl/operators` | egress→a11oy, receipts; ingress←a11oy, sentra | :8080 `/metrics` |
 
 The `network.allow` block in each Package CR mirrors the §4.2 matrix exactly: an egress allow exists iff the matrix says caller→callee is ALLOW, and an ingress allow exists iff some caller→this-module is ALLOW. The `Package`-generated `NetworkPolicy` is the L3/L4 defense-in-depth layer; the `AuthorizationPolicy` is the L7 mTLS-identity layer. Both must agree, and they do by construction.
 
@@ -259,7 +260,7 @@ YAWAR is the cross-cutting append-only receipt bus (anatomy: *"blood — append-
 | a11oy | decision time | gate accept / deny (YUYAY 13-axis verdict) | `szl-receipts.szl-receipts.svc.cluster.local:8080` |
 | amaru | memory write | memory-write attestation | same |
 | sentra | egress decision | egress accept / deny (HUKLLA tripwire) | same |
-| vessels | deployment event | deploy / rollback event | same |
+| killinchu | deployment event | deploy / rollback event | same |
 | rosie | human action | human-confirmation action | same |
 
 Routing properties:
@@ -268,7 +269,7 @@ Routing properties:
 - **AuthorizationPolicy-gated.** `allow-mesh-to-receipts` ([`mesh/authpolicies/allow-mesh-to-receipts.yaml`](../../mesh/authpolicies/allow-mesh-to-receipts.yaml)) permits exactly the five module principals to POST; nothing else can write to the chain.
 - **Signature.** The PhD Systems Scope 3 finding is that the current "DSSE" receipt is HMAC-SHA-256 with a symmetric demo key in `values.yaml` (forgeable). v0.4.0 acceptance criterion #3 requires an **Ed25519** signature so each receipt is asymmetrically verifiable; the migration from HMAC to Ed25519 is tracked as a dependency (see [acceptance criteria](./MESH_ACCEPTANCE_CRITERIA.md)).
 
-The receipt bus is the one place where the mesh's value is provable end-to-end: a single operator action in rosie produces a chain of attributed, signed receipts (rosie human-confirm → a11oy gate → amaru memory-write / sentra egress / vessels deploy), all landing in one verifiable chain.
+The receipt bus is the one place where the mesh's value is provable end-to-end: a single operator action in rosie produces a chain of attributed, signed receipts (rosie human-confirm → a11oy gate → amaru memory-write / sentra egress / killinchu deploy), all landing in one verifiable chain.
 
 ---
 
