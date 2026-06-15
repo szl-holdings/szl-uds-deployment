@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+#
+# szl-receipts-retention-watch — page a human when the szl-receipts-retention box
+# job (box 167.233.50.75) silently STOPS FIRING, STALLS, or its unit FAILS.
+#
+# WHY THIS EXISTS
+# szl-receipts-retention is the daily job that runs `verify-store` + `archive-
+# shards --delete` (via the szl-receipts-retention.timer) to keep the live
+# receipt-store PVC bounded and to roll sealed shards off to cold storage. It
+# ALREADY pages (a11oy-uptime-notify) when a run finds a real problem — a
+# chain_ok=false, an archive error, a bucket that failed verification. There is
+# also a BUILD-TIME CI guard (scripts/receipts-retention-guard-checks.sh) that
+# stops the job's invariants from regressing in the repo. But neither closes the
+# most dangerous gap of all: the job that NEVER RUNS. If the timer is disabled
+# or stopped (a botched box rebuild, a hand `systemctl stop`, a units wipe), or
+# the .service unit itself keeps failing before it reaches its own paging logic
+# (OOM-kill, exec error, a wedged run that never completes), then the daily
+# retention simply STOPS — silently. The live PVC creeps toward full and NOTHING
+# tells anyone, because the very job that would have paged is the thing that is
+# down. This RUNTIME watchdog closes that loop: an independent hourly timer that
+# introspects the retention timer/service via systemd AND the retention job's own
+# status.json, and pages via the SAME a11oy-uptime-notify channel the instant the
+# daily job stops firing, stalls past a max-age window, or its unit last failed.
+#
+# WHAT IT CHECKS (pure systemd + status-file introspection; NO cluster access —
+# the retention job writes a fresh status.json on EVERY run, including its own
+# cluster-down no-op runs, so liveness is judged the same whether the cluster is
+# up or intentionally down):
+#   1. The szl-receipts-retention.timer is LOADED, ACTIVE, and ENABLED. A
+#      not-found / inactive / disabled timer means the daily job will never fire
+#      again -> ALERT (it has silently stopped).
+#   2. The last szl-receipts-retention.service run did not FAIL: systemd Result
+#      is `success` (a non-success Result on a unit that has actually run means
+#      the wrapper crashed before/around the job's own logic — OOM, timeout,
+#      exec error) -> ALERT.
+#   3. The job is not STALE: the most recent completion (the newer of the
+#      retention status.json `checked_at` and the systemd ExecMainExitTimestamp)
+#      is within MAX_AGE_SECS. A daily timer that has not completed a run in well
+#      over a day has stalled / stopped firing -> ALERT.
+#   4. Backstop: if the retention status.json itself reports overall=ALERT, the
+#      job is in a known-bad state — surface it too, in case its own notifier
+#      was unconfigured/broken when it tried to page.
+#
+# FAIL-SAFE: biases hard against false alarms. If systemd cannot be queried at
+# all (no `systemctl`), the run is a true no-op: status UNKNOWN, last_status left
+# UNTOUCHED, exit 0, NO page. A fresh box whose timer is up but whose first
+# scheduled run is still pending (no completion record yet AND boot age <
+# MAX_AGE_SECS) is also a no-op — never a false "it never ran" page. Mirrors the
+# szl-receipts-orphan-watch / szl-signing-health-check fail-safe pattern.
+#
+# READ-ONLY: this watchdog NEVER starts/stops/restarts/enables/disables the
+# retention units (it only `systemctl show` / `is-enabled`). It must not "fix"
+# the job by restarting it — that would MASK the very stop it exists to surface.
+# It only logs + edge-pushes.
+#
+# EDGE-triggered + de-duped via a last_status state file: pushes the notifier
+# once on the healthy->problem edge and once on RECOVERED, never every cycle
+# (recurring alerts = one ping). Driven by szl-receipts-retention-watch.timer
+# (hourly). Versioned in repo box-scripts/.
+set -uo pipefail
+
+# ---- config (overridable via env for testing) -------------------------------
+CLUSTER="${SZL_RECEIPTS_CLUSTER:-uds-szl-demo}"
+RETENTION_UNIT="${RETENTION_UNIT:-szl-receipts-retention}"
+RETENTION_TIMER="${RETENTION_TIMER:-$RETENTION_UNIT.timer}"
+RETENTION_SERVICE="${RETENTION_SERVICE:-$RETENTION_UNIT.service}"
+# Where szl-receipts-retention writes its per-cluster status.json + last_status.
+RETENTION_STATE_DIR="${RETENTION_STATE_DIR:-/var/lib/szl-receipts-retention}"
+RETENTION_STATUS="${RETENTION_STATUS:-$RETENTION_STATE_DIR/$CLUSTER.status.json}"
+
+# Max age since the last completed retention run before we call it STALE. The
+# retention timer is daily (OnUnitActiveSec=1d) with OnBootSec=10min,
+# AccuracySec=1h, RandomizedDelaySec=30min -> worst-case gap between completions
+# is ~1d + 1h + 30min ~= 25.5h. Default 36h leaves a ~10h buffer so normal jitter
+# never pages; tighten/loosen via MAX_AGE_SECS.
+MAX_AGE_SECS="${MAX_AGE_SECS:-129600}"
+
+STATE_DIR="${STATE_DIR:-/var/lib/szl-receipts-retention-watch}"
+LOG_DIR="${LOG_DIR:-/var/log/szl-receipts-retention-watch}"
+LAST_FILE="${LAST_FILE:-$STATE_DIR/last_status}"
+STATUS="${STATUS:-$STATE_DIR/status.json}"
+LOG="${LOG:-$LOG_DIR/szl-receipts-retention-watch.log}"
+LOCK="${LOCK:-$STATE_DIR/lock}"
+
+# Notifier: stdin = message. Default to the box's working push channel.
+NOTIFY_CMD="${NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
+ALERT_PREFIX="${ALERT_PREFIX:-}"
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
+
+log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$1" >>"$LOG" 2>/dev/null; }
+
+# Single-flight: never let two overlapping runs read/notify/write state at once.
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$LOCK" 2>/dev/null || true
+  flock -n 9 2>/dev/null || { log "INFO another run holds the lock — skip"; exit 0; }
+fi
+
+notify() {
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed (alert was logged only)"
+}
+
+# Atomic writers (tmp + rename) so an interrupted run never leaves partial state.
+write_status() {
+  # $1 = overall (OK|ALERT|UNKNOWN)  $2 = reason
+  local tmp="$STATUS.tmp.$$"
+  printf '{"overall":"%s","reason":"%s","checked_at":"%s","cluster":"%s","watches":"%s"}\n' \
+    "$1" "$(printf '%s' "$2" | sed 's/"/\\"/g')" "$(date -u +%FT%TZ)" "$CLUSTER" "$RETENTION_UNIT" \
+    >"$tmp" 2>/dev/null && mv -f "$tmp" "$STATUS" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+}
+set_last() {
+  # $1 = OK|ALERT
+  local tmp="$LAST_FILE.tmp.$$"
+  printf '%s\n' "$1" >"$tmp" 2>/dev/null && mv -f "$tmp" "$LAST_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+}
+
+# ---- Fail-safe: no systemd to introspect = true no-op (never a false page) ---
+if ! command -v systemctl >/dev/null 2>&1; then
+  log "INFO systemctl unavailable — cannot introspect retention units, skip"
+  write_status UNKNOWN "systemctl unavailable"
+  exit 0
+fi
+
+# sd UNIT PROP — print a single systemd property value (read-only).
+sd() { systemctl show "$1" -p "$2" --value 2>/dev/null; }
+
+# ts_to_epoch STR — convert a systemd/ISO timestamp to epoch seconds, or "" if
+# it is empty/unparseable.
+ts_to_epoch() {
+  [ -n "$1" ] || { echo ""; return 0; }
+  date -d "$1" +%s 2>/dev/null || echo ""
+}
+
+reasons=""
+add_reason() { reasons="${reasons:+$reasons; }$1"; }
+
+# ---- 1. Timer loaded / active / enabled -------------------------------------
+timer_load="$(sd "$RETENTION_TIMER" LoadState)"
+timer_active="$(sd "$RETENTION_TIMER" ActiveState)"
+timer_enabled="$(systemctl is-enabled "$RETENTION_TIMER" 2>/dev/null || true)"
+
+if [ -z "$timer_load" ]; then
+  # systemctl present but returned nothing for a property — ambiguous query
+  # failure (NOT a definitive not-found). Fail safe: UNKNOWN, leave last_status.
+  log "INFO could not read $RETENTION_TIMER state (systemctl show empty) — skip"
+  write_status UNKNOWN "retention timer state unreadable"
+  exit 0
+fi
+if [ "$timer_load" = "not-found" ]; then
+  add_reason "$RETENTION_TIMER is NOT installed (LoadState=not-found) — the daily retention job can never fire"
+elif [ "$timer_active" != "active" ]; then
+  add_reason "$RETENTION_TIMER is not active (ActiveState=$timer_active) — the daily retention job has stopped firing"
+fi
+# A disabled (or otherwise not-enabled) timer will not survive a reboot even if
+# it happens to be active now. `static`/`generated`/`indirect` are acceptable
+# "will run" states; only an outright disabled/masked timer is a problem.
+case "$timer_enabled" in
+  enabled|enabled-runtime|static|indirect|generated|alias|"") : ;;
+  *) add_reason "$RETENTION_TIMER is not enabled (is-enabled=$timer_enabled) — it will not survive a box reboot" ;;
+esac
+
+# ---- 2. Last service run did not fail ---------------------------------------
+svc_result="$(sd "$RETENTION_SERVICE" Result)"
+svc_exec_status="$(sd "$RETENTION_SERVICE" ExecMainStatus)"
+svc_active="$(sd "$RETENTION_SERVICE" ActiveState)"
+svc_exit_ts="$(sd "$RETENTION_SERVICE" ExecMainExitTimestamp)"
+svc_exit_epoch="$(ts_to_epoch "$svc_exit_ts")"
+
+# Only judge a Result once the unit has actually run (ExecMainExitTimestamp set)
+# and is not mid-run (oneshot is "activating" while executing). A never-run unit
+# reports Result=success by default — not a real success, so ignore it here;
+# staleness (check 3) covers the "never ran" case.
+if [ -n "$svc_exit_epoch" ] && [ "$svc_active" != "activating" ] && [ "$svc_active" != "active" ]; then
+  if [ -n "$svc_result" ] && [ "$svc_result" != "success" ]; then
+    add_reason "last $RETENTION_SERVICE run FAILED (Result=$svc_result, ExecMainStatus=${svc_exec_status:-?}) — the unit crashed before/around its own paging logic"
+  fi
+fi
+
+# ---- 3. Not stale: a completion within MAX_AGE_SECS -------------------------
+# Primary signal: the retention job's status.json checked_at (refreshed on EVERY
+# run, including cluster-down no-ops). Secondary: the systemd last-exit time.
+status_overall=""
+status_checked=""
+if [ -r "$RETENTION_STATUS" ]; then
+  status_overall="$(python3 -c 'import json,sys;print((json.load(open(sys.argv[1])).get("overall") or ""))' "$RETENTION_STATUS" 2>/dev/null || true)"
+  status_checked="$(python3 -c 'import json,sys;print((json.load(open(sys.argv[1])).get("checked_at") or ""))' "$RETENTION_STATUS" 2>/dev/null || true)"
+fi
+status_epoch="$(ts_to_epoch "$status_checked")"
+
+now_epoch="$(date -u +%s)"
+# boot age (seconds since boot) for the fresh-box grace window.
+boot_secs="$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)"
+
+last_epoch=""
+[ -n "$status_epoch" ] && last_epoch="$status_epoch"
+if [ -n "$svc_exit_epoch" ]; then
+  if [ -z "$last_epoch" ] || [ "$svc_exit_epoch" -gt "$last_epoch" ]; then last_epoch="$svc_exit_epoch"; fi
+fi
+
+if [ -z "$last_epoch" ]; then
+  # No completion record at all. On a freshly-booted box the first scheduled run
+  # may simply not have happened yet — grace it. Otherwise the job is not firing.
+  if [ "$boot_secs" -lt "$MAX_AGE_SECS" ] 2>/dev/null; then
+    log "INFO no completion record yet but boot age ${boot_secs}s < MAX_AGE ${MAX_AGE_SECS}s — first run pending, no-op"
+  else
+    add_reason "no retention completion record (status.json missing AND no successful systemd run) and the box has been up ${boot_secs}s (> MAX_AGE ${MAX_AGE_SECS}s) — the job is not firing"
+  fi
+else
+  age=$(( now_epoch - last_epoch ))
+  if [ "$age" -gt "$MAX_AGE_SECS" ] 2>/dev/null; then
+    add_reason "last retention completion was ${age}s ago (> MAX_AGE ${MAX_AGE_SECS}s) — the daily job has STALLED or stopped firing"
+  fi
+fi
+
+# ---- 4. Backstop: the job itself reported overall=ALERT ----------------------
+if [ "$status_overall" = "ALERT" ]; then
+  add_reason "szl-receipts-retention status.json reports overall=ALERT — the job is in a known-bad state (verify/archive failure); surfaced here in case its own notifier was unconfigured"
+fi
+
+# ---- Decide + edge-trigger --------------------------------------------------
+prev="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
+if [ -n "$reasons" ]; then
+  write_status ALERT "$reasons"
+  log "STATE ALERT :: $reasons"
+  if [ "$prev" != "ALERT" ]; then
+    notify "ALERT: szl-receipts-retention daily job is not healthy on $CLUSTER. $reasons. (runtime watchdog szl-receipts-retention-watch; see 'systemctl status $RETENTION_TIMER $RETENTION_SERVICE' and /var/log/szl-receipts-retention/$CLUSTER.log)"
+    log "EDGE OK->ALERT notified"
+  else
+    log "DEDUP still ALERT — no re-notify"
+  fi
+  set_last ALERT
+else
+  write_status OK "timer active+enabled; last run ok; completion within MAX_AGE; status overall=${status_overall:-unknown}"
+  log "STATE OK"
+  if [ "$prev" = "ALERT" ]; then
+    notify "RECOVERED: szl-receipts-retention daily job is firing healthily again on $CLUSTER (timer active, last run succeeded, fresh completion within MAX_AGE)."
+    log "EDGE ALERT->OK recovered, notified"
+  fi
+  set_last OK
+fi
+exit 0

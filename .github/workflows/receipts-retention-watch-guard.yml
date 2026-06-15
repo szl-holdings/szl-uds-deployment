@@ -1,0 +1,121 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# receipts-retention-watch-guard.yml — Guard the `szl-receipts-retention-watch`
+# box watchdog (the RUNTIME liveness alarm for the szl-receipts-retention daily
+# job on the uds-szl-demo cluster) from silently regressing.
+#
+# szl-receipts-retention-watch (box-scripts/sbin/szl-receipts-retention-watch)
+# runs hourly and introspects the szl-receipts-retention timer/service via
+# systemd AND the retention job's own status.json, then pages the team the moment
+# the daily retention job silently STOPS FIRING (timer not-found/inactive/
+# disabled), STALLS (no completion within MAX_AGE_SECS), or its unit last FAILED
+# (systemd Result != success). Unlike the BUILD-TIME guard
+# (receipts-retention-guard), it closes the most dangerous gap of all: the job
+# that never runs — the case the job itself cannot page about, because it is down.
+# Its value rests on a few fragile invariants that produce NO visible symptom
+# when broken until a real retention outage goes unalerted:
+#   * it still INTROSPECTS the retention units via `systemctl show`
+#     (RETENTION_TIMER / RETENTION_SERVICE -> szl-receipts-retention.*);
+#   * it ALARMS when the timer is not-found / inactive / disabled;
+#   * it ALARMS on STALENESS (completion older than MAX_AGE_SECS, from the
+#     retention status.json checked_at);
+#   * it ALARMS when the last service run FAILED (Result != success);
+#   * it is EDGE-triggered (reads + writes a last_status state file) so it pages
+#     exactly once on OK->problem and once on RECOVERED, never every cycle;
+#   * it FAIL-SAFEs to a no-op (UNKNOWN, exit 0, no page) when systemd cannot be
+#     queried — a probe failure never becomes a paging storm;
+#   * it is READ-ONLY — it never start/stop/restart/enable/disable the retention
+#     units (auto-restarting would MASK the stop it exists to surface);
+#   * it stays WIRED into install.sh (copied + timer enabled) and documented in
+#     README.md, or a box rebuild silently ships without the watchdog.
+# A sibling refactor of the script, install.sh, or README could quietly drop any
+# of these, re-opening the exact "the daily retention silently stopped and nobody
+# was paged" hole this watchdog closed.
+#
+# The check logic lives in scripts/receipts-retention-watch-guard-checks.sh (pure
+# text/lint, no cluster). It was extracted from this workflow so it can be UNIT
+# TESTED: scripts/receipts-retention-watch-guard-checks.test.sh feeds each check a
+# deliberately-BROKEN fixture and asserts the check FAILS, plus asserts the
+# pristine repo PASSES. That self-test runs as the `self-test` job below, so a
+# future edit that neuters a check (passing vacuously — green while guarding
+# nothing) is caught here.
+#
+# The asserted invariants:
+#   chk1  szl-receipts-retention-watch exists and parses clean (bash -n)
+#   chk2  introspects the retention timer + service via systemctl show
+#   chk3  alarms when the timer is not-found / inactive / disabled
+#   chk4  alarms on staleness (completion age vs MAX_AGE_SECS from checked_at)
+#   chk5  alarms when the last service run failed (Result != success)
+#   chk6  edge-triggered: reads+persists last_status, both edge guards present,
+#         and makes EXACTLY TWO notify calls (one OK->ALERT, one RECOVERED)
+#   chk7  fail-safe — missing/unreadable systemd -> UNKNOWN no-op (exit 0)
+#   chk8  read-only — never start/stop/restart/enable/disable the retention units
+#   chk9  wired into install.sh (script + units copied, timer enabled)
+#   chk10 documented in README.md (retention watchdog section)
+
+name: Receipts Retention Watch Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves each check
+  # still FAILS on bad input (i.e. is not silently passing). The guard job
+  # depends on it so a broken check blocks the build before it can wave a
+  # regression through.
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/receipts-retention-watch-guard-checks.test.sh
+
+  guard:
+    name: Assert the retention runtime watchdog is intact
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check 1 — szl-receipts-retention-watch exists and parses clean
+        run: bash scripts/receipts-retention-watch-guard-checks.sh chk1 .
+
+      - name: Check 2 — introspects the retention timer + service
+        run: bash scripts/receipts-retention-watch-guard-checks.sh chk2 .
+
+      - name: Check 3 — alarms when the timer is not-found / inactive / disabled
+        run: bash scripts/receipts-retention-watch-guard-checks.sh chk3 .
+
+      - name: Check 4 — alarms on staleness (MAX_AGE_SECS vs checked_at)
+        run: bash scripts/receipts-retention-watch-guard-checks.sh chk4 .
+
+      - name: Check 5 — alarms when the last service run failed
+        run: bash scripts/receipts-retention-watch-guard-checks.sh chk5 .
+
+      - name: Check 6 — edge-triggered (state file + exactly two pushes)
+        run: bash scripts/receipts-retention-watch-guard-checks.sh chk6 .
+
+      - name: Check 7 — fail-safe UNKNOWN no-op
+        run: bash scripts/receipts-retention-watch-guard-checks.sh chk7 .
+
+      - name: Check 8 — read-only (never start/stop/restart the units)
+        run: bash scripts/receipts-retention-watch-guard-checks.sh chk8 .
+
+      - name: Check 9 — wired into install.sh (script + timer enabled)
+        run: bash scripts/receipts-retention-watch-guard-checks.sh chk9 .
+
+      - name: Check 10 — documented in README.md
+        run: bash scripts/receipts-retention-watch-guard-checks.sh chk10 .
+
+      - name: Retention runtime watchdog is intact
+        run: echo "The szl-receipts-retention-watch runtime watchdog is intact."

@@ -641,6 +641,79 @@ rm -rf /tmp/rospan
 ```
 ---
 
+# box-scripts — runtime watchdog for the retention job (`szl-receipts-retention-watch`)
+
+`szl-receipts-retention` (part above) is the **daily** job that runs
+`verify-store` + `archive-shards --delete` to keep the live receipt-store PVC
+bounded and roll sealed shards off to cold storage. It already pages (via
+`a11oy-uptime-notify`) when a *run* finds a real problem, and a **build-time** CI
+guard (`scripts/receipts-retention-guard-checks.sh`) stops its invariants from
+regressing in the repo. Neither closes the most dangerous gap: **the job that
+never runs**. If the timer is disabled/stopped (a botched rebuild, a hand
+`systemctl stop`, a units wipe) or the `.service` keeps failing *before* it
+reaches its own paging logic (OOM, timeout, exec error), retention simply
+**stops — silently**. The live PVC creeps toward full and nothing tells anyone,
+because the very job that would have paged is the thing that is down.
+
+**`szl-receipts-retention-watch`** closes that loop. Every hour it introspects
+the retention units via `systemctl show` **and** reads the retention job's own
+status.json, then pages — via the SAME `a11oy-uptime-notify` channel — the moment
+the daily job:
+
+- **stops firing** — `szl-receipts-retention.timer` is `not-found`, not `active`,
+  or not enabled (it will never fire again);
+- **stalls** — the most recent completion (the newer of the retention
+  status.json `checked_at` and the systemd `ExecMainExitTimestamp`) is older than
+  `MAX_AGE_SECS` (default **36h** — the daily timer's worst-case gap is ~25.5h,
+  so this leaves ~10h of jitter headroom);
+- **fails** — the last `szl-receipts-retention.service` run finished with systemd
+  `Result != success` (the unit crashed around its own logic);
+- backstop: the retention status.json itself reports `overall=ALERT` (surfaced
+  here in case the job's own notifier was unconfigured when it tried to page).
+
+It needs **no cluster access** — the retention job writes a fresh status.json on
+*every* run (including its own cluster-down no-ops), so liveness is judged the
+same whether the cluster is up or intentionally down. It is **read-only**: it
+never start/stop/restart/enable/disable the retention units — auto-restarting
+would *mask* the very stop it exists to surface; it only logs + edge-pushes.
+
+Edge-triggered + de-duped via `/var/lib/szl-receipts-retention-watch/last_status`:
+one push on the healthy→problem edge, one on RECOVERED, never every cycle. Always
+writes `/var/lib/szl-receipts-retention-watch/status.json` + appends
+`/var/log/szl-receipts-retention-watch/szl-receipts-retention-watch.log`. If
+`systemctl` is unavailable (or a unit's state is momentarily unreadable) the run
+is a true no-op (status `UNKNOWN`, `last_status` left untouched, no push); a fresh
+box whose first scheduled run is still pending is graced too. Driven by
+`szl-receipts-retention-watch.timer` (hourly). Mirrors the
+`szl-receipts-orphan-watch` / `szl-signing-health-check` guard pattern.
+
+## Reinstall
+
+The top-level `./install.sh` installs + enables this watchdog. Manually:
+
+```bash
+sudo install -m 0755 sbin/szl-receipts-retention-watch /usr/local/sbin/szl-receipts-retention-watch
+sudo install -m 0644 systemd/szl-receipts-retention-watch.service /etc/systemd/system/
+sudo install -m 0644 systemd/szl-receipts-retention-watch.timer   /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now szl-receipts-retention-watch.timer
+```
+
+## Verify (safe, reversible — isolated state + captured notifier)
+
+```bash
+rm -rf /tmp/rrwatch; mkdir -p /tmp/rrwatch/state /tmp/rrwatch/log
+RUN(){ STATE_DIR=/tmp/rrwatch/state LOG_DIR=/tmp/rrwatch/log NOTIFY_CMD=/bin/cat \
+       ALERT_PREFIX="[TEST] " "$@" /usr/local/sbin/szl-receipts-retention-watch; }
+RUN                                              # healthy box -> OK, no push
+# Simulate a stalled job by pointing at an empty status dir + tiny MAX_AGE on a
+# long-up box (no completion record within the window) -> ALERT, one [TEST] push:
+RUN RETENTION_STATE_DIR=/tmp/rrwatch/none MAX_AGE_SECS=1
+RUN RETENTION_STATE_DIR=/tmp/rrwatch/none MAX_AGE_SECS=1   # -> DEDUP, no push
+RUN                                              # back to healthy -> RECOVERED, one [TEST] push
+rm -rf /tmp/rrwatch
+```
+---
+
 # box-scripts (part 8) — expired scratch-namespace alarm (uds-szl-demo)
 
 `szl-ns-scratch-watch` (part 6) catches scratch namespaces that were never

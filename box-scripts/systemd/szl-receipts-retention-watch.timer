@@ -1,0 +1,15 @@
+[Unit]
+Description=Hourly runtime watchdog for the szl-receipts-retention daily job on uds-szl-demo
+
+[Timer]
+# Hourly cadence: the watched job is daily, so an hourly liveness probe surfaces
+# a stopped/stalled/failed retention job promptly without being noisy. The
+# watchdog itself is cheap (systemd + status-file introspection, no cluster).
+OnBootSec=15min
+OnUnitActiveSec=1h
+AccuracySec=1min
+Persistent=true
+Unit=szl-receipts-retention-watch.service
+
+[Install]
+WantedBy=timers.target

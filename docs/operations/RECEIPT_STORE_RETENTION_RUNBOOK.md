@@ -235,6 +235,50 @@ mirroring the cold archive to a **second location** on a cadence.
 > `install.sh`; restoring `/etc/szl-receipts-cold-offsite.env` (the offsite
 > destination) is the only manual step before the daily mirror resumes.
 
+### 4.3 Runtime watchdog — the job that never runs (`szl-receipts-retention-watch`)
+
+§4.1 pages when a retention *run* finds a real problem, and a build-time CI guard
+keeps its invariants from regressing. Neither covers the most dangerous failure:
+**retention silently stops running at all.** If the timer gets disabled/stopped
+(a botched rebuild, a stray `systemctl stop`, a units wipe) or the `.service`
+keeps failing *before* it reaches its own paging logic (OOM, timeout, exec
+error), retention just stops — and the very job that would have paged is the
+thing that is down. The live PVC then creeps toward full with no alert.
+
+`szl-receipts-retention-watch` is a **runtime liveness watchdog** for the
+retention job. It pages — via the same `a11oy-uptime-notify` channel — when the
+daily job:
+
+- **stops firing:** `szl-receipts-retention.timer` is `not-found`, not `active`,
+  or not enabled (it will never fire again);
+- **stalls:** the most recent completion (newer of the retention status.json
+  `checked_at` and systemd `ExecMainExitTimestamp`) is older than `MAX_AGE_SECS`
+  (default **36h** — the daily timer's worst-case gap is ~25.5h, leaving ~10h of
+  jitter headroom);
+- **fails:** the last `szl-receipts-retention.service` run finished with systemd
+  `Result != success`;
+- **backstop:** the retention status.json itself reports `overall=ALERT` (in case
+  the job's own notifier was unconfigured when it tried to page).
+
+- **Source / install:** `box-scripts/sbin/szl-receipts-retention-watch` +
+  `box-scripts/systemd/szl-receipts-retention-watch.{service,timer}`, installed
+  (and re-installed after a box rebuild) by `sudo box-scripts/install.sh`. Full
+  details + the safe reversible verify recipe: [`box-scripts/README.md`](../../box-scripts/README.md).
+- **Cadence:** hourly (`OnUnitActiveSec=1h`), first run 15 min after boot.
+- **No cluster access required:** it reads only `systemctl show` on the retention
+  units + the retention job's own status.json, so it judges liveness identically
+  whether the cluster is up or intentionally down.
+- **Read-only by design:** it never start/stop/restart/enable/disable the
+  retention units — auto-restarting would *mask* the very stop it exists to
+  surface. It only logs + edge-pushes.
+- **Alerting:** fires `a11oy-uptime-notify` (edge-triggered, de-duped) on the
+  healthy→problem edge and once on RECOVERED; `systemctl` unavailable / unreadable
+  is a true `UNKNOWN` no-op (no false page), and a fresh box whose first scheduled
+  run is still pending is graced.
+
+> A box rebuild re-installs and re-enables this watchdog via `install.sh`; no
+> private env file is needed (it reuses the retention units + `a11oy-uptime-notify`).
+
 ---
 
 ## 5. Quick reference
