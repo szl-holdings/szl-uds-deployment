@@ -24,8 +24,15 @@
 # What is end-to-end deployable today: szl-receipts — the Apache-2.0 Pepr
 # admission webhook + Ed25519/DSSE receipt server (the governance layer Replit's
 # brief calls "real and running today"), verifiable offline via `uds run
-# demo:verify` (public key only). The a11oy/killinchu module Zarf packages are
-# STAGED below until their signed packages publish.
+# demo:verify` (public key only). a11oy and killinchu are now UN-STAGED as
+# local-path members (2026-06-15): their container images are LIVE, cosign-signed
+# and digest-pinned on ghcr.io (verified HTTP 200, 2026-06-15), and the member
+# build mechanics mirror the canonical bundles/szl-uds-bundle. Per the
+# bundles/szl-full-stack honesty stance: the members are built from live signed
+# images and are individually deployable, but this bundle does NOT yet claim all
+# members co-boot on one cluster — full co-boot prove-install + an unsigned bundle
+# publish are pending a larger runner (the szl box is disk/RAM constrained).
+# amaru/sentra remain STAGED.
 #
 # References:
 #   UDS Bundle schema:  https://github.com/defenseunicorns/uds-cli
@@ -115,36 +122,46 @@ packages:
             - path: podSecurityStandard.enforce
               value: "restricted"
 
+  # ── Layer 4: szl-a11oy — governed-AI decision substrate / orchestration mediator ──
+  # UN-STAGED 2026-06-15. Local Zarf package (packages/a11oy) wrapping the LIVE,
+  # cosign-signed, digest-pinned organ image (verified HTTP 200, 2026-06-15):
+  #   ghcr.io/szl-holdings/a11oy:uds-v0.3.0
+  #     @sha256:715e0af70307115cfa3238da1a8f02e4cd872318b5f83582b7af1daca0a90e10
+  # a11oy is the ONE flavor-gated organ (only.flavor: upstream|unicorn), so its
+  # member is pre-built `--flavor upstream` (see tasks.yaml `start`); zarf names the
+  # tarball ...-0.4.0-upstream.tar.zst, so the ref carries the -upstream suffix
+  # (warhacker pre-builds in place and does NOT rename, unlike the CI publish path).
+  # The workload image is pulled by the digest above, so the package VERSION only
+  # names the tarball (no a11oy:0.4.0 tag is required).
+  - name: szl-a11oy
+    path: ../../packages/a11oy
+    ref: 0.4.0-upstream
+
+  # ── Layer 5: szl-killinchu — maritime + drone C2 (carries vessels/maritime) ──
+  # UN-STAGED 2026-06-15. Local Zarf package (packages/killinchu) wrapping the LIVE,
+  # cosign-signed, digest-pinned organ image (verified HTTP 200, 2026-06-15):
+  #   ghcr.io/szl-holdings/killinchu:uds-v0.2.0
+  #     @sha256:b8268a90653edcb069fff5a2614322cd64b7da3729507a2fd53b549be9cc32bd
+  # killinchu CARRIES the vessels/maritime capability (consolidated) — no separate
+  # vessels module. No flavor gate — pre-built without --flavor; tarball
+  # ...-0.4.0.tar.zst. Workload image is digest-pinned, so VERSION only names the tarball.
+  - name: szl-killinchu
+    path: ../../packages/killinchu
+    ref: 0.4.0
+
   # ───────────────────────────────────────────────────────────────────────────
   # ── STAGED MODULES — NOT DEPLOYABLE (Doctrine §10) ──────────────────────────
-  # The two deployable products — a11oy and killinchu — publish SBOM JSON today
-  # but not yet a signed module Zarf package + pushed image. They are documented
-  # here as the target topology and intentionally COMMENTED OUT so `uds run
-  # start` does not fail or misrepresent a non-existent artifact as deployable.
-  # killinchu CARRIES the vessels/maritime capability (consolidated) — there is
-  # no separate vessels module.
+  # amaru + sentra remain STAGED (the shared governance brain) until their members
+  # are built + co-boot prove-installed. They are documented here as the target
+  # topology and intentionally COMMENTED OUT so `uds run start` does not
+  # misrepresent a non-existent artifact as deployable.
   #
-  # To activate each one, a maintainer must FIRST:
-  #   1. Build a Zarf package for the module (root zarf.yaml)
-  #   2. Push the module container image to ghcr.io/szl-holdings/<module>
-  #   3. Publish the signed Zarf package to ghcr.io/szl-holdings/<module>-uds
-  #   4. Uncomment the matching block below and verify `zarf package verify`
-  #
-  # Target topology (when live): killinchu and a11oy inherit the shared
-  # governance brain (sentra gates + amaru memory) and emit signed receipts to
-  # szl-receipts; a11oy is the orchestration mediator. Deploy order:
-  # amaru → a11oy → sentra → killinchu.
+  # Target topology (when live): killinchu and a11oy inherit the shared governance
+  # brain (sentra gates + amaru memory) and emit signed receipts to szl-receipts;
+  # a11oy is the orchestration mediator. Deploy order: amaru → a11oy → sentra →
+  # killinchu. NOTE: a11oy and killinchu deploy STANDALONE against szl-receipts
+  # (which is in this bundle); they do not hard-require amaru/sentra to boot.
   # ───────────────────────────────────────────────────────────────────────────
-
-  # STAGED — a11oy-uds (governed-AI decision substrate / mediator, port 8080). No signed package yet.
-  # - name: a11oy-uds
-  #   repository: ghcr.io/szl-holdings/a11oy-uds
-  #   ref: uds-v0.3.0   # <-- signed module package not published yet
-
-  # STAGED — killinchu-uds (maritime + drone C2, carries vessels/maritime). No signed package yet.
-  # - name: killinchu-uds
-  #   repository: ghcr.io/szl-holdings/killinchu-uds
-  #   ref: uds-v0.3.0   # <-- signed module package not published yet
 
   # STAGED — amaru-uds (memory cortex, shared governance). No signed package yet.
   # - name: amaru-uds
