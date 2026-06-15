@@ -58,7 +58,7 @@ on:
       bundle_tag:
         description: "Published bundle OCI tag to verify + install"
         type: string
-        default: uds-v0.2.1
+        default: uds-v0.3.0
       cert_identity:
         description: "EXACT cosign certificate-identity of the bundle signer (publish workflow). Leave blank to use the default for the resolved tag."
         type: string
@@ -122,11 +122,11 @@ jobs:
         run: |
           set -euo pipefail
           # On a tag push, prove the bundle that matches the tag; otherwise use
-          # the dispatch input (default uds-v0.2.1 — the live published bundle).
+          # the dispatch input (default uds-v0.3.0 — the live published bundle).
           if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
             TAG="${GITHUB_REF_NAME}"
           else
-            TAG="${INPUT_TAG:-uds-v0.2.1}"
+            TAG="${INPUT_TAG:-uds-v0.3.0}"
           fi
           BUNDLE_REF="${REGISTRY}/${ORG}/${BUNDLE_NAME}:${TAG}"
 

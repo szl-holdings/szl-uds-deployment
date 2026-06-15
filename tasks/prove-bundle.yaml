@@ -53,7 +53,7 @@ variables:
     default: ""
   - name: BUNDLE_REF
     description: "Published bundle OCI ref WITHOUT scheme (registry/org/name:tag)"
-    default: "ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.2.1"
+    default: "ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.3.0"
   - name: CERT_IDENTITY
     description: >-
       EXACT cosign certificate-identity of the bundle's keyless signer (the
