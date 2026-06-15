@@ -330,7 +330,7 @@ def _extract_cold_bucket(tar_path, bucket):
     return recs, tmp
 
 
-def verify_cold_archive(cold, sealed_buckets, pub_key_raw, tail_first_prev):
+def verify_cold_archive(cold, sealed_buckets, pub_key_raw, tail_first_prev=None):
     """Offline re-verification of cold-archived tarballs — PHASE A2's core check
     extracted as a STANDALONE, self-testable unit (see
     scripts/receipts_sharding_guard.test.py).
@@ -347,7 +347,10 @@ def verify_cold_archive(cold, sealed_buckets, pub_key_raw, tail_first_prev):
           say (not merely self-consistent metadata);
       (4) the byte-derived cold segments stitch GENESIS -> bucket -> bucket -> the
           surviving live tail (tail_first_prev), so an auditor can re-attach cold
-          storage to disk.
+          storage to disk. tail_first_prev is OPTIONAL: when None (e.g. an auditor
+          verifying an off-box backup copy with no live store on hand) the GENESIS
+          + inter-bucket stitches still run and the live-tail re-attachment is
+          HONESTLY reported as unchecked rather than faked.
 
     Returns the number of FAILED checks (0 == a clean, verifiable cold archive).
     Manifests are read FROM DISK here (not passed in) so a self-test can mutate a
@@ -409,10 +412,18 @@ def verify_cold_archive(cold, sealed_buckets, pub_key_raw, tail_first_prev):
             fails += _assert(cold_segments[cur][1] == cold_segments[nxt][0],
                              f"cold segments stitch: {cur}.last_hash == "
                              f"{nxt}.first_prev_hash (from tarball bytes)")
-        fails += _assert(
-            cold_segments[sealed_buckets[-1]][1] == tail_first_prev,
-            "highest cold bucket's last_hash == live tail's first prev_hash "
-            "(cold re-attaches to the surviving live store)")
+        if tail_first_prev is None:
+            # Operator/auditor mode: no live tail on hand (e.g. re-verifying an
+            # off-box backup copy). The final re-attachment to the surviving live
+            # store is HONESTLY reported as unchecked rather than faked — every
+            # other check above still ran and fails loud on any tampering.
+            print("  -- cold->live-tail re-attachment UNCHECKED "
+                  "(no tail_first_prev supplied)")
+        else:
+            fails += _assert(
+                cold_segments[sealed_buckets[-1]][1] == tail_first_prev,
+                "highest cold bucket's last_hash == live tail's first prev_hash "
+                "(cold re-attaches to the surviving live store)")
     else:
         # An unreadable/missing cold segment is itself a verification FAILURE —
         # never let an incomplete segment set silently skip the GENESIS->tail
@@ -422,6 +433,92 @@ def verify_cold_archive(cold, sealed_buckets, pub_key_raw, tail_first_prev):
                          f"for the GENESIS->tail stitch proof "
                          f"(got {len(cold_segments)})")
     return fails
+
+
+# ── operator CLI: re-verify a cold-archive directory offline (public key only) ────
+# Thin wrapper around verify_cold_archive so an operator/auditor can point it at ANY
+# cold-archive directory (e.g. an off-box backup copy, or the live box's archive
+# dir) and prove every sealed tarball still re-verifies with nothing but the public
+# key — turning the CI-only verifier into a shippable, read-only audit command. It
+# NEVER restores/unpacks into a live store; it only reads + verifies.
+def _derive_sealed_buckets(cold):
+    """Sealed buckets = every <name>.manifest.json that also has a <name>.tar.gz
+    (the archived.json ledger has no tarball, so it is naturally excluded)."""
+    import glob
+    out = []
+    for p in sorted(glob.glob(os.path.join(cold, "*.manifest.json"))):
+        name = os.path.basename(p)[:-len(".manifest.json")]
+        if os.path.exists(os.path.join(cold, f"{name}.tar.gz")):
+            out.append(name)
+    return sorted(out)
+
+
+def _load_pubkey_raw(pubkey_path=None, pubkey_hex=None):
+    """Raw 32-byte Ed25519 public key from either a 64-hex string or a PEM file
+    (the PEM may be the public key OR a private key — only its public half is used)."""
+    if pubkey_hex:
+        raw = bytes.fromhex(pubkey_hex.strip())
+        if len(raw) != 32:
+            raise SystemExit("::error::--pubkey-hex must be 32 bytes (64 hex chars)")
+        return raw
+    from cryptography.hazmat.primitives.serialization import (
+        load_pem_public_key, load_pem_private_key, Encoding, PublicFormat)
+    with open(pubkey_path, "rb") as f:
+        data = f.read()
+    try:
+        pub = load_pem_public_key(data)
+    except Exception:
+        pub = load_pem_private_key(data, password=None).public_key()
+    return pub.public_bytes(Encoding.Raw, PublicFormat.Raw)
+
+
+def _cli_verify_cold(argv):
+    import argparse
+    ap = argparse.ArgumentParser(
+        prog="receipts_sharding_guard.py verify-cold",
+        description="Offline, public-key-only re-verification of a cold-archive "
+                    "directory of sealed receipt tarballs (+ sidecar manifests). "
+                    "Read-only; exits non-zero if ANY sealed bucket fails to "
+                    "re-verify. Does NOT restore into a live store.")
+    ap.add_argument("cold_dir",
+                    help="directory holding <bucket>.tar.gz + <bucket>.manifest.json "
+                         "(e.g. an off-box backup copy of cold storage)")
+    g = ap.add_mutually_exclusive_group(required=True)
+    g.add_argument("--pubkey", help="path to the Ed25519 PEM (public OR private key)")
+    g.add_argument("--pubkey-hex",
+                   help="raw 32-byte Ed25519 public key as 64 hex chars")
+    ap.add_argument("--tail-first-prev", default=None, metavar="HEX",
+                    help="the live store tail's first-receipt prev_hash. When given, "
+                         "also proves the cold segments re-attach to the surviving "
+                         "live store. Omit to verify cold integrity + GENESIS/"
+                         "inter-bucket stitch only (re-attachment reported UNCHECKED).")
+    args = ap.parse_args(argv)
+
+    cold = args.cold_dir
+    if not os.path.isdir(cold):
+        print(f"::error::cold dir not found: {cold}")
+        return 1
+    sealed = _derive_sealed_buckets(cold)
+    if not sealed:
+        print(f"::error::no <bucket>.tar.gz + <bucket>.manifest.json pairs found "
+              f"in {cold}")
+        return 1
+    pub = _load_pubkey_raw(args.pubkey, args.pubkey_hex)
+    tail = args.tail_first_prev
+    print(f"verify-cold: {len(sealed)} sealed bucket(s) under {cold}: {sealed}")
+    if tail is None:
+        print("verify-cold: NOTE — no --tail-first-prev given; re-attachment to the "
+              "live tail is UNCHECKED (cold integrity + GENESIS/inter-bucket stitch "
+              "are still fully verified).")
+    fails = verify_cold_archive(cold, sealed, pub, tail)
+    if fails:
+        print(f"::error::verify-cold FAILED: {fails} check(s) did not verify in {cold}")
+        return 1
+    tail_note = (" and re-attaches to the live tail." if tail else
+                 " (live-tail re-attachment not checked).")
+    print(f"verify-cold PASSED: every sealed bucket under {cold} re-verifies offline "
+          f"with the public key alone" + tail_note)
+    return 0
 
 
 # ── build a real, signed, multi-bucket store via the running server ───────────────
@@ -1005,4 +1102,9 @@ def main():
 
 
 if __name__ == "__main__":
+    # Default (no args) = run the full CI guard, so the receipts-sharding-guard
+    # job's `python3 scripts/receipts_sharding_guard.py` invocation is unchanged.
+    # `verify-cold` exposes the same offline verifier as an operator audit command.
+    if len(sys.argv) > 1 and sys.argv[1] == "verify-cold":
+        sys.exit(_cli_verify_cold(sys.argv[2:]))
     sys.exit(main())
