@@ -139,7 +139,7 @@ https://killinchu.uds.dev  (killinchu SSO via Keycloak client "killinchu")
 ```
 
 
-## 11. One-liner — prove the PUBLISHED, signed bundle installs on a clean cluster
+## 11. One-liner — prove the bundle installs (publish + keyless-sign are the pending box step)
 ```bash
 # Canonical (all five organs, isolated CI runners): cosign-verify the keyless
 # signature, then cold k3d + UDS substrate + deploy each organ + in-cluster health 200:
@@ -148,7 +148,9 @@ gh workflow run prove-bundle-install.yml -f organ=all -f bundle_tag=uds-v0.3.0
 # Local single-organ equivalent (the underlying task; connected dev/build box):
 uds run prove-bundle --set ORGAN=a11oy \
   --set BUNDLE_REF=ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.3.0
-# Published, signed, SBOMed evidence:
+# Target published/signed/SBOMed evidence (ROADMAP — produced by Forge's box
+# sign+publish; not yet live). The OCI ref/digest below is the TARGET example,
+# not live evidence, until the box sign+publish step runs:
 #   oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.3.0
 #   @ sha256:e61c2f9880560ec71812f546b9bad09de4b9d58ad15b27968cb9cf23dd6a4f4a
 ```

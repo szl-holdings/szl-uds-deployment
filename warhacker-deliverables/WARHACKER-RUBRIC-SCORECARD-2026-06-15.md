@@ -14,25 +14,27 @@ each claim at LIVE evidence, and lists the honest gaps plus the exact action to
 close each one ("make it real"). Additive report file only — no mutation of the
 live cluster or the published artifacts.
 
-## The published evidence (what a judge can pull today)
-- **Bundle:** `oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.3.0`
+## The published bundle — what it will expose (publish+sign pending — ROADMAP)
+- **Bundle (TARGET ref):** `oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.3.0`
   @ `sha256:e61c2f9880560ec71812f546b9bad09de4b9d58ad15b27968cb9cf23dd6a4f4a`
-  — five mission organs (a11oy, killinchu, amaru, sentra, rosie).
-- **Signature:** keyless cosign (GitHub OIDC → Fulcio + Rekor). `cosign verify`
-  PASSES against the publisher workflow identity (verified in `prove-bundle-install`
-  run logs). No `COSIGN_PRIVATE_KEY` is provisioned on the box → file-signing is
-  honestly **BLOCKED-on-key**; keyless OIDC in CI is the signing path that actually
-  runs.
-- **SBOM:** attached to the published bundle.
-- **Pull path:** anonymous `uds pull oci://…:uds-v0.3.0` succeeds (the customer fetch).
+  — five mission organs (a11oy, killinchu, amaru, sentra, rosie). The publish step
+  is pending Forge's box sign+publish — not yet live.
+- **Signature (roadmap):** keyless cosign (GitHub OIDC → Fulcio + Rekor) will sign
+  on publish; `cosign verify` against the publisher workflow identity is the planned
+  gate inside `prove-bundle-install`, not yet promoted. No `COSIGN_PRIVATE_KEY` is
+  provisioned on the box → file-signing is honestly **BLOCKED-on-key**; keyless OIDC
+  in CI is the signing path that will run once publish lands.
+- **SBOM:** attached on publish (roadmap).
+- **Pull path (roadmap):** anonymous `uds pull oci://…:uds-v0.3.0` is the planned
+  customer fetch once the bundle is published — not yet live.
 
 ## Rubric mapping (100 pts; Rosa's target: 50/50 = max in the two 25% pillars)
 
 | Criterion | Weight | Primary evidence | Honest state |
 |---|---|---|---|
 | Mission Impact | 25% | five individually-deployable mission organs; a11oy serves a real UI, killinchu serves vessels/sanctions | STRONG |
-| Portability | 25% | published, keyless-signed, SBOMed, **digest-pinned** UDS bundle; pulls + installs on any UDS Core; small-box overrides | STRONG (5-organ bundle) — standalone organ `.uds` = gap |
-| Death Proof | 25% | receipts chain + Prometheus/Grafana; guard suite; keyless signing + SBOM; `prove-bundle-install` (cosign GATE → k3d install → health 200) | STRONG once `prove-bundle-install` nightly is green |
+| Portability | 25% | **digest-pinned** UDS bundle; pulls + installs on any UDS Core; small-box overrides — published, keyless-signed, SBOMed is roadmap (once prove-bundle-install nightly green + box sign) | STRONG (5-organ bundle) — standalone organ `.uds` = gap |
+| Death Proof | 25% | receipts chain + Prometheus/Grafana; guard suite; `prove-bundle-install` (cosign GATE → k3d install → health 200) — keyless signing + SBOM roadmap (once prove-bundle-install nightly green + box sign) | STRONG once `prove-bundle-install` nightly is green |
 | Most Resourceful | 15% | full UDS Core on an 8 GB box (istiod autoscaleMax=1, ClusterIP gateway); throwaway-k3d prove harness | STRONG |
 | Judges Pick | 10% | doctrine-v11 honesty (SAMPLE joules, BLOCKED-not-faked), trademark hygiene, OSCAL/Lula roadmap | STRONG |
 
@@ -53,21 +55,24 @@ capability that runs disconnected / at the edge — not a slide deck.
 
 ### 2. Portability (25%)
 The **UDS bundle is the portability evidence.** `szl-uds-bundle:uds-v0.3.0` is a
-single OCI artifact, every layer **digest-pinned** (init, core-base, the organs),
-keyless-signed and SBOMed, and anonymously pullable. It installs onto any UDS Core
-cluster — and the small-box overrides (istiod `autoscaleMax=1`, `pilot.cpu=150m`,
-tenant gateway `ClusterIP`) let it run where the mission's hardware is constrained,
-down to an 8 GB box. Live proof: a11oy reachable at HTTP 200 through the Istio
-gateway on a real k3d cluster.
+single OCI artifact, every layer **digest-pinned** (init, core-base, the organs);
+keyless signing + SBOM + anonymous pull land on publish (roadmap — pending Forge's
+box sign+publish, not yet live). It installs onto any UDS Core cluster — and the
+small-box overrides (istiod `autoscaleMax=1`, `pilot.cpu=150m`, tenant gateway
+`ClusterIP`) let it run where the mission's hardware is constrained, down to an 8 GB
+box. Live proof: a11oy reachable at HTTP 200 through the Istio gateway on a real k3d
+cluster.
 
 ### 3. Death Proof (25%)
 Crossing the valley of death = the artifact keeps proving itself, signed and
 observable, on a clean cluster — automatically.
-- **Signing + SBOM:** keyless cosign (Fulcio/Rekor); SBOM attached; `cosign verify`
-  GATE is a LOUD-fail step inside `prove-bundle-install`.
+- **Signing + SBOM (roadmap):** keyless cosign (Fulcio/Rekor) + SBOM attach on
+  publish — pending Forge's box sign+publish, not yet live; the `cosign verify` GATE
+  is the planned LOUD-fail step inside `prove-bundle-install`.
 - **prove-bundle-install:** for each organ — cosign-verify the published signature →
-  cold k3d cluster → stand up UDS substrate → deploy the organ from the *pulled,
-  published* bundle → assert in-cluster health 200. Runs on schedule (08:00 UTC).
+  cold k3d cluster → stand up UDS substrate → deploy the organ from the *pulled*
+  bundle → assert in-cluster health 200. Runs on schedule (08:00 UTC); the
+  published-signature verify is roadmap until the box sign+publish step is live.
 - **Receipts chain + observability:** signed receipt chain with Prometheus/Grafana
   (see `RECEIPT-CHAIN-OBSERVABILITY` + `RECEIPTS-PROMETHEUS-GRAFANA-LIVE`).
 - **Guard suite (all PASS):** version-doctrine, organ/pin-drift, image-stale-watch,
@@ -148,10 +153,11 @@ the CI prove harness.
 - **No real ATO** — ATO-aligned roadmap only.
 
 ## Verdict
-The two 25% pillars (Portability, Death Proof) are carried by a **published,
-keyless-signed, SBOMed, digest-pinned UDS bundle** that installs on a clean UDS Core
-cluster, plus a live a11oy-200 deploy proof and a receipts / guard / observability
-spine. To lock 50/50 in those pillars: (1) confirm `prove-bundle-install` green on
+The two 25% pillars (Portability, Death Proof) are carried by a **digest-pinned UDS
+bundle** that installs on a clean UDS Core cluster (published + keyless-signed +
+SBOMed is roadmap — pending Forge's box sign+publish, not yet live), plus a live
+a11oy-200 deploy proof and a receipts / guard / observability spine. To lock 50/50
+in those pillars: (1) confirm `prove-bundle-install` green on
 the fixed `main` and keep the nightly green, (2) fix the twin `prove-organs`
 substrate bug, (3) reconcile + publish the standalone organ `.uds` bundles.
 Everything else maps to Mission Impact / Most Resourceful / Judges Pick with honest,
