@@ -155,11 +155,11 @@ spec:
       standardFlowEnabled: true
       publicClient: false
       redirectUris:
-        - https://a11oy.{{ .Values.domain }}/login/callback
-        - https://a11oy.{{ .Values.domain }}/auth/callback
+        - https://a11oy.uds.dev/login/callback
+        - https://a11oy.uds.dev/auth/callback
       webOrigins:
-        - https://a11oy.{{ .Values.domain }}
-      baseUrl: https://a11oy.{{ .Values.domain }}
+        - https://a11oy.uds.dev
+      baseUrl: https://a11oy.uds.dev
       # All pods with this label get OIDC protection automatically.
       # a11oy does NOT implement its own auth middleware.
       enableAuthserviceSelector:
@@ -179,7 +179,7 @@ spec:
         template:
           OIDC_CLIENT_ID: "{{ .clientId }}"
           OIDC_CLIENT_SECRET: "{{ .secret }}"
-          OIDC_ISSUER_URL: "https://keycloak.{{ .Values.domain }}/realms/uds"
+          OIDC_ISSUER_URL: "https://keycloak.uds.dev/realms/uds"
 
   # ── MONITOR — Prometheus ServiceMonitor ─────────────────────────────────────
   monitor:
