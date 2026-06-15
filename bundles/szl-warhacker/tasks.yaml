@@ -43,6 +43,17 @@ tasks:
               --port "8443:8443@loadbalancer" \
               --wait
           fi
+      - description: "Pre-build the szl-receipts Zarf package (flavor=upstream) — uds-cli does NOT build local path: members"
+        cmd: |
+          # uds create does not build local `path:` packages; it expects the
+          # member tarball to already exist. The deployable szl-receipts-server
+          # component is flavor-gated (only.flavor: upstream), so build with
+          # --flavor upstream to produce zarf-package-szl-receipts-amd64-0.4.0-upstream.tar.zst
+          # (the exact name the szl-receipts member ref 0.4.0-upstream resolves to).
+          zarf package create ../../packages/szl-receipts \
+            --flavor upstream \
+            --output ../../packages/szl-receipts \
+            --confirm --no-progress
       - description: "Create the szl-warhacker bundle"
         cmd: uds create . --confirm --no-progress
       - description: "Deploy the bundle (init → core slim-dev → szl-receipts → vessels*)"

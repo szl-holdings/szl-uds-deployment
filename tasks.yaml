@@ -302,10 +302,17 @@ tasks:
             --tmpdir "${BUILD_TMPDIR}" \
             --confirm \
             --no-progress
-      - description: "Pre-build the szl-a11oy Zarf package into packages/a11oy/ (baked a11oy image; no flavor — a11oy has no flavor-gated components)"
+      - description: "Pre-build the szl-a11oy Zarf package into packages/a11oy/ (flavor=upstream — a11oy's workload component is flavor-gated only.flavor: upstream)"
         cmd: |
+          # packages/a11oy/zarf.yaml gates its workload component behind
+          # only.flavor: upstream (and a unicorn variant), so it MUST be built with
+          # --flavor or that component is silently dropped (empty package). Use
+          # upstream — the flavor whose image is published + verified-live.
+          # bundle-build-guard enforces this (it failed on the prior no-flavor
+          # build, which dropped a11oy's only real component).
           mkdir -p "${BUILD_TMPDIR}"
           zarf package create packages/a11oy \
+            --flavor upstream \
             --output packages/a11oy \
             --tmpdir "${BUILD_TMPDIR}" \
             --confirm \

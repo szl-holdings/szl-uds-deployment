@@ -78,7 +78,17 @@ packages:
   # the public key only via `uds run demo:verify` (GET /pubkey).
   - name: szl-receipts
     path: ../../packages/szl-receipts
-    ref: 0.3.1
+    # ref MUST match the built local tarball name
+    # zarf-package-szl-receipts-<arch>-<ref>.tar.zst. packages/szl-receipts/zarf.yaml
+    # is metadata.version 0.4.0 and its deployable szl-receipts-server component is
+    # flavor-gated (only.flavor: upstream), so the bundle build pre-builds it with
+    # `zarf package create --flavor upstream`, which zarf (v0.77.0) writes as
+    # zarf-package-szl-receipts-amd64-0.4.0-upstream.tar.zst. The member ref must
+    # therefore carry the flavor suffix — 0.4.0-upstream — exactly as the canonical
+    # root uds-bundle.yaml does. The stale 0.3.1 here made `uds create` fail
+    # "no such file or directory" (root-bundle incident #75); see the start/smoke
+    # build tasks that now pre-build this member before `uds create`.
+    ref: 0.4.0-upstream
     overrides:
       szl-receipts:
         szl-receipts:

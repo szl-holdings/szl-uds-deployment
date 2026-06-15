@@ -250,21 +250,27 @@ jobs:
           # PKG_VERSION only names the built tarball — it must equal the member
           # `ref:` in the bundle (stripped bundle version 0.2.0).
           mkdir -p dist
-          # Build killinchu + rosie FIRST (the ones that failed last run) so their
-          # error annotation lands inside GitHub's 10-annotation cap; only emit
-          # annotations on failure and stop at the first failing organ.
-          for organ in killinchu rosie a11oy sentra amaru; do
+          # Flavor gating: ONLY packages/a11oy/zarf.yaml has flavor-gated
+          # components (only.flavor: upstream|unicorn) — its sole workload
+          # component is gated, so a11oy MUST be built with `--flavor upstream` or
+          # that component is silently dropped (empty package). The other four
+          # organs (killinchu/rosie/sentra/amaru) have NO flavor gating and MUST be
+          # built WITHOUT `--flavor` (a stray --flavor would conversely empty them).
+          # bundle-build-guard enforces this symmetry by reading each literal
+          # `zarf package create` line, so a11oy is built on its own line below with
+          # the explicit --flavor, and the remaining four stay in the no-flavor loop.
+          #
+          # The retry/diagnostic wrapper is identical for every organ — only the
+          # build command differs — so define it once and pass the per-organ flag.
+          run_create() {
+            organ="$1"; shift  # remaining args = the full `zarf package create ...`
             echo "::group::zarf package create packages/${organ}"
-            # zarf image pulls are non-resumable; a transient GHCR stall would
-            # fail the whole create. Blobs are pre-warmed above, but retry with
-            # backoff so any not-pre-warmed pull also survives a transient hiccup.
+            # zarf image pulls are non-resumable; a transient GHCR stall would fail
+            # the whole create. Blobs are pre-warmed above, but retry with backoff
+            # so any not-pre-warmed pull also survives a transient hiccup.
             RC=0
             for attempt in 1 2 3; do
-              zarf package create "packages/${organ}" \
-                --set VERSION="${PKG_VERSION}" \
-                --architecture "${{ matrix.arch }}" \
-                --confirm \
-                --output-directory "packages/${organ}" > "/tmp/${organ}.log" 2>&1
+              "$@" > "/tmp/${organ}.log" 2>&1
               RC=$?
               [ "${RC}" -eq 0 ] && break
               echo "zarf package create ${organ} failed (attempt ${attempt}/3, rc=${RC}); retrying after backoff" >> "/tmp/${organ}.log"
@@ -278,6 +284,26 @@ jobs:
             ERRTAIL=$(grep -iE 'err|fail|fatal|unable|denied|not found|no such|invalid|cannot|forbidden|unauthor' "/tmp/${organ}.log" | tail -n 4 | tr '\n' '|' | sed 's/[^[:print:]|]//g')
             echo "::error title=zarf-${organ}::rc=${RC} tail=${ERRTAIL}"
             if [ "${RC}" -ne 0 ]; then exit 1; fi
+          }
+          # a11oy FIRST + explicit --flavor upstream (flavor-gated workload). The
+          # `zarf package create` invocation is on its own literal line so the
+          # static bundle-build-guard sees the --flavor for the gated package.
+          run_create a11oy \
+            zarf package create packages/a11oy --flavor upstream \
+              --set VERSION="${PKG_VERSION}" \
+              --architecture "${{ matrix.arch }}" \
+              --confirm \
+              --output-directory packages/a11oy
+          # The remaining four organs have NO flavor gating — build WITHOUT --flavor.
+          # killinchu + rosie first (the ones that failed last run) so their error
+          # annotation lands inside GitHub's 10-annotation cap.
+          for organ in killinchu rosie sentra amaru; do
+            run_create "${organ}" \
+              zarf package create "packages/${organ}" \
+                --set VERSION="${PKG_VERSION}" \
+                --architecture "${{ matrix.arch }}" \
+                --confirm \
+                --output-directory "packages/${organ}"
           done
           echo "Built member packages:"
           # uds create resolves a local-path member by looking for its built zarf
