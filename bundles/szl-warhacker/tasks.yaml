@@ -54,6 +54,29 @@ tasks:
             --flavor upstream \
             --output ../../packages/szl-receipts \
             --confirm --no-progress
+      - description: "Pre-build the szl-a11oy member (flavor=upstream; workload image is digest-pinned, so VERSION only names the tarball)"
+        cmd: |
+          # a11oy is the one flavor-gated organ (only.flavor: upstream) — build
+          # --flavor upstream so the deployable workload component is included.
+          # zarf writes zarf-package-szl-a11oy-amd64-0.4.0-upstream.tar.zst, which
+          # the member ref 0.4.0-upstream resolves to. The image is pulled by the
+          # digest pinned in packages/a11oy/zarf.yaml (uds-v0.3.0@715e0af7...), so
+          # no a11oy:0.4.0 tag is required.
+          zarf package create ../../packages/a11oy \
+            --flavor upstream \
+            --set VERSION=0.4.0 \
+            --output ../../packages/a11oy \
+            --confirm --no-progress
+      - description: "Pre-build the szl-killinchu member (no flavor gate; workload image is digest-pinned)"
+        cmd: |
+          # killinchu has no flavor gating — build WITHOUT --flavor. zarf writes
+          # zarf-package-szl-killinchu-amd64-0.4.0.tar.zst, which the member ref
+          # 0.4.0 resolves to. The image is pulled by the digest pinned in
+          # packages/killinchu/zarf.yaml (uds-v0.2.0@b8268a90...).
+          zarf package create ../../packages/killinchu \
+            --set VERSION=0.4.0 \
+            --output ../../packages/killinchu \
+            --confirm --no-progress
       - description: "Create the szl-warhacker bundle"
         cmd: uds create . --confirm --no-progress
       - description: "Deploy the bundle (init → core slim-dev → szl-receipts → vessels*)"
