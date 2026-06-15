@@ -16,13 +16,18 @@
 #     uds zarf package create ../../packages/a11oy -f zarf-mesh-ready.yaml \
 #       --set DOMAIN=uds.dev -a amd64 --flavor upstream --confirm
 #
-# HONEST STATUS (re-verified 2026-06-15 via GitHub Packages API):
-#   - a11oy ORGAN image is now FRESH: ghcr.io/szl-holdings/a11oy:uds-v0.3.0
-#     digest sha256:088f8da12625eda3f43b459aa4da8d908a01137d9c3cdbf4b71a8e48bab2bf6e
-#     (rebuilt 2026-06-15T16:38Z by the now-GREEN "GHCR Build + Push" workflow,
-#     run 27041cf2/eb972068 success; earlier 81e54c3f run was RED and has since
-#     been fixed by the sibling a11oy-build dev). This supersedes the old
-#     placeholder digest (99e4ded1...) that this note previously carried.
+# HONEST STATUS (re-verified 2026-06-15T19:1xZ via GHCR registry manifest HEAD,
+# digest stable across 3 samples / 40s):
+#   - a11oy ORGAN image is FRESH + DIGEST-PINNED across all source files:
+#     ghcr.io/szl-holdings/a11oy:uds-v0.3.0
+#     digest sha256:715e0af70307115cfa3238da1a8f02e4cd872318b5f83582b7af1daca0a90e10
+#     (single-arch v2 manifest — create-safe, not an OCI index). The uds-v0.3.0
+#     tag is MUTABLE and CI rebuilds it frequently: this digest superseded
+#     0ba52b5a... (18:50Z), which superseded 088f8da1... (16:38Z), which
+#     superseded placeholder 99e4ded1... The live registry digest is ASSERTED at
+#     prove-it time by ./prove-it.sh (step [1] VALIDATE) and MUST be re-resolved
+#     immediately before an air-gap freeze — do not trust this literal if CI has
+#     rebuilt since.
 #   - a11oy-bundle:0.5.0 currently PUBLISHED on GHCR is STILL STALE
 #     (sha256:d801f8e461dfd519b5f8593322e75b89a1e66d4da9f6d72d0937c8ff2de64b51,
 #     pushed 2026-06-06; built against the OLD organ image). It must be
