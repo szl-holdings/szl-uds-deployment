@@ -453,6 +453,15 @@ jobs:
       - name: Install cryptography (server signer + offline audit)
         run: pip install cryptography
 
+      - name: Self-test the cold-archive verifier (negative fixtures)
+        # Proves verify_cold_archive (PHASE A2 offline cold re-verification) FAILS
+        # on crafted-bad archives — a flipped receipt byte, a wrong manifest
+        # tarball_sha256, a broken intra-bucket prev_hash link, and a mismatched
+        # manifest stitch boundary — while accepting a clean archive. Without this
+        # negative path, a refactor could quietly loosen the cold verifier to an
+        # always-pass and the happy-path guard below would stay green.
+        run: python3 scripts/receipts_sharding_guard.test.py
+
       - name: Run the receipts sharding + archival guard
         run: python3 scripts/receipts_sharding_guard.py
 
