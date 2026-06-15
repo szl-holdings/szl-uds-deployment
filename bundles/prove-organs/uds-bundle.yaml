@@ -3,46 +3,55 @@
 #
 # SZL "prove-organs" substrate bundle
 # =============================================================================
-# This is the minimal UDS substrate the organ-proof job stands up on a throwaway
-# k3d cluster BEFORE it deploys a single organ package: Zarf init (in-cluster
-# registry + agent) plus core-base (Istio + Pepr/UDS Operator). core-base is the
-# only hard prerequisite an organ package has — it installs the uds.dev/v1alpha1
-# Package CRD and the operator that reconciles each organ's UDS Package CR
-# (NetworkPolicies / ServiceMonitor / Istio config).
+# This is the UDS substrate the organ-proof jobs stand up on a throwaway k3d
+# cluster BEFORE they deploy a single organ package: Zarf init (in-cluster
+# registry + agent), core-base (Istio + Pepr/UDS Operator), and
+# core-identity-authorization (Keycloak + AuthService). core-base installs the
+# uds.dev/v1alpha1 Package CRD and the operator that reconciles each organ UDS
+# Package CR (NetworkPolicies / ServiceMonitor / Istio config).
+#
+# Why core-identity-authorization (Keycloak) IS included:
+#   every organ UDS Package CR declares a real spec.sso block (a machine-to-
+#   machine confidential Keycloak client). When Identity & Authorization is
+#   absent the UDS Operator cannot create that client and drives the Package to
+#   status Failed (Pending -> Retrying -> Failed), so the organ never reaches
+#   Available and the proof kubectl-wait times out. An earlier revision omitted
+#   identity on the assumption an unsatisfiable sso client "does not block the
+#   organ own Deployment" — the live operator logs proved that false. We deploy
+#   the SAME box-proven core-identity-authorization + keycloak rightsizing the
+#   catalog uds-bundle.yaml uses, so the organ real sso block reconciles Ready
+#   WITHOUT weakening the shipped package (the sso block is never stripped).
 #
 # Deliberately NOT included:
-#   - core-identity-authorization (Keycloak / AuthService). The proof asserts the
-#     organ Deployment reaches Available, which does not depend on SSO; skipping
-#     identity keeps each throwaway cluster light and fast. (An organ's UDS
-#     Package CR may declare an SSO client; the operator simply cannot satisfy it
-#     without Keycloak, which does not block the organ's own Deployment.)
 #   - szl-receipts and the organ packages themselves. Doctrine: organs are
 #     "individually deployable, NOT all five boot together" — the proof job
 #     deploys exactly ONE organ Zarf package on top of this substrate, one
 #     throwaway cluster at a time (see tasks/prove-organs.yaml).
 #
-# Refs mirror uds-bundle.yaml (the catalog-grade 0.4.0 bundle) so the substrate
-# is byte-for-byte the same init + core-base this repo already deploys.
+# Refs mirror uds-bundle.yaml (the catalog-grade bundle) so the substrate is
+# byte-for-byte the same init + core-base + core-identity-authorization this
+# repo already deploys.
 
 kind: UDSBundle
 metadata:
   name: szl-prove-substrate
   version: "0.4.0"
-  description: Minimal UDS substrate (init + core-base) for proving organs deploy individually
+  description: Minimal UDS substrate (init + core-base + core-identity-authorization) for proving organs deploy individually
 
 packages:
-  # ── Layer 1: Zarf init — internal registry + agent ──────────────────────────
+  # -- Layer 1: Zarf init -- internal registry + agent --------------------------
   - name: init
     repository: ghcr.io/zarf-dev/packages/init
     ref: v0.77.0
 
-  # ── Layer 2: UDS Core (base only) — Istio + Pepr/UDS Operator ───────────────
+  # -- Layer 2: UDS Core (base) -- Istio + Pepr/UDS Operator --------------------
   # Pulls anonymously from the public GHCR mirror (no Defense Unicorns registry
   # creds needed). The overrides below mirror uds-bundle.yaml: they rightsize
   # istiod to a single replica with a small CPU request and pin the tenant
   # gateway Service to ClusterIP so `uds deploy` completes RC=0 on a constrained
   # single-node runner (a LoadBalancer tenant gateway would block helm --wait
-  # forever on an external IP that k3d cannot assign).
+  # forever on an external IP that k3d cannot assign). The 150m istiod CPU
+  # request also frees enough scheduler budget for keycloak (Layer 3) to boot.
   - name: core-base
     repository: ghcr.io/defenseunicorns/packages/uds/core-base
     ref: 1.5.0-upstream
@@ -59,3 +68,19 @@ packages:
           values:
             - path: service.type
               value: ClusterIP
+
+  # -- Layer 3: UDS Core identity -- Keycloak + AuthService ---------------------
+  # Required because every organ UDS Package CR declares a real spec.sso client;
+  # without Keycloak the UDS Operator drives the Package to Failed and the organ
+  # never reaches Available. Mirrors uds-bundle.yaml box-proven override; the
+  # istiod CPU right-size in core-base above frees enough scheduler budget for
+  # keycloak 100m request to schedule on a constrained single node.
+  - name: core-identity-authorization
+    repository: ghcr.io/defenseunicorns/packages/uds/core-identity-authorization
+    ref: 1.5.0-upstream
+    overrides:
+      keycloak:
+        keycloak:
+          values:
+            - path: realmInitEnv.INSECURE_ADMIN_PASSWORD_GENERATION
+              value: "true"
