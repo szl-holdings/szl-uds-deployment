@@ -6,9 +6,11 @@
 # Triggered on push to main or workflow_dispatch. Builds the szl-receipts Zarf
 # package and signs it keyless via GitHub OIDC (Sigstore Fulcio).
 #
-# The existing uds-package-release.yml handles tagged releases for szl-vessels-demo.
 # This workflow handles the szl-receipts package (the core UDS deployment artifact)
 # on every push to main, enabling continuous signed artifact availability.
+# (The legacy standalone szl-vessels-demo package and its uds-package-release.yml
+# were removed once vessels was consolidated into killinchu; this repo's only
+# first-party Zarf package is now szl-receipts.)
 #
 # Keyless signing — no COSIGN_KEY secret required:
 #   - Certificate identity = this workflow URL (GitHub OIDC claim)
@@ -113,30 +115,6 @@ jobs:
               --confirm \
               --no-progress \
               --output-directory ./dist
-          fi
-
-          # Also build the root zarf.yaml if it exists (szl-vessels-demo).
-          # BEST-EFFORT: szl-vessels-demo is owned by uds-package-release.yml and
-          # its images (vessels/uds-mesh) are not published in this org, so this
-          # build may fail. A failure here must NOT abort signing of the
-          # szl-receipts package — the sole focus of this workflow. The template
-          # tokens are ###ZARF_PKG_TMPL_VAR_UDSMESH_IMAGE_TAG### /
-          # ###...VAR_A11OY_IMAGE_TAG### (note the VAR_ prefix), so --set names
-          # must include that prefix or zarf aborts under --confirm.
-          if [ -f "uds/zarf.yaml" ]; then
-            PKG_VERSION="${GITHUB_REF_NAME#v}"  # strip leading v from tag; default 0.3.1
-            case "${PKG_VERSION}" in ""|main|master) PKG_VERSION="0.3.1" ;; esac
-            if zarf package create uds \
-              --set VERSION="${PKG_VERSION}" \
-              --set VAR_UDSMESH_IMAGE_TAG="latest" \
-              --set VAR_A11OY_IMAGE_TAG="latest" \
-              --confirm \
-              --no-progress \
-              --output-directory ./dist; then
-              echo "Built szl-vessels-demo package from uds/zarf.yaml"
-            else
-              echo "WARN: uds/zarf.yaml (szl-vessels-demo) build failed; continuing — szl-receipts signing is the goal of this workflow"
-            fi
           fi
 
           ls -lh dist/*.tar.zst 2>/dev/null || { echo "No packages built"; exit 1; }
