@@ -1,0 +1,156 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# organ-image-presence-guard.yml — Warn EARLY, and UNAMBIGUOUSLY, if a RETIRED
+# organ's only surviving artifact (its pre-deletion GHCR container image) ever
+# disappears or is privatized.
+#
+# Why this exists
+# ---------------
+# The amaru, sentra, and rosie GitHub source repos are DELETED (404). Their only
+# surviving build artifacts are the cosign-signed container images already
+# published on GHCR before deletion, pinned by @sha256 in packages/<organ>/
+# zarf.yaml. Those three images are PUBLIC and pullable today, so a failing
+# `prove-organs` leg for one of them means a REAL deploy regression.
+#
+# But if GHCR ever garbage-collects, deletes, or privatizes one of these images,
+# `prove-organs` would ALSO go red — and that red is trivially MISREAD as a code /
+# deploy regression, sending someone chasing a deployment bug that does not exist.
+# Because the source repos are gone, a vanished image is UNRECOVERABLE — a
+# fundamentally different (and worse) event than a deploy regression.
+#
+# This dedicated check makes the distinction unambiguous. It runs
+# scripts/probe-organ-image-present.sh, which HEADs each retired organ's
+# digest-pinned image manifest AND its cosign signature tag (sha256-<hex>.sig) on
+# GHCR and emits a distinct, greppable verdict — "IMAGE MISSING / PRIVATE" or
+# "SIGNATURE MISSING" — that can never be confused with a prove-organs deploy
+# failure. Keeping it in its OWN workflow means a red here is, by its name alone,
+# clearly "the artifact vanished", not "the deploy broke".
+#
+# Pure registry inspection (anonymous GHCR bearer token; an org PAT via GHCR_BEARER
+# is supplied for robustness) — no cluster, no zarf, no docker. It only talks to
+# the image registry.
+#
+# Direct alerting
+# ---------------
+# On its DAILY scheduled run a disappearance must page the team, not just turn the
+# Actions tab red — nobody watches the tab, and a privatized/GC'd image can sit
+# undiscovered until the next release. A scheduled-run disappearance posts one
+# clean line through the shared szl-alert-relay -> ntfy path (SLACK_WEBHOOK_URL
+# secret), exactly like organ-pin-drift-guard. PR runs do NOT alert (the
+# contributor already sees the red check), so the relay only fires on the
+# unattended schedule.
+
+name: Organ Image Presence Guard
+
+on:
+  pull_request:
+    paths:
+      - "packages/amaru/zarf.yaml"
+      - "packages/sentra/zarf.yaml"
+      - "packages/rosie/zarf.yaml"
+      - "scripts/probe-organ-image-present.sh"
+      - ".github/workflows/organ-image-presence-guard.yml"
+  schedule:
+    # Daily — catch a garbage-collected / privatized retired-organ image within a
+    # day, not at the next release. Offset from the organ pin-drift cron (41 7)
+    # and the receipts pin-drift cron (23 7) to spread registry load.
+    - cron: "7 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  organ-image-presence-guard:
+    name: Retired-organ images + cosign signatures still exist on GHCR
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      # Run the presence probe WITHOUT aborting, so a scheduled-run disappearance
+      # can be turned into a direct alert before the run is failed by the gate
+      # below. GHCR_BEARER lets the probe request a repo-scoped pull token as the
+      # org actor; the retired images are public, so an anonymous token also works.
+      - name: Probe retired-organ images for disappearance / privatization
+        id: check
+        env:
+          GHCR_BEARER: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          out="$(scripts/probe-organ-image-present.sh 2>&1)"
+          rc=$?
+          echo "${out}"
+
+          # Build a multi-line list of the distinct disappearance verdicts the
+          # probe printed, so the alert can name each one. Empty when all present.
+          images="$(printf '%s\n' "${out}" | grep -E '^(IMAGE MISSING / PRIVATE|SIGNATURE MISSING|IMAGE PROBE INCONCLUSIVE|SIGNATURE PROBE INCONCLUSIVE): ' || true)"
+          {
+            echo "images<<EOF"
+            echo "${images}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "${rc}" -ne 0 ]; then
+            echo "missing=1" >> "$GITHUB_OUTPUT"
+            echo "::warning::A retired-organ image or cosign signature has DISAPPEARED / gone private. This is NOT a deploy regression."
+          else
+            echo "missing=0" >> "$GITHUB_OUTPUT"
+            echo "OK: all retired-organ images and cosign signatures are present."
+          fi
+          exit 0
+
+      # Direct push notification so a disappearance found by the UNATTENDED daily
+      # run is noticed within a day, not whenever someone next looks at the Actions
+      # tab. Fires ONLY on a SCHEDULED run that found a missing image — contributor
+      # PR failures already show a red check, so they never page the team. Posts a
+      # Slack-compatible payload via curl (no third-party action, so it stays
+      # within the org's github-owned/verified-actions-only policy) to the shared
+      # szl-alert-relay -> ntfy webhook. If the webhook secret is unset it logs a
+      # notice and soft-skips; the gate below still fails the run.
+      - name: Alert the team on a scheduled-run image disappearance
+        if: ${{ always() && github.event_name == 'schedule' && steps.check.outputs.missing == '1' }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          IMAGES: ${{ steps.check.outputs.images }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL secret not configured — skipping direct alert. The failed run still stands."
+            exit 0
+          fi
+
+          # One clean block naming the repo and each vanished image/signature. The
+          # wording is deliberately distinct from prove-organs deploy alerts: this
+          # is an artifact-disappearance, NOT a deploy regression.
+          text=":rotating_light: *Retired-organ IMAGE DISAPPEARED* in ${REPO} — a retired organ's only surviving artifact (its pre-deletion GHCR image / cosign signature) is gone or privatized. The source repo is deleted, so this is UNRECOVERABLE and is NOT a deploy regression. Affected:
+          ${IMAGES}
+          Run: ${RUN_URL}"
+
+          # JSON-encode with python so quotes/backticks can't break the payload.
+          payload=$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1]}))' "${text}")
+
+          echo "Posting retired-organ image-disappearance alert to the szl-alert-relay webhook..."
+          code=$(curl -sS -o /tmp/relay_resp.txt -w '%{http_code}' \
+                   -X POST -H 'Content-Type: application/json' \
+                   --max-time 20 --data "${payload}" "${SLACK_WEBHOOK_URL}")
+          echo "Webhook responded HTTP ${code}."
+          if [ "${code}" -lt 200 ] || [ "${code}" -ge 300 ]; then
+            echo "::error::Direct alert webhook POST failed (HTTP ${code}): $(cat /tmp/relay_resp.txt)"
+            exit 1
+          fi
+          echo "Direct alert delivered."
+
+      - name: Fail the run if a retired-organ image or signature disappeared
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.check.outputs.missing }}" = "1" ]; then
+            echo "::error::A retired-organ image or cosign signature has DISAPPEARED / gone private (see the IMAGE MISSING / SIGNATURE MISSING line(s) above). The source repos are deleted, so this is UNRECOVERABLE. This is NOT a deploy regression — do not chase a deployment bug."
+            exit 1
+          fi
+          echo "OK: all retired-organ images and cosign signatures are present."

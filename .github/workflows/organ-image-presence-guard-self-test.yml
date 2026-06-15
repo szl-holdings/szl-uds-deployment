@@ -1,0 +1,55 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# organ-image-presence-guard-self-test.yml — Self-test the RETIRED-ORGAN
+# image-presence guard:
+#   (1) the PROBE actually fails (with a distinct verdict) when an image / cosign
+#       signature disappears, and
+#   (2) the PAGER in organ-image-presence-guard.yml is not silently widened/broken.
+#
+# Why this exists
+# ---------------
+# organ-image-presence-guard.yml HEADs each retired organ's digest-pinned image
+# and cosign signature on GHCR and fails — loudly and distinctly — when one is
+# gone. That guard is only trustworthy if two things hold:
+#
+#   * the probe (scripts/probe-organ-image-present.sh) genuinely FAILS on a
+#     missing/private image or a missing signature, not a vacuous green.
+#     scripts/probe-organ-image-present.test.sh sources the probe, overrides its
+#     HTTP layer (no network), and asserts each disappearance state fails with the
+#     right "IMAGE MISSING" / "SIGNATURE MISSING" verdict and that the present
+#     state passes.
+#
+#   * the pager only fires on the unattended scheduled run when it actually finds
+#     a missing image. That rests on one `if:` expression
+#     (always() && github.event_name == 'schedule' && missing == '1'); drop a term
+#     and it spams PRs / pages on green / goes silent. scripts/
+#     organ-image-presence-guard-checks.sh asserts the alert if + the probe-step
+#     contract (set +e, missing/images exports) + the final independent gate;
+#     scripts/organ-image-presence-guard-checks.test.sh feeds each a broken copy of
+#     the workflow and asserts it FAILS.
+#
+# Both negative-fixture self-tests run as the scaffold's `self-test` job; the
+# `guard` job (which re-runs the pager checks against the live workflow) depends on
+# it, so a neutered check is caught before it can wave a regression through. Pure
+# text/offline — no cluster, no registry.
+
+name: Organ Image Presence Guard Self-Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    uses: ./.github/workflows/guard-scaffold.yml
+    with:
+      test-command: bash scripts/probe-organ-image-present.test.sh && bash scripts/organ-image-presence-guard-checks.test.sh
+      checks-command: bash scripts/organ-image-presence-guard-checks.sh
+      checks-args: "chk1 chk2 chk3 chk4 chk5"
+      success-message: "The retired-organ image probe fails on a disappearance and its pager only fires on scheduled disappearance (alert if + probe contract + gate intact)."
