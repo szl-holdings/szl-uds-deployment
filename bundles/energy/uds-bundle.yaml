@@ -1,0 +1,72 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# UDS Bundle — energy (wasted-energy harvest grid signal)
+# =============================================================================
+# Composes the szl-energy-harvest Zarf package (packages/energy-harvest) into a
+# single OCI bundle so the platform deploys with ONE command:
+#     uds deploy oci://ghcr.io/szl-holdings/energy-bundle:0.1.0 --confirm
+#
+# The UDSBundle kind conforms to the uds-cli API (AGPL-3.0,
+# github.com/defenseunicorns/uds-cli). This YAML is original SZL Holdings work;
+# we use the uds-cli BINARY and do not embed its source.
+#
+# PACKAGING NOTE: the energy member is built from packages/energy-harvest/zarf.yaml
+# (manifest-based, reference-package idiom). Build it before `uds create`:
+#     uds zarf package create ../../packages/energy-harvest \
+#       --set VERSION=0.1.0 --set DOMAIN=uds.dev -a amd64 --confirm
+#
+# ── HONEST STATUS — GATED-on-IMAGE (re-verified 2026-06-15T18:50Z) ───────────
+#   - The energy-harvest ORGAN image is NOT yet published:
+#     ghcr.io/szl-holdings/energy-harvest  ->  registry returns 403 / DENIED
+#     (manifest absent). This is the CORRECT, honest posture — the image is
+#     gated until it is built (see ../../packages/energy-harvest/Dockerfile),
+#     pushed, and cosign keyless-signed on GHCR.
+#   - CONSEQUENCE: this bundle is SCHEMA-VALID and the member package is
+#     build-valid (manifests internally consistent; `uds zarf dev lint` passes),
+#     but `uds create` will only bake the workload image once the `images:` entry
+#     in packages/energy-harvest/zarf.yaml is uncommented + digest-pinned. Until
+#     then the bundle is VALIDATED, not live-deployed. Honest BLOCKED beats fake
+#     green: we do NOT pin a fabricated digest.
+#   - GO-LIVE CHECKLIST (founder / build dev):
+#       1. docker build -t ghcr.io/szl-holdings/energy-harvest:uds-v0.1.0 \
+#            ../../packages/energy-harvest
+#       2. docker push ghcr.io/szl-holdings/energy-harvest:uds-v0.1.0
+#          (cosign.yml keyless-signs it on push -> SLSA L1 honest)
+#       3. resolve the linux/amd64 child digest, then DIGEST-PIN it in BOTH:
+#            packages/energy-harvest/zarf.yaml      (uncomment images:)
+#            packages/energy-harvest/manifests/deployment.yaml
+#       4. uds zarf package create ../../packages/energy-harvest \
+#            --set VERSION=0.1.0 -a amd64 --confirm
+#       5. uds create . --confirm -a amd64   # this bundle
+#       6. (founder, FA-001) cosign sign the published energy-bundle artifact.
+#
+# DOCTRINE v11: honest labels (live only on a real 200); joules are SAMPLE until
+# an on-box NVML meter — this signal does NOT yet emit MEASURED joules; it NEVER
+# sets sovereign:true; it is NOT one of the locked-8; Lambda = Conjecture 1.
+# No free-energy, no greenwashing, no fabricated joules.
+kind: UDSBundle
+metadata:
+  name: energy
+  description: >-
+    SZL energy-harvest — wasted-energy harvest grid signal as a UDS Package
+    bundle. Reads three public, no-key grid feeds (aWATTar DE day-ahead price,
+    energy-charts.info DE renewable share, UK National Grid carbon intensity)
+    and reports when the grid is WASTING power so already-wasted energy can be
+    soaked. Deploys on UDS Core (AGPL-3.0, defenseunicorns/uds-core). Not
+    affiliated with Defense Unicorns. Doctrine v11: joules SAMPLE (NOT MEASURED;
+    on-box NVML meter is a ROADMAP item), NEVER sovereign:true, NOT one of the
+    locked-8, Lambda = Conjecture 1. Image GATED until published + cosign-signed.
+  version: "0.1.0"
+  architecture: amd64
+  authors: "SZL Holdings <eng@szlholdings.com>"
+  url: "https://github.com/szl-holdings/szl-uds-deployment"
+
+packages:
+  # The energy-harvest signal. Resolved via path: build so `uds create` composes
+  # the member straight from source. The workload image is GATED (see HONEST
+  # STATUS above) — the member's images: list stays commented until the image is
+  # published + digest-pinned, so `uds create` is itself gated until then.
+  - name: szl-energy-harvest
+    path: ../../packages/energy-harvest
+    ref: "0.1.0"
