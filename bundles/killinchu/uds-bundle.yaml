@@ -15,12 +15,18 @@
 #     uds zarf package create ../../packages/killinchu -f zarf-mesh-ready.yaml \
 #       --set DOMAIN=uds.dev -a amd64 --flavor upstream --confirm
 #
-# HONEST STATUS (re-verified 2026-06-15 via GitHub Packages API):
-#   - killinchu ORGAN image is FRESH: ghcr.io/szl-holdings/killinchu:uds-v0.2.0
-#     digest sha256:946f1fc9675933a373364d372a03f4f8314ebee6a8adcd97926fa52b081af7cc
-#     (rebuilt 2026-06-15T14:52Z; "GHCR Build + Push" workflow GREEN, run
-#     21171eec success). This supersedes the old placeholder digest (e0fb6c3a...)
-#     this note previously carried.
+# HONEST STATUS (re-verified 2026-06-15T19:1xZ via GHCR registry manifest HEAD,
+# digest stable across 3 samples / 40s):
+#   - killinchu ORGAN image is FRESH + DIGEST-PINNED across all source files:
+#     ghcr.io/szl-holdings/killinchu:uds-v0.2.0
+#     digest sha256:dafe4a4d1f881d95ee3890f51fc3a5c13b7f3ad422b511de1b17b4171b690a9b
+#     (single-arch v2 manifest — create-safe, not an OCI index). The uds-v0.2.0
+#     tag is MUTABLE and CI rebuilds it frequently: this digest superseded
+#     209f9f09... (18:50Z), which superseded 946f1fc9... (14:52Z), which
+#     superseded placeholder e0fb6c3a... The live registry digest is ASSERTED at
+#     prove-it time by ./prove-it.sh (step [1] VALIDATE) and MUST be re-resolved
+#     immediately before an air-gap freeze — do not trust this literal if CI has
+#     rebuilt since.
 #   - killinchu-bundle:0.5.0 PUBLISHED on GHCR is
 #     sha256:e59921332c37408fb5a62b270eeeafb1f1ab44aebb350f18662c37aa2c67426f
 #     (pushed 2026-06-06). NOTE: the killinchu organ has since been rebuilt
