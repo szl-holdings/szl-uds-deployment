@@ -2,14 +2,17 @@
 # Copyright 2026 SZL Holdings
 # SPDX-License-Identifier: Apache-2.0
 #
-# Verifies the in-cluster deploy-receipt stall alarm two ways:
+# Verifies the in-cluster deploy-receipt stall alarm three ways:
 #   1. DRIFT GUARD — re-renders charts/szl-receipts/templates/prometheusrule.yaml
 #      and asserts its `.spec.groups` matches tests/alerts/rules.rendered.yaml
 #      (so the unit-test fixture can't silently drift from the shipped rule).
-#   2. UNIT TESTS — runs `promtool test rules` to prove each alert fires under
+#   2. COVERAGE GUARD — asserts every alert in the rule has at least one promtool
+#      test case that proves it FIRES, so a brand-new alert can't ship untested
+#      while CI stays green (the drift guard + promtool alone don't catch this).
+#   3. UNIT TESTS — runs `promtool test rules` to prove each alert fires under
 #      its failure condition and stays silent while the sink is healthy.
 #
-# Requires: helm, promtool (Prometheus), and either yq or python3 for the diff.
+# Requires: helm, promtool (Prometheus), and python3 (diff + coverage guard).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,7 +42,13 @@ if got != want:
 print("OK: rule groups in sync")
 PY
 
-echo "== 2. promtool unit tests =="
+echo "== 2. coverage guard: every alert in the rule has a firing test case =="
+# promtool only runs the test cases it is given — it never flags an alert that
+# has NO test. A new alert added to the rule (with rules.rendered.yaml updated
+# so the drift guard passes) would otherwise ship untested while CI is green.
+python3 "$HERE/check-alert-coverage.py" "$HERE/rules.rendered.yaml" "$HERE/alerts_test.yaml"
+
+echo "== 3. promtool unit tests =="
 cd "$HERE"
 promtool test rules alerts_test.yaml
 
