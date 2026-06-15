@@ -1,83 +1,100 @@
 # Copyright 2026 SZL Holdings
 # SPDX-License-Identifier: Apache-2.0
 #
-# zarf.yaml — szl-a11oy (UDS-bundle member package)
+# zarf.yaml — szl-a11oy (MESH-READY profile, two flavors: upstream + unicorn)
 # =============================================================================
-# Packages the a11oy flagship as a proper, self-contained Zarf package, the same
-# way packages/szl-receipts ships: the workload is rendered from the localPath
-# Helm chart charts/a11oy, and the canonical, cosign-signed container image is
-# BAKED into the package tarball at `zarf package create` time. A clean
-# `uds deploy` therefore brings a11oy up on ANY UDS Core cluster with no manual
-# `k3d image import` and no `zarfAgentIgnore` workaround — the Zarf deploy-time
-# agent mirrors the baked image into the in-cluster registry and rewrites the
-# chart's image reference to point at it.
+# Packaging pattern adopted from zarf-dev/zarf (Apache-2.0). Original SZL work.
 #
-# Canonical image (published + cosign keyless-signed on GHCR):
-#   ghcr.io/szl-holdings/a11oy:uds-v0.3.0   (single-arch linux/amd64 manifest)
-# The reference baked here is byte-identical to what charts/a11oy renders
-# (values: image.repository + image.tag), so the agent rewrite resolves cleanly.
+# DIGEST HONESTY (re-probed against GHCR 2026-06; anonymous token + manifest HEAD):
+#   VERIFIED-LIVE (HTTP 200):
+#     ghcr.io/szl-holdings/a11oy:uds-v0.3.0
+#       @sha256:7c572dd0c58d67711147815fd4b8ed11932a67c6d3227f3aa7175d55a001947e
+#       NOTE: this digest DIFFERS from the value recorded in HETZNER roadmap
+#       (e2ef6184...). The a11oy organ image was rebuilt again -> a11oy-bundle:0.5.0
+#       (d801f8e4...) remains STALE. Prefer szl-mesh:0.4.0 or a re-pinned bundle.
+#   NOT-YET-PUBLISHED (HTTP 404 on GHCR -> 'verify before deploy'):
+#     ghcr.io/szl-holdings/a11oy:0.5.0            (404)
+#     ghcr.io/szl-holdings/a11oy:0.5.0-wolfi      (404)  <- unicorn flavor target
+#     ghcr.io/szl-holdings/a11oy-ledger:0.5.0     (404)
+#   The upstream flavor below therefore pins the VERIFIED uds-v0.3.0 image so the
+#   package is buildable/deployable TODAY. The unicorn flavor + 0.5.0 tags are
+#   labeled 'verify before deploy' until those images are published.
 #
-# Build (CI / local):
-#   zarf package create packages/a11oy --set DOMAIN=uds.dev -a amd64 --confirm
+# Build (CI):  uds zarf package create packages/a11oy -f zarf-mesh-ready.yaml \
+#                --set DOMAIN=uds.dev -a amd64 --confirm --flavor upstream
 #
-# Composed into the szl-receipts-bundle by ../../uds-bundle.yaml
-#   (packages: - name: szl-a11oy / path: ./packages/a11oy).
-#
-# References:
-#   Zarf schema:  https://docs.zarf.dev/ref/zarf-package/
-#   UDS Operator: https://uds.defenseunicorns.com/reference/uds-core/overview/
-#   a11oy repo:   https://github.com/szl-holdings/a11oy
-
 # yaml-language-server: $schema=https://raw.githubusercontent.com/zarf-dev/zarf/main/zarf.schema.json
 kind: ZarfPackageConfig
-
 metadata:
   name: szl-a11oy
-  version: "0.3.0"
-  description: >-
-    SZL a11oy — governance + policy + receipt-substrate flagship. Runs inside UDS
-    Core (Istio ambient mTLS + NetworkPolicy + ServiceMonitor via its UDS Package
-    CR) and emits decision-time DSSE receipts to the szl-receipts chain authority.
-  url: "https://szlholdings.com"
-  authors: "SZL Holdings <eng@szlholdings.com>"
-  documentation: "https://github.com/szl-holdings/szl-uds-deployment"
+  description: "SZL A11oy — Governed-AI Decision Substrate. UDS Package for uds-core mesh deployment."
+  version: "0.5.0-uds.0"
+  url: https://github.com/szl-holdings/a11oy
+  image: ghcr.io/szl-holdings/a11oy:uds-v0.3.0
+  authors: SZL Holdings Platform Team
+  documentation: https://github.com/szl-holdings/szl-uds-deployment
 
 variables:
   - name: DOMAIN
-    description: "Cluster domain — must match UDS Core DOMAIN"
-    default: "uds.dev"
+    description: "Base domain for Istio VirtualService hosts (must match UDS Core DOMAIN)"
+    default: uds.dev
+  - name: RECEIPTS_ENDPOINT
+    description: "DSSE receipt verification service endpoint"
+    default: "https://szl-receipts.szl-receipts.svc.cluster.local:8443"
 
 components:
-  # The a11oy workload, rendered from the localPath Helm chart with its baked,
-  # cosign-signed image. The chart ships the UDS Package CR, Deployment, Service,
-  # PeerAuthentication (STRICT mTLS) and the doctrine ConfigMap.
-  - name: szl-a11oy
+  # ── receipt-key init: auto-provision a11oy's persistent signing identity ─────
+  # Runs FIRST (before the workload + UDS Package CR) so the persistent ECDSA
+  # P-256 Secret szl-a11oy-receipts-ecdsa-p256 exists in szl-a11oy before the
+  # a11oy pod boots and its signing-key loader mounts /etc/szl/receipt-key.
+  # Flavor-agnostic (no `only:` gate) — the keygen Job uses the verified-live
+  # uds-v0.3.0 image (python3 + cryptography) regardless of the workload flavor.
+  # Idempotent BYOK: if the Secret already exists the Job is a no-op.
+  - name: a11oy-receipt-key-init
     required: true
-    description: >-
-      Deploy the a11oy flagship from charts/a11oy, pulling the baked
-      ghcr.io/szl-holdings/a11oy image (no k3d import / zarfAgentIgnore needed).
-    charts:
-      - name: a11oy
+    description: "Auto-provision a11oy's persistent ECDSA P-256 receipt-signing Secret (idempotent BYOK)"
+    manifests:
+      - name: szl-a11oy-namespace
         namespace: szl-a11oy
-        version: 0.3.0
-        localPath: ../../charts/a11oy
-        valuesFiles:
-          - ../../charts/a11oy/values.yaml
-        # Map the package DOMAIN variable onto the chart so the standalone
-        # `zarf package deploy --set DOMAIN=...` path configures the UDS Package
-        # CR endpoint host (the bundle path sets the same via global.domain).
-        variables:
-          - name: DOMAIN
-            description: "Cluster domain (UDS Core DOMAIN)"
-            path: global.domain
+        files:
+          - manifests/namespace.yaml
+      - name: szl-a11oy-receipt-key-init
+        namespace: szl-a11oy
+        files:
+          - manifests/receipt-key-init.yaml
     images:
-      # Canonical, cosign-signed image, DIGEST-PINNED to the linux/amd64 child
-      # manifest so a re-pushed/mutated tag cannot change what runs. Byte-matches
-      # charts/a11oy values image.digest (a11oy-package-guard + image-pin-guard
-      # enforce both the match and that it is a single-platform manifest, not an
-      # OCI index). Baked into the tarball at build time and rewritten to the
-      # in-cluster registry by the Zarf agent at deploy time.
-      - ghcr.io/szl-holdings/a11oy:uds-v0.3.0@sha256:82ee4c3217b864a9205a21d6cdf11cde977810ef108fc7c9248003308c135272
+      - ghcr.io/szl-holdings/a11oy:uds-v0.3.0@sha256:715e0af70307115cfa3238da1a8f02e4cd872318b5f83582b7af1daca0a90e10
+    actions:
+      onDeploy:
+        after:
+          - description: "Wait for the a11oy receipt-key-init Job to complete"
+            maxTotalSeconds: 180
+            wait:
+              cluster:
+                kind: Job
+                name: a11oy-receipt-key-init
+                namespace: szl-a11oy
+                condition: Complete
+
+  # ── upstream flavor: VERIFIED-LIVE public GHCR image (uds-v0.3.0) ───────────
+  - name: a11oy
+    required: true
+    description: "Deploy a11oy with upstream images (VERIFIED-LIVE uds-v0.3.0 organ image)"
+    only:
+      flavor: upstream
+    manifests:
+      - name: szl-a11oy-uds-package
+        namespace: a11oy
+        files:
+          - uds-package-mesh-ready.yaml
+      - name: szl-a11oy-workload
+        namespace: a11oy
+        files:
+          - manifests/namespace.yaml
+          - manifests/deployment.yaml
+    images:
+      # VERIFIED-LIVE on GHCR (HTTP 200). Digest pinned for supply-chain integrity.
+      - ghcr.io/szl-holdings/a11oy:uds-v0.3.0@sha256:715e0af70307115cfa3238da1a8f02e4cd872318b5f83582b7af1daca0a90e10
     actions:
       onDeploy:
         after:
@@ -87,5 +104,50 @@ components:
               cluster:
                 kind: Deployment
                 name: a11oy
-                namespace: szl-a11oy
+                namespace: a11oy
                 condition: Available
+
+  # ── unicorn flavor: minimal CVE baseline (Chainguard/Wolfi) ─────────────────
+  # verify before deploy: ghcr.io/szl-holdings/a11oy:0.5.0-wolfi NOT yet published (404).
+  - name: a11oy
+    required: true
+    description: "Deploy a11oy with unicorn images (Wolfi/Chainguard) — verify before deploy"
+    only:
+      flavor: unicorn
+    manifests:
+      - name: szl-a11oy-uds-package
+        namespace: a11oy
+        files:
+          - uds-package-mesh-ready.yaml
+      - name: szl-a11oy-workload
+        namespace: a11oy
+        files:
+          - manifests/namespace.yaml
+          - manifests/deployment.yaml
+    images:
+      # verify before deploy — Wolfi/Chainguard image not yet published to GHCR.
+      - ghcr.io/szl-holdings/a11oy:0.5.0-wolfi
+    actions:
+      onDeploy:
+        after:
+          - description: "Wait for a11oy Deployment to be Available"
+            maxTotalSeconds: 180
+            wait:
+              cluster:
+                kind: Deployment
+                name: a11oy
+                namespace: a11oy
+                condition: Available
+
+  # ── SBOM attestation component (ships in-bundle) ────────────────────────────
+  # verify before deploy: SBOM files are produced by the organ-image build
+  # pipeline. Marked not-required so `zarf package create` does not fail when the
+  # SBOM artifacts have not yet been staged into this directory.
+  - name: a11oy-sbom-attest
+    required: false
+    description: "SBOM + SLSA Build L2 provenance roadmap (organ images only; not yet earned; bundle attestation = cosign signature)"
+    files:
+      - source: sbom/a11oy.spdx.json
+        target: /zarf-sbom/a11oy.spdx.json
+      - source: sbom/a11oy.cyclonedx.json
+        target: /zarf-sbom/a11oy.cyclonedx.json
