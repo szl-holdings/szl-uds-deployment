@@ -139,15 +139,25 @@ components:
                 namespace: a11oy
                 condition: Available
 
-  # ── SBOM attestation component (ships in-bundle) ────────────────────────────
-  # verify before deploy: SBOM files are produced by the organ-image build
-  # pipeline. Marked not-required so `zarf package create` does not fail when the
-  # SBOM artifacts have not yet been staged into this directory.
-  - name: a11oy-sbom-attest
-    required: false
-    description: "SBOM + SLSA Build L2 provenance roadmap (organ images only; not yet earned; bundle attestation = cosign signature)"
-    files:
-      - source: sbom/a11oy.spdx.json
-        target: /zarf-sbom/a11oy.spdx.json
-      - source: sbom/a11oy.cyclonedx.json
-        target: /zarf-sbom/a11oy.cyclonedx.json
+  # ── SBOM attestation component — DISABLED by Forge 2026-06-15 ───────────────
+  # WHY: this component listed files: sbom/a11oy.spdx.json + .cyclonedx.json, but
+  # `sbom/` is gitignored and nothing in CI/tasks/scripts generates them, so
+  # `zarf package create a11oy` failed: lstat sbom/a11oy.spdx.json: no such file.
+  # required:false does NOT make files[].source optional — zarf stages component
+  # files at CREATE time regardless. This component never published green (absent
+  # from last-green publish eb04a7a). zarf already auto-generates REAL per-image
+  # SBOMs into the package, and uds-bundle-publish adds a bundle-level syft SBOM +
+  # keyless DSSE attestation — so no real evidence is lost. Re-enable once a
+  # generation step actually stages these files. Original block preserved below:
+  # # ── SBOM attestation component (ships in-bundle) ────────────────────────────
+  # # verify before deploy: SBOM files are produced by the organ-image build
+  # # pipeline. Marked not-required so `zarf package create` does not fail when the
+  # # SBOM artifacts have not yet been staged into this directory.
+  # - name: a11oy-sbom-attest
+  # required: false
+  # description: "SBOM + SLSA Build L2 provenance roadmap (organ images only; not yet earned; bundle attestation = cosign signature)"
+  # files:
+  # - source: sbom/a11oy.spdx.json
+  # target: /zarf-sbom/a11oy.spdx.json
+  # - source: sbom/a11oy.cyclonedx.json
+  # target: /zarf-sbom/a11oy.cyclonedx.json
