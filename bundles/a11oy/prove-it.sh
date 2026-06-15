@@ -164,9 +164,9 @@ step_signing(){
   cat <<'EOF'
   SIGNED (no founder key needed):
     - Organ images are cosign keyless-signed (Sigstore/Fulcio OIDC) by each repo's
-      cosign.yml on push  ->  SLSA L1 honest. Verify:
+      ghcr-build-push.yml on push  ->  SLSA L1 honest. Verify:
         cosign verify ghcr.io/szl-holdings/a11oy:uds-v0.3.0 \
-          --certificate-identity-regexp 'github.com/szl-holdings' \
+          --certificate-identity 'https://github.com/szl-holdings/a11oy/.github/workflows/ghcr-build-push.yml@refs/heads/main' \
           --certificate-oidc-issuer https://token.actions.githubusercontent.com
     - Receipt ledger is SHA3-256 hash-chained (tamper-EVIDENT) at runtime.
   FOUNDER-GATED (needs FA-001 key — NEVER committed, never faked here):
