@@ -50,6 +50,15 @@ tasks:
       - description: "Build + deploy the szl-warhacker bundle"
         cmd: |
           cd bundles/szl-warhacker
+          # Pre-build the local szl-receipts member: uds create does NOT build
+          # local path: packages, and the szl-receipts-server component is
+          # flavor-gated (only.flavor: upstream). This produces
+          # zarf-package-szl-receipts-amd64-0.4.0-upstream.tar.zst, which the
+          # bundle's szl-receipts member ref (0.4.0-upstream) resolves to.
+          zarf package create ../../packages/szl-receipts \
+            --flavor upstream \
+            --output ../../packages/szl-receipts \
+            --confirm --no-progress
           uds create . --confirm --no-progress
           uds deploy uds-bundle-szl-warhacker-*.tar.zst \
             --set DOMAIN="${DOMAIN}" \

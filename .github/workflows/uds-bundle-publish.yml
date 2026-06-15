@@ -250,14 +250,57 @@ jobs:
           # PKG_VERSION only names the built tarball — it must equal the member
           # `ref:` in the bundle (stripped bundle version 0.2.0).
           mkdir -p dist
-          # Build killinchu + rosie FIRST (the ones that failed last run) so their
-          # error annotation lands inside GitHub's 10-annotation cap; only emit
-          # annotations on failure and stop at the first failing organ.
-          for organ in killinchu rosie a11oy sentra amaru; do
+          # Flavor gating: ONLY packages/a11oy/zarf.yaml has flavor-gated
+          # components (only.flavor: upstream|unicorn) — its sole workload
+          # component is gated, so a11oy MUST be built with `--flavor upstream` or
+          # that component is silently dropped (empty package). The other four
+          # organs (killinchu/rosie/sentra/amaru) have NO flavor gating and MUST be
+          # built WITHOUT `--flavor` (a stray --flavor would conversely empty them).
+          # bundle-build-guard enforces this symmetry by reading each literal
+          # `zarf package create` line, so a11oy is built on its own line below with
+          # the explicit --flavor, and the remaining four stay in the no-flavor loop.
+          #
+          # diag_after — shared post-create diagnostics (rc capture + per-organ
+          # ::error:: annotation). The retry loop itself stays INLINE around the
+          # literal `zarf package create` so the static guard (chk3) sees the
+          # required for-loop < zarf package create < success-break structure.
+          diag_after() {
+            organ="$1"
+            echo "::endgroup::"
+            cat "/tmp/${organ}.log" || true
+            # Always emit one ::error:: per organ (these reliably surface in the
+            # annotation API) carrying rc + a filtered stderr tail, so the exact
+            # failing organ and cause are visible even with logs egress-blocked.
+            ERRTAIL=$(grep -iE 'err|fail|fatal|unable|denied|not found|no such|invalid|cannot|forbidden|unauthor' "/tmp/${organ}.log" | tail -n 4 | tr '\n' '|' | sed 's/[^[:print:]|]//g')
+            echo "::error title=zarf-${organ}::rc=${RC} tail=${ERRTAIL}"
+            if [ "${RC}" -ne 0 ]; then exit 1; fi
+          }
+          # a11oy FIRST + explicit --flavor upstream (flavor-gated workload). The
+          # `zarf package create` invocation is INLINE inside the retry loop so the
+          # static guards see BOTH the --flavor (bundle-build-guard) and the
+          # for-loop<create<break retry structure (chk3).
+          # zarf image pulls are non-resumable; a transient GHCR stall would fail
+          # the whole create. Blobs are pre-warmed above, but retry with backoff
+          # so any not-pre-warmed pull also survives a transient hiccup.
+          echo "::group::zarf package create packages/a11oy"
+          RC=0
+          for attempt in 1 2 3; do
+            zarf package create packages/a11oy --flavor upstream \
+              --set VERSION="${PKG_VERSION}" \
+              --architecture "${{ matrix.arch }}" \
+              --confirm \
+              --output-directory packages/a11oy > "/tmp/a11oy.log" 2>&1
+            RC=$?
+            [ "${RC}" -eq 0 ] && break
+            echo "zarf package create a11oy failed (attempt ${attempt}/3, rc=${RC}); retrying after backoff" >> "/tmp/a11oy.log"
+            sleep $(( attempt * 15 ))
+          done
+          diag_after a11oy
+          # The remaining four organs have NO flavor gating — build WITHOUT --flavor.
+          # killinchu + rosie first (the ones that failed last run) so their error
+          # annotation lands inside GitHub's 10-annotation cap.
+          for organ in killinchu rosie sentra amaru; do
             echo "::group::zarf package create packages/${organ}"
-            # zarf image pulls are non-resumable; a transient GHCR stall would
-            # fail the whole create. Blobs are pre-warmed above, but retry with
-            # backoff so any not-pre-warmed pull also survives a transient hiccup.
             RC=0
             for attempt in 1 2 3; do
               zarf package create "packages/${organ}" \
@@ -270,14 +313,7 @@ jobs:
               echo "zarf package create ${organ} failed (attempt ${attempt}/3, rc=${RC}); retrying after backoff" >> "/tmp/${organ}.log"
               sleep $(( attempt * 15 ))
             done
-            echo "::endgroup::"
-            cat "/tmp/${organ}.log" || true
-            # Always emit one ::error:: per organ (these reliably surface in the
-            # annotation API) carrying rc + a filtered stderr tail, so the exact
-            # failing organ and cause are visible even with logs egress-blocked.
-            ERRTAIL=$(grep -iE 'err|fail|fatal|unable|denied|not found|no such|invalid|cannot|forbidden|unauthor' "/tmp/${organ}.log" | tail -n 4 | tr '\n' '|' | sed 's/[^[:print:]|]//g')
-            echo "::error title=zarf-${organ}::rc=${RC} tail=${ERRTAIL}"
-            if [ "${RC}" -ne 0 ]; then exit 1; fi
+            diag_after "${organ}"
           done
           echo "Built member packages:"
           # uds create resolves a local-path member by looking for its built zarf
