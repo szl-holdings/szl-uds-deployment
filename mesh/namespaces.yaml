@@ -58,7 +58,7 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: szl-vessels
+  name: szl-killinchu
   labels:
     istio-injection: enabled
     szl.io/mesh-version: v0.4.0
