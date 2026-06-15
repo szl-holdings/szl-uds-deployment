@@ -34,7 +34,7 @@ image:
   # re-pushed/mutated uds-v0.3.0 tag cannot change what runs. The single-node
   # k3d box still overrides this to "" alongside the local image:
   #   --set image.repository=a11oy --set image.tag=local --set image.digest=""
-  digest: "sha256:82ee4c3217b864a9205a21d6cdf11cde977810ef108fc7c9248003308c135272"
+  digest: "sha256:715e0af70307115cfa3238da1a8f02e4cd872318b5f83582b7af1daca0a90e10"
   pullPolicy: IfNotPresent
 
 # a11oy (FastAPI + React SPA) listens on 7860 (HF Space app port).
