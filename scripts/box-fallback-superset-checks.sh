@@ -33,6 +33,11 @@
 
 set -uo pipefail
 
+# Literal newline, used as the delimiter in the pure-shell exact-membership
+# substring test below (avoids a SIGPIPE-racy `printf | grep -q` pipeline).
+NL='
+'
+
 # Own-installer files that ship OUTSIDE install.sh (so they are expected neither
 # in install.sh's derived set nor in the static fallback). Kept identical to the
 # box-helper install-coverage gate's allowlist (szl-box-sync* family, shipped by
@@ -108,7 +113,12 @@ check_superset() {
       case " $allowlist " in
         *" $name "*) continue ;;
       esac
-      if ! printf '%s\n' "$fallback" | grep -qxF -- "$name"; then
+      # Exact-membership test, SIGPIPE-free. (A `printf | grep -q` pipeline
+      # races under `set -o pipefail`: grep -q closes the pipe on first match,
+      # printf takes SIGPIPE, pipefail propagates the non-zero, and the name is
+      # spuriously reported missing — an intermittent false RED. A pure-shell
+      # newline-bounded substring check is deterministic.)
+      if ! case "$NL$fallback$NL" in *"$NL$name$NL"*) true ;; *) false ;; esac; then
         err "$drift" "install.sh installs box-scripts/$kind/$name but it is MISSING from $var. Add '$name' to $var in box-scripts/sbin/box-scripts-drift-check so the static emergency fallback still watches it when install.sh is unreadable (or, if it ships via its own installer, add it to DEFAULT_ALLOWLIST in scripts/box-fallback-superset-checks.sh)."
         rc=1
       fi
