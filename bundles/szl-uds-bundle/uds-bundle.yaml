@@ -45,10 +45,12 @@ packages:
   # ── a11oy — policy + receipt substrate orchestrator ──────────────────────
   - name: szl-a11oy
     path: ../../packages/a11oy
-    # a11oy's zarf metadata.version is hardcoded 0.3.0 (chart-based, canonical
-    # uds-v0.3.0), so its built tarball is zarf-package-szl-a11oy-amd64-0.3.0;
-    # the member ref must match that exact package version (the other 4 organs
-    # are templated to the 0.2.0 bundle version).
+    # a11oy is version-templated (###ZARF_PKG_TMPL_VERSION###) like the other
+    # organs, so the publish workflow's --set VERSION=0.3.0 names its tarball
+    # 0.3.0. a11oy is the one flavor-gated organ (only.flavor: upstream|unicorn),
+    # so it builds --flavor upstream; zarf appends the flavor to the filename
+    # (...-0.3.0-upstream.tar.zst), which the publish workflow renames to the
+    # canonical ...-0.3.0.tar.zst that uds-cli composes by this ref.
     ref: "0.3.0"
 
   # ── sentra — cyber-resilience runtime (fail-closed Safety Gate) ──────────

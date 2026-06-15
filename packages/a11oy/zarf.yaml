@@ -28,7 +28,7 @@ kind: ZarfPackageConfig
 metadata:
   name: szl-a11oy
   description: "SZL A11oy — Governed-AI Decision Substrate. UDS Package for uds-core mesh deployment."
-  version: "0.5.0-uds.0"
+  version: "###ZARF_PKG_TMPL_VERSION###"
   url: https://github.com/szl-holdings/a11oy
   image: ghcr.io/szl-holdings/a11oy:uds-v0.3.0
   authors: SZL Holdings Platform Team

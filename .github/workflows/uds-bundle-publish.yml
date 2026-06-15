@@ -296,6 +296,24 @@ jobs:
             sleep $(( attempt * 15 ))
           done
           diag_after a11oy
+          # a11oy is the sole flavor-gated organ (only.flavor: upstream|unicorn),
+          # so it MUST build --flavor upstream (bundle-build-guard invariant B).
+          # zarf names a flavored package ...-<version>-<flavor>.tar.zst, but
+          # uds-cli composes a local-path member by the bare ...-<ref>.tar.zst
+          # name. Rename the flavored output to that canonical name so `uds
+          # create` finds it (same package, version ${PKG_VERSION}, upstream
+          # flavor -- only the filename changes). Fail loud if it is absent
+          # rather than letting `uds create` fail later with "no such file".
+          A11OY_FLAVORED="packages/a11oy/zarf-package-szl-a11oy-amd64-${PKG_VERSION}-upstream.tar.zst"
+          A11OY_CANON="packages/a11oy/zarf-package-szl-a11oy-amd64-${PKG_VERSION}.tar.zst"
+          if [ -f "${A11OY_FLAVORED}" ]; then
+            mv -f "${A11OY_FLAVORED}" "${A11OY_CANON}"
+            echo "renamed a11oy flavored tarball -> ${A11OY_CANON}"
+          else
+            echo "::error title=a11oy-tarball::expected ${A11OY_FLAVORED} not found after build" >&2
+            ls -lh packages/a11oy/zarf-package-*.tar.zst || true
+            exit 1
+          fi
           # The remaining four organs have NO flavor gating — build WITHOUT --flavor.
           # killinchu + rosie first (the ones that failed last run) so their error
           # annotation lands inside GitHub's 10-annotation cap.
