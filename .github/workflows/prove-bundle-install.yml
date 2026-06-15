@@ -154,7 +154,7 @@ jobs:
   prove:
     name: Prove ${{ matrix.organ }} (published bundle)
     needs: setup
-    runs-on: uds-prove-8c
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
