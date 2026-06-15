@@ -79,10 +79,12 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: a11oy-receipt-key-init
-      annotations:
-        # Jobs must terminate; never wrap them in an Istio sidecar (no-op in
-        # ambient mode, prevents the never-completing-sidecar trap in sidecar mode).
-        sidecar.istio.io/inject: "false"
+      # No istio annotations: uds-core (pepr-uds-core) DENIES the
+      # `sidecar.istio.io/inject` annotation on every mesh-governed namespace
+      # (admission webhook rejects istio traffic-interception annotations). The
+      # cluster runs Istio in AMBIENT mode (ztunnel, no per-pod sidecar), so this
+      # Job pod terminates normally without it -- mirrors the proven szl-receipts
+      # key-init pattern, which sets no istio annotation.
     spec:
       serviceAccountName: a11oy-receipt-key-init
       restartPolicy: OnFailure
