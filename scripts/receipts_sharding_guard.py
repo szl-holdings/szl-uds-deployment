@@ -330,6 +330,100 @@ def _extract_cold_bucket(tar_path, bucket):
     return recs, tmp
 
 
+def verify_cold_archive(cold, sealed_buckets, pub_key_raw, tail_first_prev):
+    """Offline re-verification of cold-archived tarballs — PHASE A2's core check
+    extracted as a STANDALONE, self-testable unit (see
+    scripts/receipts_sharding_guard.test.py).
+
+    Re-opens every <cold>/<bucket>.tar.gz with NOTHING but the public key + the
+    sidecar <bucket>.manifest.json and proves each sealed bucket is STILL a
+    verifiable chain segment:
+      (1) the manifest's tarball_sha256 matches the actual tarball bytes (no silent
+          corruption of the archive at rest);
+      (2) every receipt inside re-verifies its Ed25519/DSSE signature, its SHA-256
+          chain hash, and its intra-bucket prev_hash link — verified INDEPENDENTLY
+          of server.py (the cryptography lib here, not the server's own verifier);
+      (3) the manifest's first_prev_hash/last_hash match what the REAL receipt bytes
+          say (not merely self-consistent metadata);
+      (4) the byte-derived cold segments stitch GENESIS -> bucket -> bucket -> the
+          surviving live tail (tail_first_prev), so an auditor can re-attach cold
+          storage to disk.
+
+    Returns the number of FAILED checks (0 == a clean, verifiable cold archive).
+    Manifests are read FROM DISK here (not passed in) so a self-test can mutate a
+    crafted-bad archive and watch this return non-zero — the guard-trio property
+    that a refactor cannot quietly loosen this verifier to an always-pass.
+    """
+    fails = 0
+    cold_segments = {}   # bucket -> (first_prev_hash, last_hash) from REAL bytes
+    for b in sealed_buckets:
+        tar_path = os.path.join(cold, f"{b}.tar.gz")
+        mf = _read_json(os.path.join(cold, f"{b}.manifest.json"))
+        # (1) no silent corruption: manifest tarball_sha256 == actual bytes.
+        fails += _assert(_sha256_file(tar_path) == mf.get("tarball_sha256"),
+                         f"cold tarball[{b}] sha256 matches its manifest "
+                         f"(no silent corruption at rest)")
+        # (2) re-open the tarball and re-verify every receipt inside it.
+        recs, tmp = _extract_cold_bucket(tar_path, b)
+        try:
+            fails += _assert(len(recs) == mf.get("count"),
+                             f"cold bucket[{b}] holds count receipts "
+                             f"({len(recs)} == {mf.get('count')})")
+            seg_ok = bool(recs)
+            expected_prev = (recs[0].get("chain", {}).get("prev_hash")
+                             if recs else None)
+            first_prev = expected_prev
+            last_hash = None
+            for rec in recs:
+                chain = rec.get("chain", {}) or {}
+                sig_ok = _verify_receipt_sig(rec, pub_key_raw)
+                hash_ok = (_chain_hash(rec) == chain.get("hash"))
+                link_ok = (chain.get("prev_hash") == expected_prev)
+                seg_ok = seg_ok and sig_ok and hash_ok and link_ok
+                expected_prev = chain.get("hash")
+                last_hash = chain.get("hash") or last_hash
+            fails += _assert(seg_ok,
+                             f"cold bucket[{b}]: every receipt's Ed25519/DSSE "
+                             f"signature + chain hash + intra-bucket link "
+                             f"re-verify offline")
+            # (3) the manifest boundary hashes match the REAL receipt bytes,
+            #     not just self-consistent metadata.
+            fails += _assert(first_prev == mf.get("first_prev_hash"),
+                             f"cold bucket[{b}] first receipt prev_hash == "
+                             f"manifest first_prev_hash")
+            fails += _assert(last_hash == mf.get("last_hash"),
+                             f"cold bucket[{b}] last receipt hash == "
+                             f"manifest last_hash")
+            cold_segments[b] = (first_prev, last_hash)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # (4) the re-verified cold segments stitch into ONE chain from GENESIS up to
+    #     the surviving LIVE tail — using hashes read from the TARBALL bytes, so an
+    #     auditor can re-attach cold storage to what is still on disk.
+    if cold_segments and len(cold_segments) == len(sealed_buckets):
+        fails += _assert(cold_segments[sealed_buckets[0]][0] == GENESIS,
+                         "lowest cold bucket re-attaches to GENESIS (from bytes)")
+        for i in range(len(sealed_buckets) - 1):
+            cur, nxt = sealed_buckets[i], sealed_buckets[i + 1]
+            fails += _assert(cold_segments[cur][1] == cold_segments[nxt][0],
+                             f"cold segments stitch: {cur}.last_hash == "
+                             f"{nxt}.first_prev_hash (from tarball bytes)")
+        fails += _assert(
+            cold_segments[sealed_buckets[-1]][1] == tail_first_prev,
+            "highest cold bucket's last_hash == live tail's first prev_hash "
+            "(cold re-attaches to the surviving live store)")
+    else:
+        # An unreadable/missing cold segment is itself a verification FAILURE —
+        # never let an incomplete segment set silently skip the GENESIS->tail
+        # stitch proof (that would be an always-pass hole).
+        fails += _assert(False,
+                         f"all {len(sealed_buckets)} cold segments were readable "
+                         f"for the GENESIS->tail stitch proof "
+                         f"(got {len(cold_segments)})")
+    return fails
+
+
 # ── build a real, signed, multi-bucket store via the running server ───────────────
 def _seed_signed_store(store, key, shard_size, n, port=8138):
     env = dict(os.environ)
@@ -539,66 +633,14 @@ def main():
         # server's own verifier cannot make this pass hollowly.
         print("\n== PHASE A2: cold-archived tarballs re-verify offline + re-stitch ==")
         pub = _public_key_raw_from_pem(key)
-        cold_segments = {}   # bucket -> (first_prev_hash, last_hash) from REAL bytes
-        for b in sealed_expected:
-            tar_path = os.path.join(cold, f"{b}.tar.gz")
-            mf = manifests[b]
-            # (1) no silent corruption: manifest tarball_sha256 == actual bytes.
-            fails += _assert(_sha256_file(tar_path) == mf.get("tarball_sha256"),
-                             f"cold tarball[{b}] sha256 matches its manifest "
-                             f"(no silent corruption at rest)")
-            # (2) re-open the tarball and re-verify every receipt inside it.
-            recs, tmp = _extract_cold_bucket(tar_path, b)
-            try:
-                fails += _assert(len(recs) == mf.get("count") == shard_size,
-                                 f"cold bucket[{b}] holds count receipts "
-                                 f"({len(recs)} == {mf.get('count')} == {shard_size})")
-                seg_ok = bool(recs)
-                expected_prev = (recs[0].get("chain", {}).get("prev_hash")
-                                 if recs else None)
-                first_prev = expected_prev
-                last_hash = None
-                for rec in recs:
-                    chain = rec.get("chain", {}) or {}
-                    sig_ok = _verify_receipt_sig(rec, pub)
-                    hash_ok = (_chain_hash(rec) == chain.get("hash"))
-                    link_ok = (chain.get("prev_hash") == expected_prev)
-                    seg_ok = seg_ok and sig_ok and hash_ok and link_ok
-                    expected_prev = chain.get("hash")
-                    last_hash = chain.get("hash") or last_hash
-                fails += _assert(seg_ok,
-                                 f"cold bucket[{b}]: every receipt's Ed25519/DSSE "
-                                 f"signature + chain hash + intra-bucket link "
-                                 f"re-verify offline")
-                # (3) the manifest boundary hashes match the REAL receipt bytes,
-                #     not just self-consistent metadata.
-                fails += _assert(first_prev == mf.get("first_prev_hash"),
-                                 f"cold bucket[{b}] first receipt prev_hash == "
-                                 f"manifest first_prev_hash")
-                fails += _assert(last_hash == mf.get("last_hash"),
-                                 f"cold bucket[{b}] last receipt hash == "
-                                 f"manifest last_hash")
-                cold_segments[b] = (first_prev, last_hash)
-            finally:
-                shutil.rmtree(tmp, ignore_errors=True)
-
-        # (4) the re-verified cold segments stitch into ONE chain from GENESIS up to
-        #     the surviving LIVE tail — using hashes read from the TARBALL bytes, so
-        #     an auditor can re-attach cold storage to what is still on disk.
-        if cold_segments and len(cold_segments) == len(sealed_expected):
-            fails += _assert(cold_segments[sealed_expected[0]][0] == GENESIS,
-                             "lowest cold bucket re-attaches to GENESIS (from bytes)")
-            for i in range(len(sealed_expected) - 1):
-                cur, nxt = sealed_expected[i], sealed_expected[i + 1]
-                fails += _assert(cold_segments[cur][1] == cold_segments[nxt][0],
-                                 f"cold segments stitch: {cur}.last_hash == "
-                                 f"{nxt}.first_prev_hash (from tarball bytes)")
-            tail_first_prev = (_receipts_in_bucket(store_a, tail_bucket)[0]
-                               .get("chain", {}).get("prev_hash"))
-            fails += _assert(
-                cold_segments[sealed_expected[-1]][1] == tail_first_prev,
-                "highest cold bucket's last_hash == live tail's first prev_hash "
-                "(cold re-attaches to the surviving live store)")
+        # The cold-archive verifier proper now lives in a standalone, self-testable
+        # function (verify_cold_archive); a negative-fixture self-test
+        # (scripts/receipts_sharding_guard.test.py) proves it FAILS on crafted-bad
+        # archives so this happy-path call can't go hollow. Per-bucket count ==
+        # shard_size is already asserted in PHASE A above.
+        tail_first_prev = (_receipts_in_bucket(store_a, tail_bucket)[0]
+                           .get("chain", {}).get("prev_hash"))
+        fails += verify_cold_archive(cold, sealed_expected, pub, tail_first_prev)
 
         # (5) the offline cold verifier is NOT a hollow always-pass: a single
         #     flipped payload byte in a cold receipt must break BOTH its signature
