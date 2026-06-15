@@ -40,7 +40,7 @@ spec:
           - /szl-operators
       secretConfig:
         name: szl-killinchu-oidc-secret
-        template: |
+        template:
           OIDC_CLIENT_ID: "{{ .clientId }}"
           OIDC_CLIENT_SECRET: "{{ .secret }}"
           OIDC_ISSUER: "https://sso.uds.dev/realms/uds"
