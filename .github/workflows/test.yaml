@@ -236,7 +236,7 @@ jobs:
     # because the key path/secret is wrong, or verify_receipts.sh drifting — passes
     # the unit test but fails loudly here, so broken "provable receipts" never ship.
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Install cryptography (server signer + offline verifier)
         run: pip install cryptography
