@@ -195,6 +195,34 @@ def main():
         _set_manifest(G, c4, sealed[0], last_hash=BOGUS_HEX)
         ok("mismatched stitch boundary: verify_cold_archive returns non-zero",
            G.verify_cold_archive(c4, sealed, pub, tail_first_prev) > 0)
+
+        # ── (5) no-tail (auditor) mode: graceful, but NOT an always-pass ──────────
+        # tail_first_prev=None skips ONLY the live-tail re-attachment; the per-bucket
+        # integrity + GENESIS/inter-bucket stitch checks still run and still fail.
+        print("\n== fixture 5: no-tail auditor mode (graceful, not always-pass) ==")
+        ok("no-tail mode: a CLEAN archive verifies (returns 0)",
+           G.verify_cold_archive(clean, sealed, pub, None) == 0)
+        ok("no-tail mode: a corrupted archive STILL returns non-zero "
+           "(not a blanket always-pass)",
+           G.verify_cold_archive(c2, sealed, pub, None) > 0)
+
+        # ── (6) the operator verify-cold CLI wraps the same verifier honestly ─────
+        print("\n== fixture 6: verify-cold operator CLI ==")
+        ok("CLI: clean dir + correct --tail-first-prev exits 0",
+           G._cli_verify_cold([clean, "--pubkey", key,
+                               "--tail-first-prev", tail_first_prev]) == 0)
+        ok("CLI: clean dir without a tail exits 0 (re-attachment unchecked)",
+           G._cli_verify_cold([clean, "--pubkey", key]) == 0)
+        ok("CLI: corrupted dir exits non-zero",
+           G._cli_verify_cold([c2, "--pubkey", key]) == 1)
+        ok("CLI: a wrong --tail-first-prev on a clean dir exits non-zero",
+           G._cli_verify_cold([clean, "--pubkey", key,
+                               "--tail-first-prev", BOGUS_HEX]) == 1)
+        ok("CLI: a missing cold dir exits non-zero",
+           G._cli_verify_cold([os.path.join(work, "does-not-exist"),
+                               "--pubkey", key]) == 1)
+        ok("CLI: derives the sealed buckets from the cold dir itself",
+           G._derive_sealed_buckets(clean) == sealed)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
