@@ -32,8 +32,12 @@
 #           via bundles/killinchu (killinchu-bundle:0.5.0, PUBLISHED + current).
 #           The prior org admin:packages action for a separate `vessels` package
 #           is therefore no longer required, and no deploy path is blocked on it.
-#           The legacy szl-vessels-demo package (uds/zarf.yaml) + charts/vessels
-#           are retained as REFERENCE only (superseded by the killinchu organ).
+#           The legacy szl-vessels-demo package (uds/zarf.yaml), its Helm charts
+#           (charts/vessels, charts/uds-mesh), vendored demo manifests, and the
+#           uds-package-release / deploy-entry-guard CI that existed only to build
+#           and check it have been REMOVED from this repo (superseded by the
+#           killinchu organ). The maritime surface lives entirely in the killinchu
+#           organ image; this repo's sole first-party Zarf package is szl-receipts.
 #   FA-002: RESOLVED (2026-06-13). This bundle is now cryptographically signed —
 #           keyless Sigstore via GitHub OIDC, NO org key needed (the prior
 #           "pending org key provisioning" premise was obsolete: keyless OIDC is
