@@ -126,6 +126,40 @@ verify_endpoints(){
   return $rc
 }
 
+# Readiness gate (cold-start race fix): a freshly-recreated container needs time
+# for uvicorn + router/model init before /healthz answers 200. A single early
+# probe (the old bare `sleep 4`) routinely logged "ENDPOINT FAIL /healthz -> 000"
+# and tripped the FATAL on a perfectly healthy deploy. Poll /healthz with backoff
+# up to READY_TIMEOUT seconds (also surfacing uvicorn's "Application startup
+# complete" from the container log as a positive signal). Returns 0 as soon as
+# /healthz answers 200; returns 1 only when the window elapses or the container is
+# no longer running — leaving the authoritative verify_endpoints to emit the real
+# FATAL so a genuinely broken boot still fails closed (non-zero exit).
+READY_TIMEOUT="${KILLINCHU_READY_TIMEOUT:-90}"
+wait_for_ready(){
+  local start=$SECONDS deadline=$(( SECONDS + READY_TIMEOUT )) code="" state startup_seen=0
+  log "Readiness: waiting up to ${READY_TIMEOUT}s for $CONTAINER /healthz ..."
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    state="$(docker inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null)"
+    if [ "$state" != "running" ]; then
+      log "Readiness: container state='${state:-gone}' (not running) — abort wait"
+      return 1
+    fi
+    if [ "$startup_seen" -eq 0 ] && docker logs "$CONTAINER" 2>&1 | grep -q "Application startup complete"; then
+      log "Readiness: 'Application startup complete' seen in container log"
+      startup_seen=1
+    fi
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://$HEALTH_HOSTPORT/healthz" 2>/dev/null)"
+    if [ "$code" = "200" ]; then
+      log "Readiness: /healthz -> 200 after $(( SECONDS - start ))s"
+      return 0
+    fi
+    sleep 3
+  done
+  log "Readiness: /healthz did not reach 200 within ${READY_TIMEOUT}s (last code=${code:-000})"
+  return 1
+}
+
 # Refresh the cached HF Space clone and overlay any Dockerfile COPY source that is
 # missing from the GitHub build context. Fails loudly rather than shipping a
 # degraded image. No-op when GitHub main is self-sufficient (the current state).
@@ -201,7 +235,7 @@ log "Build source pinned to published origin/$BRANCH = $HEAD_SHA"
 overlay_hf
 
 log "docker build -t $IMAGE . (this can take several minutes) ..."
-if docker build -t "$IMAGE" . ; then
+if docker build -t "$IMAGE" --build-arg SZL_GIT_SHA="$(git rev-parse HEAD)" --build-arg SZL_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" . ; then
   log "docker build OK -> $IMAGE"
 else
   fail "docker build failed" 4
@@ -236,12 +270,18 @@ else
 fi
 
 [ -f "$ENV_FILE" ] && RUN_ENV+=(--env-file "$ENV_FILE")  # contracting-env-file-patch
+GPU_ENV_FILE="${KILLINCHU_GPU_ENV_FILE:-/etc/szl-gpu.env}"; [ -f "$GPU_ENV_FILE" ] && RUN_ENV+=(--env-file "$GPU_ENV_FILE")  # gpu-env-file-patch (sovereign serving env, never committed)
 docker run -d --name "$CONTAINER" --restart unless-stopped -p "$PORT_BIND" \
   ${RUN_ENV[@]+"${RUN_ENV[@]}"} "$IMAGE" >/dev/null \
   || fail "docker run failed" 7
 
-sleep 4
+sleep 2
 log "Container state: $(docker inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null)"
+
+# Cold-start race fix: wait for the container to finish booting before the hard
+# endpoint gate, so a slow-but-healthy start no longer trips a spurious FATAL.
+# A genuinely broken boot still falls through to verify_endpoints -> FATAL (exit 8).
+wait_for_ready || log "Readiness wait elapsed — running authoritative endpoint check anyway ..."
 
 log "Verifying live endpoints on the recreated container ..."
 if verify_endpoints; then
