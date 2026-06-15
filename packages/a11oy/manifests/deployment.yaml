@@ -33,7 +33,7 @@ spec:
         - name: a11oy
           # Live, cosign-signed image. Zarf rewrites this to the in-cluster
           # registry reference at deploy time.
-          image: ghcr.io/szl-holdings/a11oy:uds-v0.3.0@sha256:715e0af70307115cfa3238da1a8f02e4cd872318b5f83582b7af1daca0a90e10
+          image: ghcr.io/szl-holdings/a11oy:uds-v0.3.0@sha256:7f623c7c573af6d146544bf8a4df0fd89a4e76d9ac5bde59de58fb6d166948b4
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
