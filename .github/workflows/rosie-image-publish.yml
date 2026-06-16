@@ -1,0 +1,122 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# rosie-image-publish.yml — rebuild, push, KEYLESS-sign and attest the rosie
+# container image from the canonical in-repo source (images/rosie/).
+#
+# Why this exists
+# ---------------
+# The rosie GitHub source repo is DELETED (404). The legacy published image
+# (uds-v0.2.0) is the old HF-Space build: it runs /home/user/app/app.py as a
+# mismatched user and crashes with EACCES under the UDS Deployment's
+# runAsNonRoot:65532 + readOnlyRootFilesystem securityContext, so the rosie
+# prove leg fails. images/rosie/ is now the authoritative rebuildable source;
+# this workflow produces a FIXED, cosign-keyless-signed, SLSA-attested image.
+#
+# Signing is KEYLESS OIDC (GitHub Actions id-token -> Fulcio/Rekor) — no
+# committed key — exactly like cosign.yml and uds-bundle-publish.yml. The org
+# package push uses the org-owner PAT (GHCR_PUBLISH_TOKEN), the same secret the
+# bundle publish uses, because `rosie` is an org-level GHCR package.
+#
+# The new image is published under a NEW patch tag (default uds-v0.2.1) so the
+# historical uds-v0.2.0 artifact and its signatures stay intact and pullable —
+# the change is additive. Repin the consumers (packages/rosie/*, charts/rosie/*)
+# to the @sha256 digest this workflow prints, then prove via prove-organs.
+
+name: Rosie Image Publish (keyless OIDC)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to build / push / sign"
+        type: string
+        default: "uds-v0.2.1"
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  ORG: szl-holdings
+  IMAGE_NAME: rosie
+  COSIGN_VERSION: "v2.4.3"
+
+jobs:
+  publish:
+    name: Build + push + keyless-sign + attest rosie
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read      # checkout
+      packages: write     # push image + signatures to ghcr.io
+      id-token: write     # keyless cosign OIDC token exchange
+    env:
+      TAG: ${{ github.event.inputs.tag || 'uds-v0.2.1' }}
+      COSIGN_EXPERIMENTAL: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - name: Log in to GHCR (org-owner PAT — rosie is an org package)
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GHCR_PUBLISH_TOKEN }}
+
+      - name: Build + push image (capture digest)
+        id: build
+        run: |
+          set -euo pipefail
+          IMG="${REGISTRY}/${ORG}/${IMAGE_NAME}:${TAG}"
+          docker build -t "${IMG}" images/rosie
+          docker push "${IMG}" | tee /tmp/push.log
+          DIGEST="$(grep -oE 'sha256:[a-f0-9]{64}' /tmp/push.log | head -1)"
+          if [ -z "${DIGEST}" ]; then
+            echo "::error::could not parse pushed digest"; exit 1
+          fi
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "PINNED_REF=${REGISTRY}/${ORG}/${IMAGE_NAME}:${TAG}@${DIGEST}"
+          echo "::notice title=rosie image published::${REGISTRY}/${ORG}/${IMAGE_NAME}:${TAG}@${DIGEST}"
+
+      - name: Keyless cosign sign (by digest)
+        run: |
+          set -euo pipefail
+          REF="${REGISTRY}/${ORG}/${IMAGE_NAME}@${{ steps.build.outputs.digest }}"
+          echo "Signing ${REF}"
+          cosign sign --yes "${REF}"
+
+      - name: SLSA provenance attestation (keyless)
+        run: |
+          set -euo pipefail
+          REF="${REGISTRY}/${ORG}/${IMAGE_NAME}@${{ steps.build.outputs.digest }}"
+          jq -n \
+            --arg run "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --arg uri "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --arg sha "${GITHUB_SHA}" \
+            '{
+              builder: { id: $run },
+              buildType: "https://github.com/szl-holdings/szl-uds-deployment/rosie-image-publish@v1",
+              invocation: { configSource: { uri: $uri, digest: { sha1: $sha }, entryPoint: ".github/workflows/rosie-image-publish.yml" } },
+              metadata: { completeness: { parameters: true, environment: false, materials: false }, reproducible: false }
+            }' > /tmp/prov.json
+          cosign attest --yes --predicate /tmp/prov.json --type slsaprovenance "${REF}"
+
+      - name: Verify signature + attestation (self-gate, keyless)
+        run: |
+          set -euo pipefail
+          REF="${REGISTRY}/${ORG}/${IMAGE_NAME}@${{ steps.build.outputs.digest }}"
+          cosign verify \
+            --certificate-identity-regexp="https://github.com/${GITHUB_REPOSITORY}" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+            "${REF}"
+          cosign verify-attestation --type slsaprovenance \
+            --certificate-identity-regexp="https://github.com/${GITHUB_REPOSITORY}" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+            "${REF}"
+          echo "rosie image signed + attested + verified: ${REF}"
