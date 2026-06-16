@@ -1,0 +1,208 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# bundle-provenance-attestation-guard.yml — Continuously prove that the PUBLISHED
+# UDS mesh bundle's SLSA provenance ATTESTATION stays published and ANONYMOUSLY
+# verifiable.
+#
+# Why this exists
+# ---------------
+# The public bundle (oci://ghcr.io/szl-holdings/szl-uds-bundle) now carries a
+# keyless SLSA provenance attestation in addition to its cosign signature:
+#   * v0.3.0 was attested post-publish by uds-bundle-attest-existing.yml;
+#   * every NEW bundle is attested in-line by uds-bundle-publish.yml (which also
+#     self-verifies before exit).
+# The uds-bundles README.md / DEPLOY.md now state — as an anonymously-runnable
+# fact — that `cosign verify-attestation --type slsaprovenance` returns a
+# slsa.dev/provenance/v0.2 payload for the bundle with NO key and NO GHCR login.
+#
+# Nothing watches that claim after publish. A re-push, a registry/visibility
+# change, an attestation-layer deletion, a Rekor problem, or a signer-identity
+# drift could silently break it, and the honest-scope docs would then OVERCLAIM.
+# prove-bundle-install.yml re-proves the bundle SIGNATURE + member install nightly
+# but does NOT run verify-ATTESTATION, so the provenance claim is unguarded. This
+# workflow closes that gap: it re-runs the exact anonymous verify-attestation a
+# customer/judge would run, and pages on any automatic-run failure.
+#
+# HONESTY (doctrine v11)
+# ----------------------
+# This guards a POST-PUBLISH provenance attestation (v0.3.0) and the in-line
+# attestation of future bundles — it does NOT upgrade the claim. SLSA L2 verified
+# build-provenance stays on the roadmap; L3 is never claimed. The verify is run
+# ANONYMOUSLY (no docker login) so it actually exercises the no-key/no-login path
+# the docs promise — not a privileged shortcut.
+#
+# Identity pinning (never regexp — matches cosign-identity-pin doctrine)
+# ---------------------------------------------------------------------
+# verify-attestation is attempted against an enumerated set of EXACT
+# certificate-identities, all bound to THIS repo's workflows. It PASSES if any one
+# exact identity verifies, and FAILS LOUD if none do (a swapped/forked attestor is
+# therefore flagged, not silently accepted):
+#   1. uds-bundle-attest-existing.yml@refs/heads/main  (attested v0.3.0)
+#   2. uds-bundle-publish.yml@refs/tags/<tag>          (future tag-published)
+#   3. uds-bundle-publish.yml@refs/heads/main          (future dispatch-published)
+#
+# Triggers:
+#   * schedule (daily 09:00 UTC) — offset from prove-organs (07:00) and
+#     prove-bundle-install (08:00) so heavy jobs don't contend for runners.
+#   * push: tags uds-v* / v* — re-prove on every release.
+#   * workflow_dispatch — override the bundle tag / an exact identity on demand.
+
+name: Bundle Provenance Attestation Guard
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_tag:
+        description: "Published bundle OCI tag to verify-attestation"
+        type: string
+        default: uds-v0.3.0
+      cert_identity:
+        description: "EXACT cosign certificate-identity of the attestor (leave blank to try the default enumerated identities)"
+        type: string
+        default: ""
+  push:
+    tags:
+      - "uds-v*"
+      - "v*"
+  schedule:
+    - cron: "0 9 * * *"
+
+permissions:
+  contents: read
+
+env:
+  COSIGN_VERSION: "v2.4.3"
+  REGISTRY: "ghcr.io"
+  ORG: "szl-holdings"
+  BUNDLE_NAME: "szl-uds-bundle"
+  CERT_ISSUER: "https://token.actions.githubusercontent.com"
+
+jobs:
+  verify-attestation:
+    name: Bundle SLSA provenance attestation is anonymously verifiable
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+      - name: Verify cosign
+        run: cosign version
+
+      - name: Resolve bundle ref + candidate identities
+        id: r
+        env:
+          INPUT_TAG: ${{ inputs.bundle_tag }}
+          INPUT_IDENTITY: ${{ inputs.cert_identity }}
+        run: |
+          set -euo pipefail
+          # On a tag push, guard the bundle that matches the tag; otherwise use
+          # the dispatch input (default uds-v0.3.0 — the live published bundle).
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="${INPUT_TAG:-uds-v0.3.0}"
+          fi
+          BUNDLE_REF="${REGISTRY}/${ORG}/${BUNDLE_NAME}:${TAG}"
+          echo "tag=${TAG}"               >> "$GITHUB_OUTPUT"
+          echo "bundle_ref=${BUNDLE_REF}" >> "$GITHUB_OUTPUT"
+          # EXACT identities only (never --certificate-identity-regexp). If a
+          # specific identity is supplied on dispatch, use ONLY that one.
+          ATTEST_WF="https://github.com/${ORG}/szl-uds-deployment/.github/workflows/uds-bundle-attest-existing.yml@refs/heads/main"
+          PUB_WF_TAG="https://github.com/${ORG}/szl-uds-deployment/.github/workflows/uds-bundle-publish.yml@refs/tags/${TAG}"
+          PUB_WF_MAIN="https://github.com/${ORG}/szl-uds-deployment/.github/workflows/uds-bundle-publish.yml@refs/heads/main"
+          {
+            echo "identities<<EOF"
+            if [ -n "${INPUT_IDENTITY}" ]; then
+              echo "${INPUT_IDENTITY}"
+            else
+              echo "${ATTEST_WF}"
+              echo "${PUB_WF_TAG}"
+              echo "${PUB_WF_MAIN}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved bundle_ref=${BUNDLE_REF}"
+
+      - name: cosign verify-attestation (keyless, ANONYMOUS — no docker login)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          BUNDLE_REF: ${{ steps.r.outputs.bundle_ref }}
+          IDENTITIES: ${{ steps.r.outputs.identities }}
+        run: |
+          set -euo pipefail
+          # Run with NO registry credentials so this exercises the exact no-key,
+          # no-login anonymous path the docs promise a customer/judge can run.
+          ok=0
+          last_id=""
+          # Retry/backoff absorbs Rekor / GHCR eventual-consistency and anonymous
+          # rate limits without ever suppressing a real final failure.
+          for attempt in 1 2 3 4 5 6; do
+            while IFS= read -r ID; do
+              [ -z "${ID}" ] && continue
+              last_id="${ID}"
+              if cosign verify-attestation --type slsaprovenance \
+                  --certificate-identity "${ID}" \
+                  --certificate-oidc-issuer "${CERT_ISSUER}" \
+                  "${BUNDLE_REF}" > /dev/null 2>/tmp/va.err; then
+                ok=1
+                echo "verify-attestation OK for ${BUNDLE_REF} (identity=${ID}, attempt ${attempt})"
+                break
+              fi
+            done <<< "${IDENTITIES}"
+            [ "${ok}" -eq 1 ] && break
+            echo "verify-attestation not ready / no identity matched (attempt ${attempt}/6); sleeping 15s"
+            sleep 15
+          done
+          if [ "${ok}" -ne 1 ]; then
+            echo "::error title=bundle-provenance-attestation::no EXACT identity verified the SLSA provenance attestation on ${BUNDLE_REF}"
+            echo "Tried identities:"; printf '%s\n' "${IDENTITIES}"
+            echo "Last cosign error:"; tail -8 /tmp/va.err || true
+            exit 1
+          fi
+          echo "Bundle SLSA provenance attestation is published and anonymously verifiable."
+
+      - name: Summary
+        if: success()
+        env:
+          BUNDLE_REF: ${{ steps.r.outputs.bundle_ref }}
+        run: |
+          {
+            echo "### Bundle provenance attestation verified (anonymous)"
+            echo ""
+            echo "\`${BUNDLE_REF}\` — \`cosign verify-attestation --type slsaprovenance\` succeeded keylessly with NO GHCR login."
+            echo ""
+            echo "_Post-publish SLSA provenance (slsa.dev/provenance/v0.2). L2 verified build-provenance remains on the roadmap; L3 not claimed._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Page the CI alert channel when an AUTOMATIC run fails ─────────────────────
+  alert:
+    name: Page CI alert channel on failure
+    needs: verify-attestation
+    if: failure() && github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Post failure to the team alert channel (ntfy/Slack relay)
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL is unset — cannot page; the red workflow run is the only signal."
+            exit 0
+          fi
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          TRIGGER="${{ github.event_name }}"
+          REF="${{ github.ref_name }}"
+          TEXT=":rotating_light: bundle-provenance-attestation-guard FAILED on ${TRIGGER} (${REF}) — the PUBLISHED UDS bundle's SLSA provenance attestation did NOT anonymously verify-attestation (keyless). The uds-bundles docs claim it is anonymously verifiable. ${RUN_URL}"
+          payload=$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1]}))' "${TEXT}")
+          code=$(curl -sS -o /tmp/relay.out -w "%{http_code}" \
+            -X POST -H "Content-Type: application/json" \
+            -d "${payload}" "${SLACK_WEBHOOK_URL}")
+          echo "relay responded HTTP ${code}"
+          cat /tmp/relay.out 2>/dev/null || true
+          case "${code}" in
+            2*) echo "Alert delivered to the CI alert channel." ;;
+            *)  echo "::error::alert POST failed (HTTP ${code})"; exit 1 ;;
+          esac
