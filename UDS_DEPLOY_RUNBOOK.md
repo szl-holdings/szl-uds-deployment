@@ -155,6 +155,24 @@ uds run prove-bundle --set ORGAN=a11oy \
 #   @ sha256:e61c2f9880560ec71812f546b9bad09de4b9d58ad15b27968cb9cf23dd6a4f4a
 ```
 
+## 11b. One-liner — prove the two consolidated organs CO-BOOT (a11oy + killinchu)
+```bash
+# Post-consolidation upgrade of §11: prove the TWO deployable organs BOOT
+# TOGETHER on ONE clean cluster from the published, cosign-signed bundle, and
+# each serves an in-cluster HTTP 200 (port-forward bypasses Istio STRICT mTLS;
+# a meshless ClusterIP curl would be REJECTED):
+gh workflow run prove-coboot.yml -f bundle_tag=uds-v0.3.0
+# Local task equivalent (connected build box):
+uds run prove-coboot --set BUNDLE_REF=ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.3.0
+
+# LIVE EVIDENCE (CI run 27586435539, 2026-06-16) — all GREEN:
+#   cosign verify PASS (keyless Fulcio/Rekor; signer uds-bundle-publish.yml@refs/heads/main)
+#   a11oy + killinchu BOTH Available on ONE cluster (co-resident)
+#   a11oy /healthz -> HTTP 200 ; killinchu /api/killinchu/healthz -> HTTP 200
+# Honest scope: proves co-residency of the TWO consolidated deployables ONLY;
+# does NOT claim the legacy 5-organ fleet co-boots. Energy SAMPLE.
+```
+
 ---
 
 ## Honest status labels (keep verbatim)

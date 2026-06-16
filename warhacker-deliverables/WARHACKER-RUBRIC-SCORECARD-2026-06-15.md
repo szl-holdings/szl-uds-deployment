@@ -73,6 +73,13 @@ observable, on a clean cluster — automatically.
   cold k3d cluster → stand up UDS substrate → deploy the organ from the *pulled*
   bundle → assert in-cluster health 200. Runs on schedule (08:00 UTC); the
   published-signature verify is roadmap until the box sign+publish step is live.
+- **prove-coboot (NEW — GREEN 2026-06-16):** the post-consolidation upgrade of
+  prove-bundle-install — both deployable organs (a11oy + killinchu) CO-BOOT on ONE
+  clean cluster from the *published, cosign-verified* bundle, each serving an
+  in-cluster HTTP 200 (port-forward straight to the pod, bypassing Istio STRICT
+  mTLS). CI run 27586435539: cosign verify PASS (keyless) → both Available → a11oy
+  `/healthz` + killinchu `/api/killinchu/healthz` BOTH HTTP 200. Honest scope: the
+  TWO consolidated deployables only, NOT the legacy 5-organ fleet.
 - **Receipts chain + observability:** signed receipt chain with Prometheus/Grafana
   (see `RECEIPT-CHAIN-OBSERVABILITY` + `RECEIPTS-PROMETHEUS-GRAFANA-LIVE`).
 - **Guard suite (all PASS):** version-doctrine, organ/pin-drift, image-stale-watch,
