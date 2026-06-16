@@ -13,7 +13,7 @@
   is **published** (also `:0.3.0` / `:latest`) and carries, on ghcr, a keyless cosign
   **signature** (`*.sig`) AND a SLSA-provenance **attestation** (`*.att`). The
   earlier "publish+sign pending — ROADMAP" caveat is retired.
-- **SLSA L1+L2 EARNED at the bundle level (closes old Gap 5).** `uds-bundle-publish.yml`
+- **SLSA L1 at the bundle level + verified L2 on the a11oy/killinchu organ images (closes old Gap 5).** Bundle-level L2 is NOT separately earned. `uds-bundle-publish.yml`
   signs keyless (Fulcio/Rekor via GitHub OIDC) and `cosign attest --type slsaprovenance`
   + `--type spdxjson`; `prove-bundle` and `prove-coboot` HARD-GATE on
   `cosign verify-attestation` for both predicate types against the exact publisher OIDC
