@@ -33,6 +33,14 @@
 
 name: UDS Bundle Publish
 
+# LOCKSTEP: this file's PATH and the `on:` triggers below define the keyless cosign
+# signer identity Fulcio mints for the published bundle
+# (https://github.com/szl-holdings/szl-uds-deployment/<this-file>@<ref-it-ran-on>).
+# The prove-bundle proof verifies the bundle against that EXACT identity. If you
+# rename/move this file OR change these triggers (workflow_dispatch/main <-> push
+# tags uds-v*), update tasks/prove-bundle.yaml (CERT_IDENTITY / CERT_IDENTITY_FALLBACK)
+# AND .github/workflows/prove-bundle-install.yml (WF / ID_MAIN / ID_TAG) in the SAME
+# change. bundle-signer-identity-drift-guard.yml fails the PR until they match.
 on:
   workflow_dispatch:
     inputs:

@@ -56,6 +56,13 @@ variables:
   - name: BUNDLE_REF
     description: "Published bundle OCI ref WITHOUT scheme (registry/org/name:tag)"
     default: "ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.3.0"
+  # LOCKSTEP: CERT_IDENTITY below encodes the publish workflow's FILE PATH and the
+  # git REF it signs on. Both are derived by Fulcio from the publish run's OIDC
+  # token at sign time. If you rename/move .github/workflows/uds-bundle-publish.yml
+  # OR change its trigger (workflow_dispatch/main <-> push tags uds-v*), update the
+  # CERT_IDENTITY / CERT_IDENTITY_FALLBACK defaults here AND the WF / ID_MAIN /
+  # ID_TAG literals in .github/workflows/prove-bundle-install.yml in the SAME change.
+  # bundle-signer-identity-drift-guard.yml fails the PR until these match reality.
   - name: CERT_IDENTITY
     description: >-
       EXACT cosign certificate-identity of the bundle's keyless signer (the
