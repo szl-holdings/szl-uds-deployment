@@ -37,8 +37,16 @@
 #   token first (the deploy surfaces are documented as anon-pullable), and only
 #   fall back to the repo PAT to CLASSIFY a denied/absent result:
 #     * 200 (anon)            -> OK  (anon-pullable, the desired state)
-#     * 200 (PAT only)        -> OK, with a ::warning:: that it is published but
-#                                NOT anon-pullable (a CI anon `deploy` would 403)
+#     * 200 (PAT only)        -> OK_PRIVATE: published but NOT anon-pullable (a CI
+#                                anon `deploy` would 403). For a GENERIC deploy ref
+#                                this is a ::warning:: (it may be a legitimately
+#                                private package deployed inside authenticated CI).
+#                                But for a ref in PUBLIC_ANON_REPOS — a package the
+#                                project DOCUMENTS as part of the public one-command
+#                                anonymous install (szl-uds-bundle) — this is a
+#                                FAIL: a private public-install ref silently breaks
+#                                the documented `uds deploy oci://...` for everyone,
+#                                so the guard must NOT report it as OK.
 #     * 404 (best auth)       -> MISSING  -> FAIL (never published — the #678 bug)
 #     * 401/403 (even w/ PAT) -> DENIED   -> FAIL (unreachable; a deploy would 403)
 #     * network / 5xx / other -> OUTAGE   -> SKIP with ::warning:: (never a silent
@@ -92,7 +100,28 @@ REF_RE = re.compile(
 SELF_EXCLUDE = {
     os.path.join("scripts", "oci-ref-checks.py"),
     os.path.join("scripts", "oci-ref-checks.test.py"),
+    # The anon-pullability probe + its self-test embed the documented one-command
+    # install string `oci://ghcr.io/szl-holdings/szl-uds-bundle:<tag>` in their
+    # comments to explain themselves. Those are documentation, NOT deploy surfaces
+    # this guard should resolve — same rationale as excluding this file itself.
+    os.path.join("scripts", "probe-bundle-anon-pullable.sh"),
+    os.path.join("scripts", "probe-bundle-anon-pullable.test.sh"),
 }
+
+# Repos whose refs are DOCUMENTED as part of the public, one-command ANONYMOUS
+# install — `uds deploy oci://ghcr.io/szl-holdings/szl-uds-bundle:<tag> --confirm`.
+# For these, "published but only pullable with a PAT" (OK_PRIVATE) is NOT
+# acceptable: the documented anonymous install (and the anonymous `cosign verify`
+# / `gh attestation verify` story) would 403 for everyone. So an OK_PRIVATE result
+# for one of these repos is escalated to a FAILURE in verdict(), instead of being
+# reported as OK with a soft warning. This makes oci-ref-checks AGREE with the
+# dedicated bundle-anon-pullable guard rather than masking a privatization of the
+# public install as OK_PRIVATE. Generic deploy refs are unaffected — they may be
+# legitimately private-but-deployable inside authenticated CI, so they keep the
+# softer OK_PRIVATE-as-warning treatment.
+PUBLIC_ANON_REPOS = frozenset({
+    "szl-holdings/szl-uds-bundle",
+})
 
 GHCR_ACCEPT = ",".join(
     (
@@ -232,10 +261,15 @@ def classify_status(anon_code, pat_code=None, pat_tried=False):
     return "UNVERIFIABLE", "unexpected GHCR status %s" % anon_code
 
 
-def verdict(refs, resolver):
+def verdict(refs, resolver, public_anon_repos=PUBLIC_ANON_REPOS):
     """Resolve every ref via the injected resolver and split into failures/notes.
 
     resolver(repo, tag) -> (anon_code, pat_code, pat_tried)
+    public_anon_repos  -> repos for which OK_PRIVATE (published but PAT-only) is a
+                          FAILURE rather than a tolerated warning, because they are
+                          the DOCUMENTED public one-command anonymous install
+                          (see PUBLIC_ANON_REPOS). Injectable so the self-test can
+                          assert both the escalation and the generic-ref tolerance.
 
     Returns (failures, warnings, oks) — all lists of strings. A non-empty
     `failures` means the guard must exit 1. Pure w.r.t. I/O (the resolver carries
@@ -252,8 +286,17 @@ def verdict(refs, resolver):
         elif v == "OK":
             oks.append(line)
         elif v == "OK_PRIVATE":
-            oks.append(line)
-            warnings.append(line)
+            if r["repo"] in public_anon_repos:
+                # The documented public install must stay anonymously pullable;
+                # a PAT-only result here is a real break, not a soft warning.
+                failures.append(
+                    "%s [%s] — %s; this is the PUBLIC one-command anonymous "
+                    "install ref and MUST stay anonymously pullable"
+                    % (r["ref"], where, detail)
+                )
+            else:
+                oks.append(line)
+                warnings.append(line)
         else:  # UNVERIFIABLE / OUTAGE
             warnings.append(line)
     return failures, warnings, oks

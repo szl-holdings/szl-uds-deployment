@@ -122,10 +122,30 @@ def main():
     f, w, _ = verdict(out_refs, fake_resolver({("szl-holdings/szl-receipts", "x"): ("OUTAGE", None, False)}))
     check(f == [] and len(w) == 1, "a registry OUTAGE is a warning, never a failure")
 
-    # ── verdict: a private-but-published ref passes (with a warning) ──────────
+    # ── verdict: a private-but-published GENERIC ref passes (with a warning) ───
     priv = [{"repo": "szl-holdings/szl-receipts", "tag": "p", "ref": "oci://ghcr.io/szl-holdings/szl-receipts:p", "sources": ["tasks.yaml"]}]
     f, w, oks = verdict(priv, fake_resolver({("szl-holdings/szl-receipts", "p"): (403, 200, True)}))
-    check(f == [] and len(w) == 1 and len(oks) == 1, "a private-but-published ref passes with a warning")
+    check(f == [] and len(w) == 1 and len(oks) == 1, "a private-but-published GENERIC ref passes with a warning")
+
+    # ── verdict: a PRIVATIZED public-install ref FAILS, it is not masked as OK ──
+    # The whole point of the upgrade: OK_PRIVATE on a PUBLIC_ANON_REPOS ref (the
+    # documented one-command anonymous install) must be a FAILURE, not a soft OK.
+    pub_priv = [{"repo": "szl-holdings/szl-uds-bundle", "tag": "uds-v0.3.0", "ref": "oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.3.0", "sources": ["tasks.yaml"]}]
+    f, w, oks = verdict(pub_priv, fake_resolver({("szl-holdings/szl-uds-bundle", "uds-v0.3.0"): (403, 200, True)}))
+    check(
+        len(f) == 1 and "szl-uds-bundle:uds-v0.3.0" in f[0] and oks == [],
+        "a privatized PUBLIC install ref (OK_PRIVATE) FAILS — not masked as OK",
+    )
+
+    # ── verdict: a genuinely anon-pullable public-install ref still PASSES ─────
+    pub_ok = [{"repo": "szl-holdings/szl-uds-bundle", "tag": "uds-v0.3.0", "ref": "oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.3.0", "sources": ["tasks.yaml"]}]
+    f, w, oks = verdict(pub_ok, fake_resolver({("szl-holdings/szl-uds-bundle", "uds-v0.3.0"): (200, None, False)}))
+    check(f == [] and len(oks) == 1, "a genuinely anon-pullable public-install ref still PASSES")
+
+    # ── verdict: PUBLIC_ANON_REPOS is the real wiring (not just an injected set) ─
+    pub_default = [{"repo": "szl-holdings/szl-uds-bundle", "tag": "x", "ref": "oci://ghcr.io/szl-holdings/szl-uds-bundle:x", "sources": ["tasks.yaml"]}]
+    f, w, oks = verdict(pub_default, fake_resolver({("szl-holdings/szl-uds-bundle", "x"): (403, 200, True)}))
+    check(len(f) == 1, "the default PUBLIC_ANON_REPOS escalates szl-uds-bundle without an injected override")
 
     print()
     if _FAILS:
