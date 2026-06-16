@@ -49,8 +49,15 @@
 #
 # Usage:
 #   szl-receipts-cold-archive-audit-guard-checks.sh <check> [root]
-#     check : chk1 | chk2 | ... | chk9 | all
+#     check : chk1 | chk2 | ... | chk10 | all
 #     root  : repo root to check (default: current directory)
+#
+# chk1..chk9 are BEHAVIOURAL with a STUBBED verifier (no cluster, no crypto).
+# chk10 is the REAL-CRYPTO end-to-end integration check: it seeds a genuinely
+# signed, sealed cold archive with the sharding guard's own machinery and drives
+# the REAL audit + REAL verifier over it (clean -> OK, one-byte tarball corruption
+# -> ALERT, dedup, restore -> RECOVERED). It is self-validating and SKIPS (passing)
+# when the host cannot seed a real signed store.
 #
 # Each check exits 0 when the invariant holds and non-zero (printing a GitHub
 # ::error annotation) when it is regressed.
@@ -371,6 +378,147 @@ chk9() {
   echo "OK: runbook documents szl-receipts-cold-archive-audit; install.sh names the job"
 }
 
+# ── Check 10 ──────────────────────────────────────────────────────────────────
+# REAL-CRYPTO END-TO-END (capability-gated, self-validating). Every check above
+# uses a STUBBED verifier so the control flow can be proven without crypto. This
+# check closes the remaining gap: it proves the REAL audit script and the REAL
+# offline verifier actually interoperate over a GENUINELY signed, sealed cold
+# archive — real Ed25519 receipts, real tarball_sha256, real bucket names — not a
+# canned stub. It builds that archive with the sharding guard's OWN machinery
+# (_gen_key + _seed_signed_store + archive-shards, no cluster), then drives the
+# real audit end-to-end and asserts the full lifecycle:
+#   clean real archive            -> OK,    0 pages
+#   one-byte tarball corruption   -> ALERT, exactly 1 page naming the bucket
+#   still corrupt (re-run)        -> edge-dedup, NO new page
+#   restored                      -> OK   + a RECOVERED page
+# Because it carries its own positive AND negative assertions it is SELF-VALIDATING
+# and needs no separate negative fixture (the underlying control-flow regressions
+# are also covered by chk4–chk6, and the verifier's crypto correctness by the
+# sharding-guard's own crafted-bad-archive test). It SKIPS — and PASSES — when the
+# host cannot seed a real signed store (no `cryptography`, no server.py, openssl
+# missing, or the server boots unsigned), exactly like an importorskip in a crypto
+# round-trip test, so it never turns the guard into a flaky red.
+_chk10_run() {
+  # Runs the REAL audit over $cold with the REAL verifier $RSG and explicit
+  # $pub key, a capturing notifier, and a reused $statedir (so the dedup /
+  # RECOVERED edges work across calls). Sets E_RC/E_PAGES/E_TEXT/E_STATUS.
+  env PUBKEY_HEX="$pub" HOST_COLD_DIR="$cold" STATE_DIR="$statedir" \
+      LOG_DIR="$w/log" GUARD_PY="$RSG" NOTIFY_CMD="$mbin/notify" \
+      ALERT_PREFIX="[TEST] " \
+      bash "$F" >"$w/stdout" 2>&1
+  E_RC=$?
+  E_PAGES="$(grep -c '^---PAGE-END---$' "$pages" 2>/dev/null || true)"; E_PAGES="${E_PAGES:-0}"
+  E_TEXT="$(cat "$pages" 2>/dev/null || true)"
+  E_STATUS="$(sed -n 's/.*"overall":"\([^"]*\)".*/\1/p' "$statedir/status.json" 2>/dev/null || true)"
+  E_STATUS="${E_STATUS:-?}"
+}
+
+chk10() {
+  local root="${1:-.}"
+  local F="$root/$AUDIT_REL"
+  local RSG="$root/scripts/receipts_sharding_guard.py"
+  local SRV="$root/services/szl-receipts-server/server.py"
+  test -f "$F" || { err "REGRESSION ($F) — the audit script is missing."; return 1; }
+
+  # Capability gate: need the real verifier, the real server, and the crypto lib.
+  if [ ! -f "$RSG" ] || [ ! -f "$SRV" ] \
+     || ! command -v openssl >/dev/null 2>&1 \
+     || ! python3 -c 'import cryptography' >/dev/null 2>&1; then
+    echo "SKIP: chk10 real-crypto E2E (no real-seal capability: need scripts/receipts_sharding_guard.py + services/szl-receipts-server/server.py + openssl + python 'cryptography')"
+    return 0
+  fi
+
+  local w; w="$(mktemp -d)"
+  local cold="$w/cold"; mkdir -p "$cold"
+  local mbin="$w/bin"; mkdir -p "$mbin"
+  local statedir="$w/state"
+  local pages="$w/pages"; : >"$pages"
+  local port=$(( (RANDOM % 4000) + 8300 ))
+
+  # Seed a REAL signed, sealed cold archive and emit the matching pubkey hex.
+  # ANY failure (server won't boot / boots unsigned / archive failed) => SKIP.
+  local pub
+  pub="$(SZL_E2E_COLD="$cold" SZL_E2E_PORT="$port" python3 - "$RSG" <<'PY' 2>/dev/null
+import importlib.util, os, sys, tempfile
+guard = sys.argv[1]
+cold = os.environ["SZL_E2E_COLD"]; port = int(os.environ["SZL_E2E_PORT"])
+try:
+    spec = importlib.util.spec_from_file_location("rsg_e2e", guard)
+    rsg = importlib.util.module_from_spec(spec); spec.loader.exec_module(rsg)
+    work = tempfile.mkdtemp(prefix="szl-cold-e2e-")
+    key = os.path.join(work, "ed25519.pem"); rsg._gen_key(key)
+    store = os.path.join(work, "store"); os.makedirs(store)
+    rsg._seed_signed_store(store, key, 5, 17, port=port)
+    rc, _ = rsg._cli(store, key, 5, ["archive-shards", "--delete"], cold_dir=cold)
+    if rc != 0:
+        sys.exit(3)
+    sys.stdout.write(rsg._public_key_raw_from_pem(key).hex())
+except SystemExit:
+    raise
+except Exception as e:
+    sys.stderr.write("seed-failed: %r\n" % (e,))
+    sys.exit(3)
+PY
+)"
+  pub="$(printf '%s' "$pub" | grep -oE '[0-9a-f]{64}' | tail -1)"
+  if [ -z "$pub" ] || [ "$(ls "$cold"/*.tar.gz 2>/dev/null | wc -l | tr -d ' ')" -lt 1 ]; then
+    rm -rf "$w"
+    echo "SKIP: chk10 real-crypto E2E (could not seed a real signed cold archive here; control flow is covered by chk4–chk6 and the verifier crypto by the sharding-guard test)"
+    return 0
+  fi
+
+  # Capturing notifier — record each page so we can count edges (mirrors _run).
+  cat >"$mbin/notify" <<KEOF
+#!/usr/bin/env bash
+cat >>"${pages}"
+printf '\n---PAGE-END---\n' >>"${pages}"
+KEOF
+  chmod +x "$mbin/notify"
+
+  local rc=0 E_RC E_PAGES E_TEXT E_STATUS
+
+  # (1) clean real archive -> OK, no page
+  _chk10_run
+  if [ "$E_RC" -ne 0 ] || [ "$E_STATUS" != "OK" ] || [ "$E_PAGES" -ne 0 ]; then
+    err "REGRESSION (chk10) — a CLEAN, genuinely signed cold archive did not verify silently OK (rc=$E_RC status=$E_STATUS pages=$E_PAGES). The real audit+verifier no longer agree on a valid archive."
+    rc=1
+  fi
+
+  # tamper: flip one byte of a real tarball -> breaks its tarball_sha256
+  local tgt bkt; tgt="$(ls "$cold"/*.tar.gz | head -1)"; bkt="$(basename "$tgt" .tar.gz)"
+  cp "$tgt" "$w/orig.tar.gz"
+  printf '\xff' | dd of="$tgt" bs=1 seek=12 count=1 conv=notrunc >/dev/null 2>&1
+
+  # (2) corrupted -> ALERT, a page naming the bucket
+  _chk10_run
+  if [ "$E_STATUS" != "ALERT" ] || [ "$E_PAGES" -lt 1 ]; then
+    err "REGRESSION (chk10) — a REAL one-byte-corrupted cold tarball did not raise an ALERT page (status=$E_STATUS pages=$E_PAGES). On-disk cold bit-rot would go unalerted."
+    rc=1
+  fi
+  case "$E_TEXT" in *"$bkt"*) : ;; *) err "REGRESSION (chk10) — the ALERT page does not name the corrupted bucket ($bkt)."; rc=1 ;; esac
+
+  # (3) still corrupted -> edge-dedup, no new page
+  local before="$E_PAGES"
+  _chk10_run
+  if [ "$E_PAGES" -ne "$before" ]; then
+    err "REGRESSION (chk10) — a persistently corrupt real archive RE-PAGED ($before -> $E_PAGES). Edge-dedup is gone (paging storm)."
+    rc=1
+  fi
+
+  # (4) restored -> OK + RECOVERED
+  cp "$w/orig.tar.gz" "$tgt"
+  _chk10_run
+  if [ "$E_STATUS" != "OK" ]; then
+    err "REGRESSION (chk10) — after restoring the archive the status is not OK (got '$E_STATUS')."
+    rc=1
+  fi
+  case "$E_TEXT" in *RECOVERED*) : ;; *) err "REGRESSION (chk10) — restoring the real archive did not emit a RECOVERED page."; rc=1 ;; esac
+
+  rm -rf "$w"
+  [ "$rc" -eq 0 ] && echo "OK: real-crypto E2E — a genuinely signed/sealed cold archive verifies OK; a one-byte tarball corruption pages an ALERT naming the bucket, dedups while corrupt, then emits RECOVERED on restore (real verifier, no stub)"
+  return "$rc"
+}
+
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   CHECK="${1:-all}"
@@ -385,6 +533,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     chk7) chk7 "$ROOT" ;;
     chk8) chk8 "$ROOT" ;;
     chk9) chk9 "$ROOT" ;;
+    chk10) chk10 "$ROOT" ;;
     all)
       rc=0
       chk1 "$ROOT" || rc=1
@@ -396,8 +545,9 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
       chk7 "$ROOT" || rc=1
       chk8 "$ROOT" || rc=1
       chk9 "$ROOT" || rc=1
+      chk10 "$ROOT" || rc=1
       exit "$rc"
       ;;
-    *) echo "unknown check: $CHECK (want chk1..chk9|all)" >&2; exit 2 ;;
+    *) echo "unknown check: $CHECK (want chk1..chk10|all)" >&2; exit 2 ;;
   esac
 fi

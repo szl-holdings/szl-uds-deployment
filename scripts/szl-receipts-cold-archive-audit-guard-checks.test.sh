@@ -109,8 +109,16 @@ expect_fail chk7 "the offline (public-key-only) contract is broken"  m_break_off
 expect_fail chk8 "install.sh no longer enables the timer"            m_break_install_enable
 expect_fail chk9 "the runbook no longer documents the job"           m_break_runbook
 
+# chk10 (real-crypto end-to-end) has NO negative fixture: it is SELF-VALIDATING
+# (it tampers a real sealed tarball and asserts the audit pages, then restores and
+# asserts RECOVERED, all in one run), and its control-flow regressions are already
+# covered by chk4–chk6 above while the verifier's crypto correctness is covered by
+# the sharding-guard's own crafted-bad-archive test. The make_fixture root copies
+# only the 3 inspected files (not the verifier/server), so chk10 SKIPS there; it
+# runs for real only against the pristine repo root below (when seedable).
+
 echo "== Pristine repo (every check must PASS) =="
-for c in chk1 chk2 chk3 chk4 chk5 chk6 chk7 chk8 chk9; do
+for c in chk1 chk2 chk3 chk4 chk5 chk6 chk7 chk8 chk9 chk10; do
   if bash "$CHECKS" "$c" "$REPO_ROOT" >/dev/null 2>&1; then
     ok "$c passes on the pristine repo"
   else

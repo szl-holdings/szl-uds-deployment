@@ -48,6 +48,11 @@
 #   chk7  verify-cold invoked public-key-only (--pubkey-hex, no --tail-first-prev)
 #   chk8  wired into install.sh (script + units, timer enabled, first run kicked)
 #   chk9  documented in the retention runbook + named in install.sh
+#   chk10 REAL-CRYPTO end-to-end (capability-gated, self-validating): a genuinely
+#         signed/sealed cold archive verifies OK, a one-byte tarball corruption
+#         pages an ALERT naming the bucket, dedups while corrupt, then emits
+#         RECOVERED on restore — driving the REAL audit + REAL verifier (no stub).
+#         SKIPS (passing) when the host cannot seed a real signed store.
 
 name: SZL Receipts Cold-Archive Audit Guard
 
@@ -71,6 +76,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      # cryptography lets chk10's real-crypto end-to-end (seed a genuinely signed
+      # cold archive, drive the real audit+verifier) actually RUN here instead of
+      # skipping; without it chk10 SKIPS (passing) and the behavioural checks still
+      # run. openssl (key gen) ships on ubuntu-latest.
+      - name: Install cryptography (real-crypto chk10 server signer + offline verifier)
+        run: pip install cryptography
       - name: Run negative-fixture self-test
         run: bash scripts/szl-receipts-cold-archive-audit-guard-checks.test.sh
 
@@ -81,6 +92,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      # Lets chk10 run its real-crypto end-to-end for real (else it SKIPS, passing).
+      - name: Install cryptography (real-crypto chk10 server signer + offline verifier)
+        run: pip install cryptography
 
       - name: Check 1 — szl-receipts-cold-archive-audit exists and parses clean
         run: bash scripts/szl-receipts-cold-archive-audit-guard-checks.sh chk1 .
@@ -108,6 +123,9 @@ jobs:
 
       - name: Check 9 — documented in the retention runbook
         run: bash scripts/szl-receipts-cold-archive-audit-guard-checks.sh chk9 .
+
+      - name: Check 10 — real-crypto end-to-end (seed, corrupt, ALERT, RECOVERED)
+        run: bash scripts/szl-receipts-cold-archive-audit-guard-checks.sh chk10 .
 
       - name: Receipt cold-archive audit is wired and verify-gated
         run: echo "The szl-receipts-cold-archive-audit job is wired and verify-gated."
