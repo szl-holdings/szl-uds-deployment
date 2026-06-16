@@ -38,8 +38,10 @@
 #   The bundle is signed by KEYLESS cosign on the published OCI artifact (Fulcio
 #   cert + Rekor transparency log), NOT by an embedded uds `--signing-key`. So
 #   uds's own embedded-key signature validation has nothing to check and must be
-#   skipped; the `cosign verify` in step 1 IS the signature gate (and IS the
-#   bundle provenance — there is no bundle-level SLSA attestation claimed here).
+#   skipped; the `cosign verify` in step 1 IS the signature gate. The published
+#   bundle ALSO carries keyless cosign attestations — an SPDX SBOM and an SLSA
+#   provenance predicate — which a customer/judge verifies offline via the
+#   `cosign verify-attestation` GATE that immediately follows the signature gate.
 #
 # Teardown is the caller's responsibility (the CI workflow deletes the cluster in
 # an always() step; locally run `k3d cluster delete ${PROVE_CLUSTER}-<organ>`),
@@ -67,6 +69,14 @@ variables:
       workflow, the OTHER common trigger ref. Both are strict exact identities
       (never a regexp); the signer must still be THIS repo's publish workflow.
     default: ""
+  - name: PROV_IDENTITY
+    description: >-
+      EXACT cosign certificate-identity that attached the SLSA PROVENANCE
+      attestation. For uds-v0.3.0 the provenance was attached post-publish by
+      uds-bundle-attest-existing.yml; bundles published after the provenance
+      step landed in the publish workflow carry the publish identity (already
+      covered by CERT_IDENTITY). Exact identity only — never a regexp.
+    default: "https://github.com/szl-holdings/szl-uds-deployment/.github/workflows/uds-bundle-attest-existing.yml@refs/heads/main"
   - name: CERT_ISSUER
     description: "cosign certificate-oidc-issuer (GitHub Actions OIDC)"
     default: "https://token.actions.githubusercontent.com"
@@ -134,6 +144,43 @@ tasks:
             echo "---- cosign output ----"; cat /tmp/cosign-verify.out || true
             exit 1
           fi
+
+      - description: "GATE: cosign verify-attestation — SBOM (spdxjson) + SLSA provenance (slsaprovenance), keyless/offline — LOUD fail"
+        shell:
+          linux: bash
+        cmd: |
+          set -uo pipefail
+          # A customer/judge verifies the published bundle's attestations OFFLINE
+          # with nothing but cosign + the public Fulcio/Rekor roots (no key). We try
+          # the exact pinned identities ONLY (never a regexp): the publish workflow
+          # (SBOM; and provenance on bundles published after the provenance step
+          # landed) and uds-bundle-attest-existing (provenance on uds-v0.3.0).
+          verify_att() {
+            atype="$1"; ok=1
+            for ident in "${CERT_IDENTITY}" "${CERT_IDENTITY_FALLBACK}" "${PROV_IDENTITY}"; do
+              [ -z "${ident}" ] && continue
+              if COSIGN_EXPERIMENTAL=1 cosign verify-attestation --type "${atype}" \
+                   --certificate-identity="${ident}" \
+                   --certificate-oidc-issuer="${CERT_ISSUER}" \
+                   "${BUNDLE_REF}" >/tmp/att-${atype}.out 2>&1; then
+                echo "PASS: ${atype} attestation verified (identity: ${ident})"
+                ok=0; break
+              fi
+            done
+            if [ "${ok}" -ne 0 ]; then
+              echo "FAIL: could NOT verify ${atype} attestation on ${BUNDLE_REF} against any pinned identity."
+              tail -8 /tmp/att-${atype}.out 2>/dev/null || true
+              return 1
+            fi
+          }
+          rc=0
+          verify_att spdxjson       || rc=1
+          verify_att slsaprovenance || rc=1
+          if [ "${rc}" -ne 0 ]; then
+            echo "Attestation verification FAILED — a judge/customer running this offline sees the same. Do NOT deploy."
+            exit 1
+          fi
+          echo "ATTESTATIONS VERIFIED: SBOM + SLSA provenance are independently keyless-verifiable on ${BUNDLE_REF}."
 
       - description: "Create a COLD throwaway k3d cluster for the ${ORGAN} bundle-install proof"
         cmd: |
