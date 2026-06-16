@@ -1,0 +1,110 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# bundle-signer-identity-drift-guard.yml — fail CI early if the cosign signer
+# identity the bundle-install PROOF expects drifts from the PUBLISH workflow's
+# actual file path + trigger refs.
+#
+# Why this exists
+# ---------------
+# The prove-bundle proof (tasks/prove-bundle.yaml driven by
+# prove-bundle-install.yml) cosign-verifies the published bundle against an EXACT
+# keyless signer identity:
+#
+#     https://github.com/szl-holdings/szl-uds-deployment/<WORKFLOW>@<REF>
+#
+# Both <WORKFLOW> (the publish workflow file path) and <REF> (the git ref the
+# publish run signed on — refs/heads/main for the dispatch-published bundle, plus
+# a refs/tags/<tag> fallback) are HARD-CODED on the prove side. A keyless cosign
+# cert-identity is derived by Fulcio from the OIDC token's job_workflow_ref at
+# SIGN time, so if the publish workflow is renamed/moved, or its trigger changes
+# (tag vs main), the REAL signer identity shifts while the hard-coded prove-side
+# strings do not — surfacing only as a confusing `cosign verify` FAIL deep inside
+# the proof.
+#
+# This guard turns that into a clear, early red. The check logic lives in
+# scripts/bundle-signer-identity-drift-guard-checks.sh (pure text/lint — no
+# cluster, no cosign, no network) and is unit-tested by
+# scripts/bundle-signer-identity-drift-guard-checks.test.sh, which feeds each
+# check a deliberately-BROKEN fixture and asserts it FAILS (so a future edit that
+# neuters a check — green while guarding nothing — is caught here).
+#
+# The asserted invariants:
+#   chk1  the publish-workflow path is identical across tasks/prove-bundle.yaml
+#         (CERT_IDENTITY), prove-bundle-install.yml (WF="...") and the publish
+#         workflow's own self-identity, AND that file exists (rename/move guard)
+#   chk2  the publish workflow's trigger reality (tag vs main) is covered by the
+#         prove-side identities (CERT_IDENTITY default + ID_MAIN + ID_TAG)
+#   chk3  the prove side pins EXACT identities (no --certificate-identity-regexp,
+#         no '*' wildcard) verified against the GitHub Actions OIDC issuer
+#
+# LOCKSTEP CONTRACT (read before changing the publish workflow):
+#   If you rename/move .github/workflows/uds-bundle-publish.yml OR change its
+#   trigger (workflow_dispatch/main <-> push tags uds-v*), you MUST update, in the
+#   same change: tasks/prove-bundle.yaml (CERT_IDENTITY / CERT_IDENTITY_FALLBACK)
+#   and prove-bundle-install.yml (WF / ID_TAG / ID_MAIN). This guard fails the PR
+#   until they match.
+#
+# Complements (does not duplicate):
+#   - cosign-identity-pin-guard.yml         (no loose regexp identity in docs/scripts)
+#   - uds-bundle-publish-guard.yml          (flaky-registry pre-warm + zarf retry net)
+#   - bundle-provenance-attestation-guard.yml (anonymous verify-attestation gate)
+
+name: Bundle Signer Identity Drift Guard
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/uds-bundle-publish.yml"
+      - ".github/workflows/prove-bundle-install.yml"
+      - "tasks/prove-bundle.yaml"
+      - "scripts/bundle-signer-identity-drift-guard-checks.sh"
+      - "scripts/bundle-signer-identity-drift-guard-checks.test.sh"
+      - ".github/workflows/bundle-signer-identity-drift-guard.yml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/uds-bundle-publish.yml"
+      - ".github/workflows/prove-bundle-install.yml"
+      - "tasks/prove-bundle.yaml"
+      - "scripts/bundle-signer-identity-drift-guard-checks.sh"
+      - "scripts/bundle-signer-identity-drift-guard-checks.test.sh"
+      - ".github/workflows/bundle-signer-identity-drift-guard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves each check
+  # still FAILS on bad input (i.e. is not silently passing). The guard job
+  # depends on it so a broken check blocks the build before it can wave a
+  # regression through.
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/bundle-signer-identity-drift-guard-checks.test.sh
+
+  guard:
+    name: Assert signer identity is in lockstep with the publish workflow
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check 1 — publish-workflow path is consistent + exists
+        run: bash scripts/bundle-signer-identity-drift-guard-checks.sh chk1 .
+
+      - name: Check 2 — publish trigger (tag vs main) is covered by the prove identities
+        run: bash scripts/bundle-signer-identity-drift-guard-checks.sh chk2 .
+
+      - name: Check 3 — prove side uses exact identities + GitHub OIDC issuer
+        run: bash scripts/bundle-signer-identity-drift-guard-checks.sh chk3 .
+
+      - name: Signer identity is in lockstep with the publish workflow
+        run: echo "The bundle signer identity expected by prove-bundle matches the publish workflow's path + trigger reality."
