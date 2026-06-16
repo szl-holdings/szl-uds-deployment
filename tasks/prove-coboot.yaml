@@ -281,7 +281,9 @@ tasks:
           # or implicit-DockerHub host fails. We also require each running imageID to
           # carry an immutable sha256 digest (Zarf rewrites the HOST but preserves the
           # content digest) and forbid any image-pull failure.
-          ZARF_REG="$(kubectl get secret -n zarf zarf-state -o jsonpath='{.data.state}' 2>/dev/null | base64 -d 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("registryInfo",{}).get("address",""))' 2>/dev/null || true)"
+          ZARF_REG="$(kubectl get secret -n zarf zarf-state -o jsonpath='{.data.state}' 2>/dev/null | \
+            base64 -d 2>/dev/null | \
+            python3 -c 'import sys,json;print(json.load(sys.stdin).get("registryInfo",{}).get("address",""))' 2>/dev/null || true)"
           [ -n "${ZARF_REG}" ] && echo "Zarf-recorded internal registry address (evidence, non-gating): ${ZARF_REG}"
           img_host() {
             ref="$1"
@@ -299,7 +301,9 @@ tasks:
           rc=0
           for NS in szl-a11oy szl-killinchu; do
             echo "== ${NS} :: airgap image-origin audit =="
-            REFS="$(kubectl -n "$NS" get pods -o jsonpath='{range .items[*]}{range .spec.initContainers[*]}{.image}{"\n"}{end}{range .spec.containers[*]}{.image}{"\n"}{end}{end}' 2>/dev/null | grep -v '^$' | sort -u)"
+            REFS="$(kubectl -n "$NS" get pods -o jsonpath='{range .items[*]}{range .spec.initContainers[*]}{.image}{"\n"}{end}{range .spec.containers[*]}{.image}{"\n"}{end}{end}' 2>/dev/null | \
+              grep -v '^$' | \
+              sort -u)"
             if [ -z "$REFS" ]; then echo "   FAIL: no pods/images found in $NS"; rc=1; continue; fi
             while IFS= read -r ref; do
               [ -z "$ref" ] && continue
@@ -307,7 +311,10 @@ tasks:
               if is_internal "$h"; then echo "   ok   internal  ${h}   (${ref})"
               else echo "   FAIL external  ${h}   (${ref})"; rc=1; fi
             done < <(printf '%s\n' "$REFS")
-            IDS="$(kubectl -n "$NS" get pods -o jsonpath='{range .items[*]}{range .status.initContainerStatuses[*]}{.imageID}{"\n"}{end}{range .status.containerStatuses[*]}{.imageID}{"\n"}{end}{end}' 2>/dev/null | grep -v '^$' | sort -u)"
+            IDS="$(kubectl -n "$NS" get pods \
+              -o jsonpath='{range .items[*]}{range .status.initContainerStatuses[*]}{.imageID}{"\n"}{end}{range .status.containerStatuses[*]}{.imageID}{"\n"}{end}{end}' 2>/dev/null | \
+                grep -v '^$' | \
+                sort -u)"
             while IFS= read -r id; do
               [ -z "$id" ] && continue
               case "$id" in *sha256:*) : ;; *) echo "   FAIL imageID not digest-pinned: ${id}"; rc=1;; esac
@@ -330,5 +337,6 @@ tasks:
           echo "        BOTH -> both Available -> both serve in-cluster HTTP 200)."
           echo "HONEST SCOPE: co-residency of the TWO consolidated deployables ONLY; this does"
           echo "        NOT claim the legacy 5-organ fleet co-boots. Energy SAMPLE."
-          echo "AIRGAP: all workload images (incl. init + Istio sidecars) are served from the in-cluster Zarf registry, digest-pinned, no external pull — field airgap-installable (the build/substrate phase has network; that is NOT claimed airgapped)."
+          echo "AIRGAP: all workload images (incl. init + Istio sidecars) are served from the in-cluster Zarf registry, digest-pinned, no external pull — field "\
+               "airgap-installable (the build/substrate phase has network; that is NOT claimed airgapped)."
           echo "Cluster left intact for inspection: ${PROVE_CLUSTER} (delete: k3d cluster delete ${PROVE_CLUSTER})"
