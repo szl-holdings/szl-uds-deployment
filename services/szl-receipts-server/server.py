@@ -68,11 +68,14 @@ import sys
 import json
 import time
 import heapq
+import shlex
 import shutil
 import base64
 import hashlib
 import tarfile
+import tempfile
 import threading
+import subprocess
 import urllib.request
 import urllib.error
 from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -1632,6 +1635,310 @@ def restore_archived_shards(cold_dir, bucket=None):
     }
 
 
+# ── off-box / remote cold-source staging (restore from an offsite backup) ────────
+# restore_archived_shards reads cold tarballs+manifests from a LOCAL --cold-dir.
+# But the box retention job already mirrors the sealed cold archive OFF the box for
+# durability (box-scripts/sbin/szl-receipts-cold-offsite → a mounted volume, a 2nd
+# host over ssh, or an rclone/s3 object store), because if box 167.233.50.75 is lost
+# so is the on-box cold dir. After data loss an operator wants to restore STRAIGHT
+# from that off-box copy without hand-staging tarballs into a local dir first.
+#
+# These helpers stage the needed cold artifacts (archived.json + each target
+# bucket's <bucket>.tar.gz + <bucket>.manifest.json) from the remote into a local
+# staging dir; restore_archived_shards then runs its UNCHANGED per-tarball gate
+# (tarball_sha256 + chain linkage: count / first_prev_hash / last_hash) before
+# unpacking, refusing on any mismatch — so an off-box restore is verified exactly
+# like a local one. The transports mirror the offsite mirror's transports in the
+# DOWNLOAD direction: local (a mounted volume / object mount), ssh (scp), rclone
+# (any S3/B2/GCS/... remote) and s3 (aws cli). `local` is fully self-contained.
+
+
+class ColdRemoteError(Exception):
+    """A remote cold-source was mis-specified (not a per-bucket fetch miss)."""
+
+
+def _run_capture(cmd):
+    """Run cmd, returning (rc, stdout_bytes, stderr_bytes). A missing transport
+    binary (ssh/scp/rclone/aws) surfaces as rc=127 rather than an exception."""
+    try:
+        p = subprocess.run(cmd, capture_output=True)
+        return p.returncode, p.stdout, p.stderr
+    except FileNotFoundError:
+        return 127, b"", f"{cmd[0]}: command not found".encode()
+
+
+def _remote_fetch_object(remote, name, dest_path):
+    """Fetch a single object `name` from the configured remote cold-source into
+    dest_path. Returns True on success, False if the object could not be fetched
+    (missing object, transport error, or missing transport tool) — the reason is
+    logged. A False on a REQUIRED tarball/manifest makes restore refuse that
+    bucket (recorded under failed), never silently skip it."""
+    t = remote["transport"]
+    if t == "local":
+        src = os.path.join(remote["dir"], name)
+        if not os.path.exists(src):
+            return False
+        try:
+            shutil.copyfile(src, dest_path)
+            return True
+        except OSError as e:
+            log("error", f"[restore] local copy of {name} from {src} failed: {e}")
+            return False
+    if t == "ssh":
+        target = remote["ssh_target"].rstrip("/")
+        host, _, path = target.partition(":")
+        remote_path = f"{path.rstrip('/')}/{name}"
+        key = remote.get("ssh_key")
+        ssh_base = ["ssh"] + (["-i", key] if key else []) + [
+            "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new"]
+        rc, _, err = _run_capture(
+            ssh_base + [host, f"test -f {shlex.quote(remote_path)}"])
+        if rc == 1:
+            return False  # object absent on the remote (clean miss)
+        if rc != 0:       # transport/auth/tool error, not a clean miss
+            log("error", f"[restore] ssh probe to {host} failed (rc={rc}): "
+                         f"{err.decode('utf-8', 'replace').strip()}")
+            return False
+        scp = ["scp"] + (["-i", key] if key else []) + [
+            "-B", "-o", "StrictHostKeyChecking=accept-new",
+            f"{host}:{remote_path}", dest_path]
+        rc, _, err = _run_capture(scp)
+        if rc != 0:
+            log("error", f"[restore] scp of {name} from {target} failed (rc={rc}): "
+                         f"{err.decode('utf-8', 'replace').strip()}")
+            return False
+        return os.path.exists(dest_path)
+    if t == "rclone":
+        remote_obj = f"{remote['rclone_remote'].rstrip('/')}/{name}"
+        rc, _, err = _run_capture(["rclone", "copyto", remote_obj, dest_path])
+        if rc != 0:
+            log("error", f"[restore] rclone copyto {remote_obj} failed (rc={rc}): "
+                         f"{err.decode('utf-8', 'replace').strip()}")
+            return False
+        return os.path.exists(dest_path)
+    if t == "s3":
+        uri = f"{remote['s3_uri'].rstrip('/')}/{name}"
+        endpoint = remote.get("s3_endpoint")
+        cmd = ["aws"] + (["--endpoint-url", endpoint] if endpoint else []) + [
+            "s3", "cp", uri, dest_path]
+        rc, _, err = _run_capture(cmd)
+        if rc != 0:
+            log("error", f"[restore] aws s3 cp {uri} failed (rc={rc}): "
+                         f"{err.decode('utf-8', 'replace').strip()}")
+            return False
+        return os.path.exists(dest_path)
+    raise ColdRemoteError(f"unknown remote transport {t!r}")
+
+
+def _resolve_remote_source(argv):
+    """Parse the off-box cold-source flags out of the restore-shards argv, or fall
+    back to the OFFSITE_* environment (mirroring box-scripts/sbin/szl-receipts-cold-
+    offsite) when --from-offsite is given. Returns a remote dict (with a
+    `transport` key and a `source` label) or None when no off-box source was
+    requested (caller then does a plain local --cold-dir restore). Raises
+    ColdRemoteError on a contradictory / incomplete spec."""
+    flags = {
+        "--remote-local": None,
+        "--remote-ssh": None,
+        "--remote-ssh-key": None,
+        "--remote-rclone": None,
+        "--remote-s3": None,
+        "--remote-s3-endpoint": None,
+        "--remote-transport": None,
+    }
+    from_offsite = False
+    for i, a in enumerate(argv):
+        if a == "--from-offsite":
+            from_offsite = True
+        elif a in flags and i + 1 < len(argv):
+            flags[a] = argv[i + 1]
+
+    explicit = {k: v for k, v in flags.items()
+                if v is not None and k not in (
+                    "--remote-ssh-key", "--remote-s3-endpoint",
+                    "--remote-transport")}
+    if not from_offsite and not explicit:
+        return None
+    if from_offsite and explicit:
+        raise ColdRemoteError(
+            "--from-offsite cannot be combined with explicit --remote-* flags; "
+            "use one or the other")
+
+    if from_offsite:
+        env = os.environ
+        transport = (flags["--remote-transport"]
+                     or env.get("OFFSITE_TRANSPORT") or "").strip()
+        if not transport:
+            if env.get("OFFSITE_SSH_TARGET"):
+                transport = "ssh"
+            elif env.get("OFFSITE_LOCAL_DIR"):
+                transport = "local"
+            elif env.get("OFFSITE_RCLONE_REMOTE"):
+                transport = "rclone"
+            elif env.get("OFFSITE_S3_URI"):
+                transport = "s3"
+        if not transport:
+            raise ColdRemoteError(
+                "--from-offsite given but no OFFSITE_* destination is set in the "
+                "environment (nothing to restore from)")
+        if transport == "local":
+            d = env.get("OFFSITE_LOCAL_DIR")
+            if not d:
+                raise ColdRemoteError(
+                    "OFFSITE_TRANSPORT=local but OFFSITE_LOCAL_DIR is unset")
+            return {"transport": "local", "dir": d, "source": f"local:{d}"}
+        if transport == "ssh":
+            tgt = env.get("OFFSITE_SSH_TARGET")
+            if not tgt:
+                raise ColdRemoteError(
+                    "OFFSITE_TRANSPORT=ssh but OFFSITE_SSH_TARGET is unset")
+            return {"transport": "ssh", "ssh_target": tgt,
+                    "ssh_key": env.get("OFFSITE_SSH_KEY") or None,
+                    "source": f"ssh:{tgt}"}
+        if transport == "rclone":
+            r = env.get("OFFSITE_RCLONE_REMOTE")
+            if not r:
+                raise ColdRemoteError(
+                    "OFFSITE_TRANSPORT=rclone but OFFSITE_RCLONE_REMOTE is unset")
+            return {"transport": "rclone", "rclone_remote": r,
+                    "source": f"rclone:{r}"}
+        if transport == "s3":
+            u = env.get("OFFSITE_S3_URI")
+            if not u:
+                raise ColdRemoteError(
+                    "OFFSITE_TRANSPORT=s3 but OFFSITE_S3_URI is unset")
+            return {"transport": "s3", "s3_uri": u,
+                    "s3_endpoint": env.get("OFFSITE_S3_ENDPOINT") or None,
+                    "source": f"s3:{u}"}
+        raise ColdRemoteError(f"unknown OFFSITE_TRANSPORT {transport!r}")
+
+    # explicit --remote-* flags
+    if len(explicit) > 1:
+        raise ColdRemoteError(
+            f"specify exactly one off-box cold-source, got {sorted(explicit)}")
+    forced = flags["--remote-transport"]
+    if flags["--remote-local"] is not None:
+        if forced and forced != "local":
+            raise ColdRemoteError(
+                f"--remote-local conflicts with --remote-transport {forced}")
+        d = flags["--remote-local"]
+        return {"transport": "local", "dir": d, "source": f"local:{d}"}
+    if flags["--remote-ssh"] is not None:
+        if forced and forced != "ssh":
+            raise ColdRemoteError(
+                f"--remote-ssh conflicts with --remote-transport {forced}")
+        tgt = flags["--remote-ssh"]
+        if ":" not in tgt:
+            raise ColdRemoteError(
+                "--remote-ssh must be USER@HOST:/PATH (missing ':PATH')")
+        return {"transport": "ssh", "ssh_target": tgt,
+                "ssh_key": flags["--remote-ssh-key"], "source": f"ssh:{tgt}"}
+    if flags["--remote-rclone"] is not None:
+        if forced and forced != "rclone":
+            raise ColdRemoteError(
+                f"--remote-rclone conflicts with --remote-transport {forced}")
+        r = flags["--remote-rclone"]
+        return {"transport": "rclone", "rclone_remote": r,
+                "source": f"rclone:{r}"}
+    if flags["--remote-s3"] is not None:
+        if forced and forced != "s3":
+            raise ColdRemoteError(
+                f"--remote-s3 conflicts with --remote-transport {forced}")
+        u = flags["--remote-s3"]
+        return {"transport": "s3", "s3_uri": u,
+                "s3_endpoint": flags["--remote-s3-endpoint"],
+                "source": f"s3:{u}"}
+    raise ColdRemoteError("no recognized off-box cold-source flag given")
+
+
+def _write_staging_ledger(stage_dir, remote, staged, fetch_failed):
+    """Drop a small JSON note in the staging dir recording what was pulled from
+    the off-box source and from where (operator-facing audit of the staging step;
+    the authoritative ledger remains the staged archived.json)."""
+    try:
+        with open(os.path.join(stage_dir, ".staging.json"), "w") as f:
+            json.dump({
+                "source": remote.get("source"),
+                "transport": remote.get("transport"),
+                "staged": sorted(staged),
+                "fetch_failed": sorted(fetch_failed),
+                "staged_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }, f, indent=2)
+    except OSError as e:
+        log("warn", f"[restore] could not write staging ledger: {e}")
+
+
+def restore_from_remote(remote, stage_dir, bucket=None):
+    """Stage the cold archive from an OFF-box source into stage_dir, then run the
+    UNCHANGED restore_archived_shards over the staged copy — so an off-box restore
+    is verified (tarball_sha256 + chain linkage) and refuses on mismatch exactly
+    like a local one. A bucket whose tarball/manifest cannot be fetched off-box is
+    recorded as a fetch failure (folded into `failed`), never silently skipped.
+
+    Returns the restore report augmented with `source` (the off-box location) and
+    `fetch_failed`; `error`/`failed` still signal a non-zero operator exit."""
+    os.makedirs(stage_dir, exist_ok=True)
+    source = remote.get("source")
+
+    # (1) pull the cold ledger — without it there is nothing to restore.
+    ledger_dest = os.path.join(stage_dir, "archived.json")
+    if not _remote_fetch_object(remote, "archived.json", ledger_dest):
+        return {"error": f"could not fetch cold ledger 'archived.json' from "
+                         f"{source} (off-box source empty or unreachable)",
+                "source": source, "restored": [], "failed": [],
+                "fetch_failed": []}
+    try:
+        with open(ledger_dest) as f:
+            ledger = json.load(f)
+    except Exception as e:
+        return {"error": f"staged cold ledger from {source} is unreadable: {e}",
+                "source": source, "restored": [], "failed": [],
+                "fetch_failed": []}
+
+    by_bucket = {e.get("bucket"): e
+                 for e in (ledger.get("archived", []) or [])}
+    targets = [bucket] if bucket is not None else sorted(by_bucket)
+
+    # (2) stage each target bucket's tarball + manifest sidecar.
+    staged, fetch_failed = [], []
+    for name in targets:
+        tar_ok = _remote_fetch_object(
+            remote, f"{name}.tar.gz",
+            os.path.join(stage_dir, f"{name}.tar.gz"))
+        mf_ok = _remote_fetch_object(
+            remote, f"{name}.manifest.json",
+            os.path.join(stage_dir, f"{name}.manifest.json"))
+        if tar_ok and mf_ok:
+            staged.append(name)
+        else:
+            fetch_failed.append(name)
+            log("error", f"[restore] bucket {name} could not be staged from "
+                         f"{source} (tarball_ok={tar_ok} manifest_ok={mf_ok}); "
+                         f"refusing")
+    _write_staging_ledger(stage_dir, remote, staged, fetch_failed)
+
+    # (3) if a single requested bucket could not be staged, fail it directly —
+    # restore_archived_shards would otherwise only see a ledger miss.
+    if bucket is not None and bucket in fetch_failed:
+        return {"source": source, "store_path": STORE_PATH,
+                "requested": bucket, "restored": [], "failed": [bucket],
+                "fetch_failed": fetch_failed}
+
+    # (4) run the UNCHANGED local restore over the staged copy. It applies the
+    # full per-tarball verification (sha256 + chain linkage) and refuses on any
+    # mismatch; an un-staged bucket surfaces there as a missing-tarball failure.
+    report = restore_archived_shards(stage_dir, bucket=bucket)
+    report["source"] = source
+    report["fetch_failed"] = fetch_failed
+    # fold fetch misses into failed (deduped) so they are never lost.
+    merged = list(report.get("failed", []))
+    for name in fetch_failed:
+        if name not in merged:
+            merged.append(name)
+    report["failed"] = merged
+    return report
+
+
 def _cli(argv):
     """Operator CLI: bounded full-store audit + cold-storage shard rollup.
     These reuse the same Ed25519/DSSE verification as the server, so they need a
@@ -1658,18 +1965,44 @@ def _cli(argv):
         cold_dir = os.environ.get(
             "SZL_RECEIPT_COLD_DIR", os.path.join(STORE_PATH, "cold"))
         bucket = None
+        stage_dir = None
         rest = argv[1:]
         for i, a in enumerate(rest):
             if a == "--cold-dir" and i + 1 < len(rest):
                 cold_dir = rest[i + 1]
             elif a == "--bucket" and i + 1 < len(rest):
                 bucket = rest[i + 1]
-        report = restore_archived_shards(cold_dir, bucket=bucket)
+            elif a == "--stage-dir" and i + 1 < len(rest):
+                stage_dir = rest[i + 1]
+        try:
+            remote = _resolve_remote_source(rest)
+        except ColdRemoteError as e:
+            print(json.dumps({"error": str(e)}, indent=2))
+            return 1
+        if remote is None:
+            # local cold-dir restore (unchanged path).
+            report = restore_archived_shards(cold_dir, bucket=bucket)
+        else:
+            # off-box restore: stage from the remote, then verify+restore. A
+            # temp staging dir is used (and cleaned up) unless --stage-dir is set.
+            tmp = None
+            if stage_dir is None:
+                tmp = tempfile.mkdtemp(prefix="szl-cold-restore-")
+                stage_dir = tmp
+            try:
+                report = restore_from_remote(remote, stage_dir, bucket=bucket)
+            finally:
+                if tmp is not None:
+                    shutil.rmtree(tmp, ignore_errors=True)
         print(json.dumps(report, indent=2))
         return 1 if report.get("error") or report.get("failed") else 0
     print("usage: server.py [verify-store | "
           "archive-shards [--cold-dir DIR] [--delete] | "
-          "restore-shards [--cold-dir DIR] [--bucket NAME]]",
+          "restore-shards [--cold-dir DIR] [--bucket NAME] "
+          "[--from-offsite | --remote-local DIR | --remote-ssh USER@HOST:/PATH "
+          "[--remote-ssh-key FILE] | --remote-rclone REMOTE:PATH | "
+          "--remote-s3 s3://BUCKET/PATH [--remote-s3-endpoint URL]] "
+          "[--remote-transport local|ssh|rclone|s3] [--stage-dir DIR]]",
           file=sys.stderr)
     return 2
 

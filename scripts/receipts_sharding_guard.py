@@ -614,6 +614,9 @@ def main():
         store_e3 = os.path.join(work, "store_e3")
         store_e4 = os.path.join(work, "store_e4")
         store_f = os.path.join(work, "store_f")
+        store_g = os.path.join(work, "store_g")
+        store_g2 = os.path.join(work, "store_g2")
+        store_g3 = os.path.join(work, "store_g3")
         shutil.copytree(store, store_b)
         shutil.copytree(store, store_c)
         shutil.copytree(store, store_d)
@@ -622,6 +625,9 @@ def main():
         shutil.copytree(store, store_e3)
         shutil.copytree(store, store_e4)
         shutil.copytree(store, store_f)
+        shutil.copytree(store, store_g)
+        shutil.copytree(store, store_g2)
+        shutil.copytree(store, store_g3)
 
         # ── PHASE A: sharding layout + verify-store + archive-shards ─────────────
         print("\n== PHASE A: sharding write path + verify-store + archive-shards ==")
@@ -1086,6 +1092,125 @@ def main():
                          f"F verify-store passes over the FULL store after the cold "
                          f"offload round trip (total={rep['total']} valid={rep['valid']} "
                          f"chain_ok={rep['chain_ok']})")
+
+        # ── PHASE G: restore DIRECTLY from an off-box remote cold-source ─────────
+        # PHASE E/F restored from a LOCAL cold dir (after manually re-importing the
+        # offloaded archive in F). But the cold-offsite mirror
+        # (box-scripts/sbin/szl-receipts-cold-offsite) pushes the sealed archive to
+        # an OFF-box destination (a mounted volume / 2nd host / object store). After
+        # box loss the operator wants `restore-shards` to read STRAIGHT from that
+        # off-box copy — staging it automatically — instead of hand-staging tarballs
+        # into a local --cold-dir first. The `local` transport models the off-box
+        # destination as a directory (exactly what an offsite mount / object mount
+        # looks like) and is fully exercisable here with stdlib only; ssh/rclone/s3
+        # share the identical stage-then-verified-restore path.
+        print("\n== PHASE G: restore directly from an off-box remote cold-source ==")
+
+        # G1: full off-box restore. Archive --delete into an on-box cold dir, mirror
+        #     it to an OFF-box dir, DELETE the on-box cold dir entirely (so the only
+        #     surviving archive is off-box), then restore with --remote-local — no
+        #     local --cold-dir is staged by the operator.
+        cold_g = os.path.join(work, "cold_g")           # on-box cold dir
+        offbox_g = os.path.join(work, "offbox_g")       # the off-box backup location
+        rc, rep = _cli(store_g, key, shard_size,
+                       ["archive-shards", "--delete"], cold_dir=cold_g)
+        fails += _assert(sorted(rep.get("archived", [])) == sealed_expected,
+                         f"G archive --delete swept every sealed bucket to cold "
+                         f"({sorted(rep.get('archived', []))} == {sealed_expected})")
+        # mirror the cold archive off-box, then drop the on-box copy completely.
+        shutil.copytree(cold_g, offbox_g)
+        shutil.rmtree(cold_g)
+        fails += _assert(not os.path.isdir(cold_g),
+                         "G the on-box cold dir is gone — only the off-box backup "
+                         "survives (true box-loss recovery)")
+        rc, rep = _cli(store_g, key, shard_size,
+                       ["restore-shards", "--remote-local", offbox_g])
+        print(f"  restore --remote-local (all): rc={rc} "
+              f"restored={rep.get('restored')} failed={rep.get('failed')} "
+              f"source={rep.get('source')}")
+        fails += _assert(rc == 0 and not rep.get("error"),
+                         "G1 off-box restore exits 0 with no error")
+        fails += _assert(sorted(rep.get("restored", [])) == sealed_expected
+                         and rep.get("failed") == [],
+                         f"G1 every bucket restored from the off-box source, none "
+                         f"failed (restored={sorted(rep.get('restored', []))}, "
+                         f"failed={rep.get('failed')})")
+        fails += _assert(rep.get("source") == f"local:{offbox_g}",
+                         f"G1 report names the off-box source "
+                         f"({rep.get('source')})")
+        fails += _assert(_bucket_names(store_g) == sealed_expected + [tail_bucket],
+                         f"G1 all buckets live again under shards/ "
+                         f"({_bucket_names(store_g)} == "
+                         f"{sealed_expected + [tail_bucket]})")
+        # the OFF-box backup is the durable copy — restore must NOT prune it (only a
+        # successfully-staged LOCAL temp copy is consumed); it stays for re-restore.
+        for b in sealed_expected:
+            fails += _assert(os.path.exists(os.path.join(offbox_g, f"{b}.tar.gz")),
+                             f"G1 off-box tarball for {b} is left intact after restore")
+        rc, rep = _cli(store_g, key, shard_size, ["verify-store"])
+        print(f"  off-box-reunited verify-store: total={rep['total']} "
+              f"valid={rep['valid']} bad_sig={rep['bad_sig']} "
+              f"bad_hash={rep['bad_hash']} chain_ok={rep['chain_ok']}")
+        fails += _assert(rc == 0 and rep["chain_ok"] is True
+                         and rep["total"] == n and rep["valid"] == n,
+                         f"G1 verify-store passes over the FULL store reunited from "
+                         f"the off-box backup (total={rep['total']} "
+                         f"valid={rep['valid']} chain_ok={rep['chain_ok']})")
+
+        # G2: the SAME tarball_sha256 gate runs on an off-box restore — a corrupt
+        #     off-box tarball is REFUSED, exactly like the local restore in E3.
+        cold_g2 = os.path.join(work, "cold_g2")
+        offbox_g2 = os.path.join(work, "offbox_g2")
+        _cli(store_g2, key, shard_size,
+             ["archive-shards", "--delete"], cold_dir=cold_g2)
+        shutil.copytree(cold_g2, offbox_g2)
+        bad = sealed_expected[0]
+        with open(os.path.join(offbox_g2, f"{bad}.tar.gz"), "ab") as fh:
+            fh.write(b"corrupting-trailer")
+        rc, rep = _cli(store_g2, key, shard_size,
+                       ["restore-shards", "--remote-local", offbox_g2,
+                        "--bucket", bad])
+        print(f"  off-box restore corrupt {bad}: rc={rc} "
+              f"restored={rep.get('restored')} failed={rep.get('failed')}")
+        fails += _assert(rc == 1 and rep.get("failed") == [bad]
+                         and rep.get("restored") == [],
+                         f"G2 a corrupt off-box tarball is refused by the same "
+                         f"sha256 gate (rc={rc} failed={rep.get('failed')})")
+        fails += _assert(bad not in _bucket_names(store_g2),
+                         f"G2 the corrupt bucket is NOT placed into the live store "
+                         f"({_bucket_names(store_g2)})")
+
+        # G3: a single named bucket restores from the off-box source; a bucket that
+        #     is MISSING off-box is reported as a fetch failure (refused, not a
+        #     silent skip).
+        cold_g3 = os.path.join(work, "cold_g3")
+        offbox_g3 = os.path.join(work, "offbox_g3")
+        _cli(store_g3, key, shard_size,
+             ["archive-shards", "--delete"], cold_dir=cold_g3)
+        shutil.copytree(cold_g3, offbox_g3)
+        one = sealed_expected[1]
+        rc, rep = _cli(store_g3, key, shard_size,
+                       ["restore-shards", "--remote-local", offbox_g3,
+                        "--bucket", one])
+        print(f"  off-box restore --bucket {one}: rc={rc} "
+              f"restored={rep.get('restored')}")
+        fails += _assert(rc == 0 and rep.get("restored") == [one]
+                         and rep.get("failed") == [],
+                         f"G3 a single named bucket restores from off-box "
+                         f"(restored={rep.get('restored')})")
+        fails += _assert(one in _bucket_names(store_g3),
+                         f"G3 the named off-box bucket is live again ({one})")
+        # a bucket that does not exist off-box is a fetch failure, never silent.
+        missing = "99999999"
+        rc, rep = _cli(store_g3, key, shard_size,
+                       ["restore-shards", "--remote-local", offbox_g3,
+                        "--bucket", missing])
+        print(f"  off-box restore MISSING {missing}: rc={rc} "
+              f"failed={rep.get('failed')} fetch_failed={rep.get('fetch_failed')}")
+        fails += _assert(rc == 1 and rep.get("failed") == [missing]
+                         and rep.get("restored") == [],
+                         f"G3 a bucket absent off-box is refused as a fetch failure "
+                         f"(rc={rc} failed={rep.get('failed')})")
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
