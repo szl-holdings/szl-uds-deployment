@@ -16,6 +16,10 @@
 #                               OFFSITE (object bucket / 2nd host) so the sealed
 #                               history survives box loss; sha256-verified against
 #                               the bucket manifests, append-only, alerts on failure
+#        szl-receipts-cold-restore-offsite — on-demand (NO timer) one-command
+#                               recovery of the receipts store FROM that offsite
+#                               archive (reads the same OFFSITE_* config); dry-run
+#                               by default, --run to execute the verified restore
 #        szl-receipts-cold-archive-audit — daily OFFLINE re-verification of the box
 #                               REAL cold receipt archive (public key only); pages on
 #                               the edge if any aged-out cold bucket no longer re-verifies
@@ -60,6 +64,7 @@ install -m 0755 "$here/sbin/receipt-flood-watch"       /usr/local/sbin/receipt-f
 install -m 0755 "$here/sbin/receipt-throttle-watch"    /usr/local/sbin/receipt-throttle-watch
 install -m 0755 "$here/sbin/szl-receipts-retention"    /usr/local/sbin/szl-receipts-retention
 install -m 0755 "$here/sbin/szl-receipts-cold-offsite" /usr/local/sbin/szl-receipts-cold-offsite
+install -m 0755 "$here/sbin/szl-receipts-cold-restore-offsite" /usr/local/sbin/szl-receipts-cold-restore-offsite
 install -m 0755 "$here/sbin/szl-receipts-cold-archive-audit" /usr/local/sbin/szl-receipts-cold-archive-audit
 install -m 0755 "$here/sbin/szl-receipts-cold-offsite-restore-drill" /usr/local/sbin/szl-receipts-cold-offsite-restore-drill
 install -m 0755 "$here/sbin/szl-ns-scratch"            /usr/local/sbin/szl-ns-scratch
