@@ -31,7 +31,7 @@ metadata:
   annotations:
     szl.io/role: "operator console (human-facing top of stack)"
     szl.io/image-status: >-
-      PUBLISHED + cosign-signed — ghcr.io/szl-holdings/yupana:uds-v0.2.1@sha256:f59dc4818950a7b30effc297714dd3dbd13a983094aee1125ab41678e9f504e7
+      PUBLISHED + cosign-signed — ghcr.io/szl-holdings/yupana:uds-v0.2.1@sha256:c5c48ca7410f1917564a9a6e4d595151801e72384ab3f16dca07c539259e0efa
       (.sig + .att SLSA attestation present in GHCR; FA-001 resolved)
 spec:
   # ── SSO — yupana is human-facing; protect with authservice + Keycloak OIDC ──

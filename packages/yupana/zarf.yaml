@@ -31,7 +31,7 @@ metadata:
   url: "https://szlholdings.com"
   authors: "SZL Holdings <eng@szlholdings.com>"
   documentation: "https://github.com/szl-holdings/szl-uds-deployment"
-  image: "ghcr.io/szl-holdings/yupana:uds-v0.2.1@sha256:f59dc4818950a7b30effc297714dd3dbd13a983094aee1125ab41678e9f504e7"
+  image: "ghcr.io/szl-holdings/yupana:uds-v0.2.1@sha256:c5c48ca7410f1917564a9a6e4d595151801e72384ab3f16dca07c539259e0efa"
   uncompressed: false
 
 variables:
@@ -70,7 +70,7 @@ components:
       Deploy the yupana workload from the live signed image
       ghcr.io/szl-holdings/yupana:###ZARF_PKG_TMPL_VERSION###.
     images:
-      - ghcr.io/szl-holdings/yupana:uds-v0.2.1@sha256:f59dc4818950a7b30effc297714dd3dbd13a983094aee1125ab41678e9f504e7
+      - ghcr.io/szl-holdings/yupana:uds-v0.2.1@sha256:c5c48ca7410f1917564a9a6e4d595151801e72384ab3f16dca07c539259e0efa
     manifests:
       - name: szl-yupana-workload
         namespace: szl-yupana
