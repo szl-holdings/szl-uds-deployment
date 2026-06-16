@@ -16,6 +16,10 @@
 #                               OFFSITE (object bucket / 2nd host) so the sealed
 #                               history survives box loss; sha256-verified against
 #                               the bucket manifests, append-only, alerts on failure
+#        szl-receipts-cold-archive-audit — daily OFFLINE re-verification of the box
+#                               REAL cold receipt archive (public key only); pages on
+#                               the edge if any aged-out cold bucket no longer re-verifies
+#                               (signature / hash-linkage / tarball_sha256 / stitch)
 #   3. the a11oy.net public-site alerting watchers:
 #        a11oy-uptime-check   — probe a11oy.net uptime, alert on the outage edge
 #        a11oy-uptime-notify  — shared push notifier (ntfy/Telegram/webhook)
@@ -51,6 +55,7 @@ install -m 0755 "$here/sbin/receipt-flood-watch"       /usr/local/sbin/receipt-f
 install -m 0755 "$here/sbin/receipt-throttle-watch"    /usr/local/sbin/receipt-throttle-watch
 install -m 0755 "$here/sbin/szl-receipts-retention"    /usr/local/sbin/szl-receipts-retention
 install -m 0755 "$here/sbin/szl-receipts-cold-offsite" /usr/local/sbin/szl-receipts-cold-offsite
+install -m 0755 "$here/sbin/szl-receipts-cold-archive-audit" /usr/local/sbin/szl-receipts-cold-archive-audit
 install -m 0755 "$here/sbin/szl-ns-scratch"            /usr/local/sbin/szl-ns-scratch
 install -m 0755 "$here/sbin/szl-ns-scratch-watch"      /usr/local/sbin/szl-ns-scratch-watch
 install -m 0755 "$here/sbin/szl-ns-scratch-stale-watch" /usr/local/sbin/szl-ns-scratch-stale-watch
@@ -101,6 +106,8 @@ install -m 0644 "$here/systemd/szl-receipts-retention.service" /etc/systemd/syst
 install -m 0644 "$here/systemd/szl-receipts-retention.timer"   /etc/systemd/system/szl-receipts-retention.timer
 install -m 0644 "$here/systemd/szl-receipts-cold-offsite.service" /etc/systemd/system/szl-receipts-cold-offsite.service
 install -m 0644 "$here/systemd/szl-receipts-cold-offsite.timer"   /etc/systemd/system/szl-receipts-cold-offsite.timer
+install -m 0644 "$here/systemd/szl-receipts-cold-archive-audit.service" /etc/systemd/system/szl-receipts-cold-archive-audit.service
+install -m 0644 "$here/systemd/szl-receipts-cold-archive-audit.timer"   /etc/systemd/system/szl-receipts-cold-archive-audit.timer
 install -m 0644 "$here/systemd/szl-ns-scratch-watch.service" /etc/systemd/system/szl-ns-scratch-watch.service
 install -m 0644 "$here/systemd/szl-ns-scratch-watch.timer"   /etc/systemd/system/szl-ns-scratch-watch.timer
 install -m 0644 "$here/systemd/szl-ns-scratch-stale-watch.service" /etc/systemd/system/szl-ns-scratch-stale-watch.service
@@ -457,6 +464,7 @@ for c in "${receipt_extra_clusters[@]}"; do
 done
 systemctl enable --now szl-receipts-retention.timer
 systemctl enable --now szl-receipts-cold-offsite.timer
+systemctl enable --now szl-receipts-cold-archive-audit.timer
 systemctl enable --now szl-ns-scratch-watch.timer
 systemctl enable --now szl-ns-scratch-stale-watch.timer
 systemctl enable --now a11oy-uptime-check.timer
@@ -499,6 +507,9 @@ done
 # Mirror the cold archive offsite once now (idempotent no-op if unconfigured or
 # there is nothing new to mirror).
 [ -x /usr/local/sbin/szl-receipts-cold-offsite ] && /usr/local/sbin/szl-receipts-cold-offsite || true
+# Audit the cold archive OFFLINE once now (idempotent no-op if the cold dir is
+# empty or no public key is available yet).
+[ -x /usr/local/sbin/szl-receipts-cold-archive-audit ] && /usr/local/sbin/szl-receipts-cold-archive-audit || true
 [ -x /usr/local/sbin/szl-ns-scratch-watch ] && /usr/local/sbin/szl-ns-scratch-watch  || true
 [ -x /usr/local/sbin/szl-ns-scratch-stale-watch ] && /usr/local/sbin/szl-ns-scratch-stale-watch || true
 # Alert-only watchers (idempotent: cluster/endpoint down = no-op, no false page).

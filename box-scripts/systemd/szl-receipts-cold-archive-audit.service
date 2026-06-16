@@ -1,0 +1,17 @@
+[Unit]
+Description=szl-receipts cold-archive audit — re-verify the box REAL cold receipt archive OFFLINE (public key only) and page on the failure edge
+Documentation=file:///usr/local/sbin/szl-receipts-cold-archive-audit
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Real push notifications use the SAME notifier + credentials file as the
+# a11oy-uptime / receipt-chain-watch / retention monitors (ntfy / Telegram /
+# Slack-Discord webhook). The leading "-" makes the env file optional, so the
+# job still runs (logging only) before any channel is configured.
+EnvironmentFile=-/etc/a11oy-uptime.env
+# Distinct ntfy title so cold-archive-audit alerts read differently from the others.
+Environment=NOTIFY_TITLE=szl-receipts cold-archive audit
+Environment=NOTIFY_CMD=/usr/local/sbin/a11oy-uptime-notify
+ExecStart=/usr/local/sbin/szl-receipts-cold-archive-audit

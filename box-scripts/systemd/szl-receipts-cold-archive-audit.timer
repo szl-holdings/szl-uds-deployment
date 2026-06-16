@@ -1,0 +1,18 @@
+[Unit]
+Description=Periodically re-verify the box REAL cold receipt archive OFFLINE (szl-receipts-cold-archive-audit) so aged-out cold buckets stay re-verifiable
+
+[Timer]
+# Daily cadence: the cold archive only changes when retention seals a new bucket
+# (daily), and bit-rot / on-disk corruption is slow, so a daily offline re-verify
+# is the right horizon. The job is a no-op when the cold dir is empty or no public
+# key is available, so a daily run is cheap.
+OnBootSec=15min
+OnUnitActiveSec=1d
+AccuracySec=1h
+# Spread the run so it does not collide with retention / offsite / other daily jobs.
+RandomizedDelaySec=30min
+Persistent=true
+Unit=szl-receipts-cold-archive-audit.service
+
+[Install]
+WantedBy=timers.target

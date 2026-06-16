@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# szl-receipts-cold-archive-audit — periodically RE-VERIFY the box's REAL cold
+# receipt archive OFFLINE (public key only) and page a human if any sealed cold
+# bucket no longer re-verifies.
+#
+# WHY THIS EXISTS
+# szl-receipts-retention rolls "sealed" shard buckets off the live receipts PVC
+# into the box host cold archive (HOST_COLD_DIR, default /var/lib/szl-receipts-cold)
+# as <bucket>.tar.gz + <bucket>.manifest.json. Those tarballs are the LONG-TERM,
+# aged-out receipt history — the part of the chain that is NO LONGER in the live
+# store. Their whole value is that an auditor can re-open them later with nothing
+# but the public key and re-prove every receipt. But once a bucket leaves the
+# live store, NOTHING continuously re-checks it: bit-rot on disk, a truncated
+# tarball, a manifest/tarball drift, or a botched retention write could silently
+# corrupt cold history and no symptom would ever appear — until the day someone
+# needs to re-attach cold storage to the chain and discovers it no longer
+# verifies. This audit closes that gap: on a schedule it re-runs the OFFLINE
+# cold-archive verifier over the real cold dir and pages on the failure edge.
+#
+# WHAT IT VERIFIES (per sealed bucket, public key ONLY)
+# It invokes `receipts_sharding_guard.py verify-cold <cold_dir> --pubkey-hex ...`,
+# which re-opens every <bucket>.tar.gz with the manifest sidecar and proves:
+#   * tarball_sha256 — the tarball bytes still hash to the manifest digest
+#     (no corruption / truncation at rest);
+#   * signature      — every receipt's Ed25519/DSSE signature re-verifies under
+#     the public key;
+#   * hash-linkage   — every receipt's SHA-256 chain hash + intra-bucket prev_hash
+#     link re-compute, and the manifest's first_prev_hash/last_hash match the real
+#     bytes;
+#   * stitch         — the lowest sealed bucket re-attaches to GENESIS and
+#     consecutive buckets stitch (last_hash == next first_prev_hash).
+# Re-attachment to the LIVE tail is intentionally NOT checked here: this is the
+# OFF-BOX auditor's view — prove the COLD tarballs ALONE are still re-verifiable
+# with nothing but the public key. The cold->live-tail re-attachment is covered
+# continuously by szl-receipts-retention's verify-store. The cryptographic
+# correctness of verify-cold itself is unit-guarded by receipts_sharding_guard's
+# own test (crafted-bad archives); THIS job guards the live cold bytes on disk.
+#
+# SAFETY / NO-OP CONTRACT (never a paging storm)
+#   * HOST_COLD_DIR absent, or no sealed <bucket>.tar.gz + manifest pairs yet
+#     => silent no-op, exit 0 (status OK "nothing to audit"), NO page;
+#   * cluster down / no public key available yet (and none cached, no env
+#     override) => silent no-op, exit 0 (status UNKNOWN), NO page — we cannot
+#     prove pass OR fail without the key, so we never cry wolf;
+#   * a real verify failure => ALERT, edge-deduped page (no re-page while it
+#     stays failing), RECOVERED page on the clean edge.
+#
+# Public key resolution (priority): explicit PUBKEY_HEX env override >
+# live receipts-server /pubkey (which also refreshes the on-box cache) > the
+# cached key from a previous run. Once cached, the audit runs FULLY OFFLINE even
+# while the cluster is down (the cold tarballs live on the host disk).
+#
+# Notifications use the SAME notifier + credentials file as the a11oy-uptime /
+# receipt-chain-watch / retention monitors (NOTIFY_CMD -> a11oy-uptime-notify,
+# EnvironmentFile=-/etc/a11oy-uptime.env in the unit). Read-only: it never writes
+# to the cold archive, the live store, or the cluster.
+set -uo pipefail
+
+# ── config (overridable via env; the guard self-test overrides these) ─────────
+CLUSTER="${CLUSTER:-uds-szl-demo}"
+KUBECONFIG_FILE="${KUBECONFIG_FILE:-}"        # explicit kubeconfig (else k3d writes one)
+RNS="${RNS:-szl-receipts}"                    # receipts-server namespace
+RX_SELECTOR="${RX_SELECTOR:-app.kubernetes.io/name=szl-receipts-server}"
+RX_CONTAINER="${RX_CONTAINER:-receipts-server}"
+RX_PORT="${RX_PORT:-8080}"
+KREQ_TIMEOUT="${KREQ_TIMEOUT:-20s}"
+
+# The box host cold archive that szl-receipts-retention populates.
+HOST_COLD_DIR="${HOST_COLD_DIR:-/var/lib/szl-receipts-cold}"
+
+# The OFFLINE verifier (verify-cold subcommand). On the box the repo lives at
+# /opt/szl/szl-uds-deployment; the guard self-test points GUARD_PY at a stub.
+GUARD_PY="${GUARD_PY:-/opt/szl/szl-uds-deployment/scripts/receipts_sharding_guard.py}"
+PY="${PY:-python3}"; command -v "$PY" >/dev/null 2>&1 || PY=python
+
+STATE_DIR="${STATE_DIR:-/var/lib/szl-receipts-cold-archive-audit}"
+LOG_DIR="${LOG_DIR:-/var/log/szl-receipts-cold-archive-audit}"
+LAST_FILE="${LAST_FILE:-$STATE_DIR/last_status}"
+STATUS_FILE="${STATUS_FILE:-$STATE_DIR/status.json}"
+PUBKEY_CACHE="${PUBKEY_CACHE:-$STATE_DIR/pubkey.hex}"
+LOG="${LOG:-$LOG_DIR/audit.log}"
+
+# Optional explicit public key (64-hex), skips the live-pod lookup entirely —
+# handy for an off-box auditor with no cluster.
+PUBKEY_HEX="${PUBKEY_HEX:-}"
+
+NOTIFY_CMD="${NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
+ALERT_PREFIX="${ALERT_PREFIX:-}"
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null || true
+
+now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+log() { printf '%s %s\n' "$(now_iso)" "$1" >>"$LOG" 2>/dev/null || true; }
+
+notify() {
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed (alert was logged only)"
+}
+
+# write_status OVERALL REASON [BUCKETS_TOTAL] [BUCKETS_FAILED]
+write_status() {
+  local overall="$1" reason="$2" total="${3:-0}" failed="${4:-0}"
+  reason="$(printf '%s' "$reason" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  printf '{"overall":"%s","reason":"%s","checked_at":"%s","cluster":"%s","cold_dir":"%s","buckets":%s,"failed":%s}\n' \
+    "$overall" "$reason" "$(now_iso)" "$CLUSTER" "$HOST_COLD_DIR" "$total" "$failed" \
+    >"$STATUS_FILE" 2>/dev/null || true
+}
+
+# ── nothing to audit? (cold dir absent / no sealed buckets) = silent no-op ─────
+# Done FIRST so an empty box never touches the cluster and never pages.
+if [ ! -d "$HOST_COLD_DIR" ]; then
+  log "INFO HOST_COLD_DIR '$HOST_COLD_DIR' absent — no cold archive to audit, no-op"
+  write_status OK "no cold archive yet (HOST_COLD_DIR absent)"
+  echo OK >"$LAST_FILE" 2>/dev/null || true
+  exit 0
+fi
+
+buckets=()
+shopt -s nullglob
+for _man in "$HOST_COLD_DIR"/*.manifest.json; do
+  _b="$(basename "$_man" .manifest.json)"
+  [ -f "$HOST_COLD_DIR/$_b.tar.gz" ] && buckets+=("$_b")
+done
+shopt -u nullglob
+
+if [ "${#buckets[@]}" -eq 0 ]; then
+  log "INFO no sealed buckets (<bucket>.tar.gz + <bucket>.manifest.json) in '$HOST_COLD_DIR' — nothing to audit, no-op"
+  write_status OK "no sealed cold buckets to audit"
+  echo OK >"$LAST_FILE" 2>/dev/null || true
+  exit 0
+fi
+buckets_total="${#buckets[@]}"
+
+# ── resolve the Ed25519 PUBLIC key (hex) used to re-verify the cold receipts ───
+pubkey_hex=""; pubkey_src=""
+if [ -n "$PUBKEY_HEX" ]; then
+  pubkey_hex="$PUBKEY_HEX"; pubkey_src="env"
+else
+  have_kc=0
+  if [ -n "$KUBECONFIG_FILE" ] && [ -r "$KUBECONFIG_FILE" ]; then
+    export KUBECONFIG="$KUBECONFIG_FILE"; have_kc=1
+  elif KC="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)"; then
+    export KUBECONFIG="$KC"; have_kc=1
+  fi
+  if [ "$have_kc" = "1" ] && command -v kubectl >/dev/null 2>&1 \
+     && kubectl --request-timeout="$KREQ_TIMEOUT" get --raw=/readyz >/dev/null 2>&1; then
+    pod="$(kubectl --request-timeout="$KREQ_TIMEOUT" -n "$RNS" get pods -l "$RX_SELECTOR" -o json 2>/dev/null \
+      | RX_CONTAINER="$RX_CONTAINER" "$PY" -c '
+import sys, json, os
+c = os.environ["RX_CONTAINER"]
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(""); sys.exit()
+for p in d.get("items", []):
+    for cs in (p.get("status", {}).get("containerStatuses") or []):
+        if cs.get("name") == c and cs.get("ready"):
+            print(p["metadata"]["name"]); sys.exit()
+print("")' 2>/dev/null)"
+    if [ -n "$pod" ]; then
+      b64u="$(kubectl --request-timeout=30s -n "$RNS" exec "$pod" -c "$RX_CONTAINER" -- \
+        "$PY" -c 'import json,urllib.request;print(json.load(urllib.request.urlopen("http://127.0.0.1:'"$RX_PORT"'/pubkey",timeout=8)).get("public_key_b64u",""))' 2>/dev/null)"
+      if [ -n "$b64u" ]; then
+        pubkey_hex="$("$PY" -c 'import base64,sys;s=sys.argv[1].strip();r=base64.urlsafe_b64decode(s+"="*(-len(s)%4));print(r.hex() if len(r)==32 else "")' "$b64u" 2>/dev/null)"
+        if [ -n "$pubkey_hex" ]; then
+          pubkey_src="live-pod"
+          printf '%s\n' "$pubkey_hex" >"$PUBKEY_CACHE" 2>/dev/null || true
+        fi
+      fi
+    fi
+  fi
+  if [ -z "$pubkey_hex" ] && [ -r "$PUBKEY_CACHE" ]; then
+    pubkey_hex="$(tr -d '[:space:]' <"$PUBKEY_CACHE" 2>/dev/null)"
+    [ -n "$pubkey_hex" ] && pubkey_src="cache"
+  fi
+fi
+
+if [ -z "$pubkey_hex" ]; then
+  # Sealed buckets exist but no public key to verify them with (cluster down on
+  # the very first run, before the key was cached). Cannot prove pass OR fail —
+  # treat as a no-op UNKNOWN, NEVER page (mirrors the cluster-absent no-op of the
+  # other receipts monitors). Once the cluster is reachable once, the key is
+  # cached and the audit runs offline thereafter.
+  log "INFO no public key available (no env override, live pod unreachable, no cache) — cannot audit offline yet, no-op"
+  write_status UNKNOWN "no public key available to verify cold buckets" "$buckets_total" 0
+  exit 0
+fi
+log "INFO auditing $buckets_total sealed cold bucket(s) under $HOST_COLD_DIR (pubkey: $pubkey_src)"
+
+# ── run the OFFLINE cold-archive verifier (public key only) ───────────────────
+out="$STATE_DIR/verify-cold.out"
+if "$PY" "$GUARD_PY" verify-cold "$HOST_COLD_DIR" --pubkey-hex "$pubkey_hex" >"$out" 2>&1; then
+  vrc=0
+else
+  vrc=$?
+fi
+cat "$out" >>"$LOG" 2>/dev/null || true
+
+fail_lines="$(grep -E '^[[:space:]]*FAIL ' "$out" 2>/dev/null || true)"
+failed_buckets="$(printf '%s\n' "$fail_lines" \
+  | grep -oE '(bucket|tarball)\[[^]]+\]' | sed -E 's/.*\[([^]]+)\]/\1/' \
+  | sort -u | tr '\n' ',' | sed 's/,$//')"
+n_fail_lines="$(printf '%s\n' "$fail_lines" | grep -c 'FAIL' 2>/dev/null || echo 0)"
+if [ -n "$failed_buckets" ]; then
+  n_failed_buckets="$(printf '%s' "$failed_buckets" | tr ',' '\n' | grep -c . || echo 0)"
+else
+  n_failed_buckets=0
+fi
+
+prev="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
+
+if [ "$vrc" -ne 0 ]; then
+  cats=""
+  printf '%s\n' "$fail_lines" | grep -qiE 'sha256|tarball' && cats="${cats:+$cats,}tarball_sha256"
+  printf '%s\n' "$fail_lines" | grep -qiE 'signature|ed25519|dsse|verif' && cats="${cats:+$cats,}signature"
+  printf '%s\n' "$fail_lines" | grep -qiE 'prev_hash|chain hash|link|hash ==|first_prev|last_hash' && cats="${cats:+$cats,}hash-linkage"
+  printf '%s\n' "$fail_lines" | grep -qiE 'stitch|genesis|re-attach|segment' && cats="${cats:+$cats,}stitch"
+  reason="cold-archive verify FAILED: ${n_fail_lines} check(s) across bucket(s) [${failed_buckets:-?}]; failure types: [${cats:-unknown}]"
+  write_status ALERT "$reason" "$buckets_total" "$n_failed_buckets"
+  log "STATE ALERT :: $reason"
+  if [ "$prev" != "ALERT" ]; then
+    notify "ALERT: szl-receipts COLD ARCHIVE audit FAILED on ${CLUSTER}. ${reason}. The aged-out (cold) receipt tarballs in ${HOST_COLD_DIR} no longer re-verify OFFLINE with the public key — cold receipt history may be corrupt. (log: ${LOG})"
+    log "EDGE OK->ALERT notified"
+  else
+    log "DEDUP still ALERT — no re-notify"
+  fi
+  echo ALERT >"$LAST_FILE" 2>/dev/null || true
+else
+  reason="all ${buckets_total} sealed cold bucket(s) re-verify offline (pubkey: ${pubkey_src})"
+  write_status OK "$reason" "$buckets_total" 0
+  log "STATE OK :: $reason"
+  if [ "$prev" = "ALERT" ]; then
+    notify "RECOVERED: szl-receipts cold archive audit is healthy again on ${CLUSTER} — all ${buckets_total} sealed cold bucket(s) re-verify offline with the public key."
+    log "EDGE ALERT->OK recovered, notified"
+  fi
+  echo OK >"$LAST_FILE" 2>/dev/null || true
+fi
+exit 0

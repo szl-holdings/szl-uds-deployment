@@ -1,0 +1,113 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# szl-receipts-cold-archive-audit-guard.yml — Guard the
+# `szl-receipts-cold-archive-audit` box job (the periodic OFFLINE re-verification
+# of the box REAL cold receipt archive) from silently losing its safety
+# properties.
+#
+# szl-receipts-cold-archive-audit (box-scripts/sbin/szl-receipts-cold-archive-audit)
+# runs daily and re-verifies the aged-out cold receipt tarballs in HOST_COLD_DIR
+# OFFLINE (public key only) so a corrupt cold bucket is caught long before anyone
+# needs to re-attach cold storage to the chain. Its value rests on a handful of
+# fragile CONTROL-FLOW properties that produce NO visible symptom when a refactor
+# breaks them:
+#   * an empty / absent cold dir is a silent no-op (no cold history yet);
+#   * no public key available (cluster down on first run, nothing cached, no env
+#     override) is a silent no-op UNKNOWN — cannot prove pass/fail without a key;
+#   * a real verify failure pages an ALERT, is edge-deduped, and emits a RECOVERED
+#     on the clean edge;
+#   * the audit is an OFFLINE/off-box auditor: verify-cold is invoked with the
+#     PUBLIC KEY ONLY and must NEVER be passed --tail-first-prev;
+#   * it stays WIRED into install.sh (script + units installed, timer enabled,
+#     first-run kicked) and documented in the retention runbook.
+#
+# The CRYPTOGRAPHIC correctness of verify-cold itself is unit-guarded separately
+# by receipts_sharding_guard's own test against crafted-bad archives; the checks
+# here are BEHAVIOURAL: the guard script actually RUNS the real audit script over
+# a fabricated cold dir with a STUBBED verifier (no cluster needed) and a
+# capturing notifier, then asserts the observable outcome (exit code, whether it
+# paged, the status file, the verifier argv). That proves the no-op gates, the
+# edge-dedup, the RECOVERED edge, and the public-key-only contract are wired into
+# the control flow, not merely present as text.
+#
+# The check logic lives in scripts/szl-receipts-cold-archive-audit-guard-checks.sh.
+# It was extracted from this workflow so it can be UNIT TESTED:
+# scripts/szl-receipts-cold-archive-audit-guard-checks.test.sh feeds each check a
+# deliberately-BROKEN copy of the script and asserts the check FAILS, plus that
+# the pristine repo PASSES. That self-test runs as the `self-test` job below, so a
+# future edit that neuters a check (green while guarding nothing) is caught.
+#
+# The asserted invariants:
+#   chk1  szl-receipts-cold-archive-audit exists and parses clean (bash -n)
+#   chk2  empty/absent cold dir is a silent no-op (exit 0, no page)
+#   chk3  no public key available is a silent no-op UNKNOWN (exit 0, no page)
+#   chk4  a failing verify pages an ALERT and names the failing bucket
+#   chk5  edge-dedup: a persistent failure pages exactly once, not every run
+#   chk6  recovery pages a RECOVERED and returns to OK; happy path is silent
+#   chk7  verify-cold invoked public-key-only (--pubkey-hex, no --tail-first-prev)
+#   chk8  wired into install.sh (script + units, timer enabled, first run kicked)
+#   chk9  documented in the retention runbook + named in install.sh
+
+name: SZL Receipts Cold-Archive Audit Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves each check
+  # still FAILS on bad input (i.e. is not silently passing). The guard job depends
+  # on it so a broken check blocks the build before it can wave a regression
+  # through.
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/szl-receipts-cold-archive-audit-guard-checks.test.sh
+
+  guard:
+    name: Assert the receipt cold-archive audit is wired and verify-gated
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check 1 — szl-receipts-cold-archive-audit exists and parses clean
+        run: bash scripts/szl-receipts-cold-archive-audit-guard-checks.sh chk1 .
+
+      - name: Check 2 — empty/absent cold dir is a silent no-op
+        run: bash scripts/szl-receipts-cold-archive-audit-guard-checks.sh chk2 .
+
+      - name: Check 3 — no public key available is a silent no-op UNKNOWN
+        run: bash scripts/szl-receipts-cold-archive-audit-guard-checks.sh chk3 .
+
+      - name: Check 4 — a failing verify pages an ALERT (names the bucket)
+        run: bash scripts/szl-receipts-cold-archive-audit-guard-checks.sh chk4 .
+
+      - name: Check 5 — edge-dedup (a persistent failure pages exactly once)
+        run: bash scripts/szl-receipts-cold-archive-audit-guard-checks.sh chk5 .
+
+      - name: Check 6 — recovery pages a RECOVERED; happy path is silent
+        run: bash scripts/szl-receipts-cold-archive-audit-guard-checks.sh chk6 .
+
+      - name: Check 7 — public-key-only contract (no --tail-first-prev)
+        run: bash scripts/szl-receipts-cold-archive-audit-guard-checks.sh chk7 .
+
+      - name: Check 8 — wired into install.sh (script + units, timer, first run)
+        run: bash scripts/szl-receipts-cold-archive-audit-guard-checks.sh chk8 .
+
+      - name: Check 9 — documented in the retention runbook
+        run: bash scripts/szl-receipts-cold-archive-audit-guard-checks.sh chk9 .
+
+      - name: Receipt cold-archive audit is wired and verify-gated
+        run: echo "The szl-receipts-cold-archive-audit job is wired and verify-gated."

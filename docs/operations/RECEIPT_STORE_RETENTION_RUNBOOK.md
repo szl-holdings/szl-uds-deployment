@@ -235,7 +235,51 @@ mirroring the cold archive to a **second location** on a cadence.
 > `install.sh`; restoring `/etc/szl-receipts-cold-offsite.env` (the offsite
 > destination) is the only manual step before the daily mirror resumes.
 
-### 4.3 Runtime watchdog — the job that never runs (`szl-receipts-retention-watch`)
+### 4.3 Offline re-verification of the cold archive (`szl-receipts-cold-archive-audit`)
+
+§4.1 writes sealed buckets to the box cold dir and §4.2 mirrors them offsite, but
+once a bucket is aged out of the live store **nothing continuously re-checks the
+cold tarballs themselves**. Slow bit-rot on disk, a truncated tarball, a
+manifest/tarball drift, or a botched retention write could silently corrupt cold
+history with no symptom — until the day someone needs to re-attach cold storage
+to the chain and discovers it no longer verifies. The
+`szl-receipts-cold-archive-audit` job closes that gap by re-running the **OFFLINE**
+cold-archive verifier (`scripts/receipts_sharding_guard.py verify-cold`, public
+key only) over the real cold dir on a cadence and paging on the failure edge.
+
+- **Source / install:** `box-scripts/sbin/szl-receipts-cold-archive-audit` +
+  `box-scripts/systemd/szl-receipts-cold-archive-audit.{service,timer}`, installed
+  (and re-installed after a box rebuild) by `sudo box-scripts/install.sh`.
+- **Cadence:** daily (`OnUnitActiveSec=1d`), first run 15 min after boot, with a
+  randomized delay so it does not collide with retention / offsite.
+- **What it proves (per sealed bucket, public key ONLY):** `tarball_sha256` still
+  matches (no corruption at rest), every receipt's Ed25519/DSSE **signature** +
+  SHA-256 chain **hash-linkage** (intra-bucket `prev_hash` + manifest boundary
+  hashes) re-verify, and the buckets **stitch** (lowest re-attaches to GENESIS,
+  consecutive buckets chain). Re-attachment to the **live tail** is intentionally
+  NOT checked here — this is the off-box auditor's view (prove the cold tarballs
+  alone are still re-verifiable); the cold→live-tail stitch is covered by §4.1's
+  `verify-store`. It is **read-only** (never writes the archive / store / cluster).
+- **Public key resolution:** `PUBKEY_HEX` env override > live receipts-server
+  `/pubkey` (which refreshes an on-box cache) > the cached key. Once cached, the
+  audit runs **fully offline** even while the cluster is down.
+- **No-op contract (never a false page):** an absent/empty cold dir, or no public
+  key available yet (cluster down on the first run, nothing cached, no env
+  override), is a silent **no-op** (exit 0) — it can prove neither pass nor fail,
+  so it never cries wolf.
+- **Alerting:** fires the shared `a11oy-uptime-notify` channel (edge-triggered,
+  de-duped) when any bucket fails signature / hash-linkage / tarball_sha256 /
+  stitch, and emits a **RECOVERED** on the clean edge.
+- **Guarded:** `scripts/szl-receipts-cold-archive-audit-guard-checks.sh` (+ its
+  `.test.sh` self-test and `szl-receipts-cold-archive-audit-guard.yml` workflow)
+  behaviourally proves the no-op gates, edge-dedup, RECOVERED edge, and the
+  public-key-only (no `--tail-first-prev`) contract stay wired.
+
+> A box rebuild re-installs and re-enables `szl-receipts-cold-archive-audit` via
+> `install.sh`; no private config is needed (the public key is fetched/cached
+> automatically), so the daily offline audit resumes with no manual step.
+
+### 4.4 Runtime watchdog — the job that never runs (`szl-receipts-retention-watch`)
 
 §4.1 pages when a retention *run* finds a real problem, and a build-time CI guard
 keeps its invariants from regressing. Neither covers the most dangerous failure:
