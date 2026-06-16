@@ -323,6 +323,63 @@ daily job:
 > A box rebuild re-installs and re-enables this watchdog via `install.sh`; no
 > private env file is needed (it reuses the retention units + `a11oy-uptime-notify`).
 
+### 4.5 Restore drill — prove the OFFSITE backup can actually be restored (`szl-receipts-cold-offsite-restore-drill`)
+
+§4.2 mirrors the cold archive offsite and sha256-verifies each upload **at write
+time**; §4.3 re-verifies the **on-box** cold tarballs offline. Neither ever
+exercises the **restore path** — pulling a bucket back *down* from offsite and
+confirming it still unpacks. An untested backup is a hope, not a backup: offsite
+credentials can rot, a remote can silently start returning truncated/empty
+objects, a lifecycle rule can expire objects, or the bucket can become unreadable,
+and the upload-time mirror (which only writes *up*) would never notice. The
+`szl-receipts-cold-offsite-restore-drill` job closes that gap by doing a real
+round-trip **restore** of one offsite bucket on a cadence and paging on the
+failure edge — so the first time anyone learns the offsite copy is unrestorable
+is NOT the day the box is gone.
+
+- **Source / install:** `box-scripts/sbin/szl-receipts-cold-offsite-restore-drill` +
+  `box-scripts/systemd/szl-receipts-cold-offsite-restore-drill.{service,timer}`,
+  installed (and re-installed after a box rebuild) by `sudo box-scripts/install.sh`.
+  Full details: [`box-scripts/szl-receipts-cold-offsite-restore-drill.README.md`](../../box-scripts/szl-receipts-cold-offsite-restore-drill.README.md).
+- **Cadence:** weekly (`OnUnitActiveSec=1w`), first run 50 min after boot — i.e.
+  **after** `szl-receipts-cold-offsite` (40 min) has mirrored the day's buckets,
+  so the drill reads back a fresh offsite copy. A restore drill is a confidence
+  check on the backup path, not a per-day necessity, so a weekly round-trip
+  download is the right horizon (and keeps egress/cost low).
+- **Destination:** the **same** offsite destination as §4.2 — it loads the same
+  PRIVATE `/etc/szl-receipts-cold-offsite.env` and reads back what the mirror
+  wrote. Until that destination is set the drill is a **SKIPPED_UNCONFIGURED
+  no-op**, never a page.
+- **What it proves (one bucket per run, read-only against offsite):** lists the
+  offsite destination, picks one bucket (`DRILL_BUCKET` override, else the newest),
+  **downloads** its `<bucket>.tar.gz` + `<bucket>.manifest.json` into a throwaway
+  scratch dir, requires the downloaded tarball's sha256 to equal the downloaded
+  manifest `tarball_sha256` (corrupt/truncated offsite copy ⇒ ALERT), then extracts
+  it and confirms it restores into a **well-formed shard** — a top-level
+  `<bucket>/` dir of parseable `*.json` receipts each carrying a `chain` object,
+  and (when the manifest records a `count`) exactly that many receipts. It is
+  **read-only**: it never writes offsite, the on-box cold archive, or the live
+  store.
+- **Structural, not cryptographic (by design):** the per-receipt signature /
+  hash-linkage / stitch re-verify is §4.3's job (public key, needs the cluster).
+  This drill stays fully self-contained with nothing but the offsite credentials,
+  so it keeps proving the backup is **restorable** even with the cluster down. The
+  two are complementary — the audit proves the cold bytes are still a valid chain;
+  the drill proves those bytes can actually be fetched back.
+- **No-op contract (never a false page):** unconfigured (no `OFFSITE_*`
+  destination) or nothing mirrored offsite yet is a silent **no-op** (exit 0).
+- **Alerting:** fires the shared `a11oy-uptime-notify` channel (edge-triggered,
+  de-duped) on a download failure, a sha256 mismatch, or a not-well-formed restore,
+  and emits a **RECOVERED** on the clean edge.
+- **Guarded:** `scripts/szl-receipts-cold-offsite-restore-drill-guard-checks.sh`
+  (+ its `.test.sh` self-test and `szl-receipts-cold-offsite-restore-drill-guard.yml`
+  workflow) behaviourally proves the no-op gates, the sha256 + well-formed gates,
+  the happy path, and edge-dedup stay wired.
+
+> A box rebuild re-installs and re-enables `szl-receipts-cold-offsite-restore-drill`
+> via `install.sh`; restoring `/etc/szl-receipts-cold-offsite.env` (the shared
+> offsite destination) is the only manual step before the weekly drill resumes.
+
 ---
 
 ## 5. Quick reference

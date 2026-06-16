@@ -1,0 +1,20 @@
+[Unit]
+Description=Periodically restore-drill the szl-receipts OFFSITE cold backup (prove it can actually be restored)
+
+[Timer]
+# Weekly, and 50 min after boot — i.e. AFTER szl-receipts-cold-offsite
+# (OnBootSec=40min) has had a chance to mirror the day's buckets, so the drill
+# reads back a fresh offsite copy. A restore drill is a confidence check on the
+# backup path, not a per-day necessity, so a weekly round-trip download is the
+# right horizon (and keeps egress/cost low). The drill is a no-op when nothing is
+# configured or nothing has been mirrored, so the run is cheap.
+OnBootSec=50min
+OnUnitActiveSec=1w
+AccuracySec=1h
+# Spread the run so it does not collide with retention / offsite / audit jobs.
+RandomizedDelaySec=1h
+Persistent=true
+Unit=szl-receipts-cold-offsite-restore-drill.service
+
+[Install]
+WantedBy=timers.target
