@@ -124,7 +124,7 @@ eval-arena-trend-validate eval-arena-trend-watch \
 istiod-fit-strategy receipt-chain-watch receipt-flood-watch receipt-throttle-watch \
 szl-alert-relay szl-alert-relay-watch szl-box-sync-conflict-watch szl-core-rightsize szl-ns-scratch \
 szl-image-stale-watch szl-ns-scratch-stale-watch szl-ns-scratch-watch szl-receipt-checkpoint \
-szl-receipts-cold-offsite szl-receipts-orphan-watch szl-receipts-retention szl-receipts-retention-watch \
+szl-receipts-cold-archive-audit szl-receipts-cold-offsite szl-receipts-orphan-watch szl-receipts-retention szl-receipts-retention-watch \
 szl-signing-health-check vault-auto-unseal vault-keystore-offbox-backup"
 FALLBACK_UNITS="a11oy-coexist.service a11oy-contracting-tool-watch.service a11oy-contracting-tool-watch.timer \
 a11oy-port-guard.service a11oy-port-guard.timer a11oy-readiness-watch.service a11oy-readiness-watch.timer a11oy-signing-key-watch.service \
@@ -142,7 +142,7 @@ szl-alert-relay-watch.service szl-alert-relay-watch.timer szl-core-rightsize.ser
 szl-box-sync-conflict-watch.service szl-box-sync-conflict-watch.timer \
 szl-core-rightsize.timer szl-image-stale-watch.service szl-image-stale-watch.timer szl-ns-scratch-stale-watch.service szl-ns-scratch-stale-watch.timer \
 szl-ns-scratch-watch.service szl-ns-scratch-watch.timer szl-receipt-checkpoint.service \
-szl-receipt-checkpoint.timer szl-receipts-cold-offsite.service \
+szl-receipt-checkpoint.timer szl-receipts-cold-archive-audit.service szl-receipts-cold-archive-audit.timer szl-receipts-cold-offsite.service \
 szl-receipts-cold-offsite.timer szl-receipts-orphan-watch.service \
 szl-receipts-orphan-watch.timer szl-receipts-retention.service \
 szl-receipts-retention.timer szl-receipts-retention-watch.service szl-receipts-retention-watch.timer szl-signing-health-check.service \
