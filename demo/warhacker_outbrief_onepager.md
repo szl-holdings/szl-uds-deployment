@@ -1,8 +1,12 @@
 # SZL Holdings — Warhacker Outbrief (One-Pager)
-## The Governed Distributed Compute Fabric
+## TAWANTIN — the Governed Distributed Compute Fabric
+
+*"Sovereign signal. Signed receipt. No node left dark."*
 
 **Doctrine v11 LOCKED · 749/14/163 @ kernel `c7c0ba17` · Λ = Conjecture 1 · SLSA L1 honest · 0 runtime CDN**
-Live: **a11oy.net/fabric** · **killinchu.a11oy.net/elite** | Verified 2026-06-15
+Live: **a11oy.net/tawantin** (≡ `a11oy.net/fabric`) · **killinchu.a11oy.net/elite** | Verified 2026-06-15
+
+> **The name.** The unified fabric is **TAWANTIN** — Quechua *tawantin*, **"the four united parts"** (the four regions united into one whole, Tawantinsuyu). TAWANTIN unites the sovereign nodes — relayed by **Chaski** (the messenger node/organ) and recorded by **Khipu** (the signed-receipt ledger) — into one governed system-of-systems.
 
 ---
 
@@ -16,9 +20,9 @@ Defense's winning fabric stories lead with the architecture, not the hardware, a
 
 ### The three pillars — one narrative
 
-**1 · Governed Distributed Compute Fabric** *(LIVE)*
-A live sovereign GPU mesh — laptop RTX 5050, OMEN RTX 4060 Ti, chaski tailnet node, plus Groq / NVIDIA-NIM / HF cloud failover — under **one governed OpenAI-compatible router** with honest provenance per answer. Reachability is a **real TCP probe** every sweep (`7 total · 6 reachable · 2 sovereign GPU` at verify; the down node shows its honest reason). **No fused / combined VRAM — nodes scale horizontally; memory does not merge across the network.**
-→ `a11oy.net/fabric` · `GET /api/a11oy/v1/compute-pool-hardened`
+**1 · TAWANTIN — Governed Distributed Compute Fabric** *(LIVE)*
+**TAWANTIN** is a live sovereign GPU mesh — laptop RTX 5050, OMEN RTX 4060 Ti, the **chaski** (messenger) tailnet node, plus Groq / NVIDIA-NIM / HF cloud failover — united under **one governed OpenAI-compatible router** with honest provenance per answer. Reachability is a **real TCP probe** every sweep (`7 total · 6 reachable · 2 sovereign GPU` at verify; the down node shows its honest reason). **No fused / combined VRAM — nodes scale horizontally; memory does not merge across the network.**
+→ `a11oy.net/tawantin` (≡ `a11oy.net/fabric`) · `GET /api/a11oy/v1/compute-pool-hardened`
 
 **2 · Energy-vertical harness** *(MEASURED)*
 Joules **MEASURED** per successful goal via an on-box exporter on the sovereign node (~824,658 J across ~23,369 jobs at session start, climbing); nodes without a meter read **SAMPLE**, never imputed. Signed receipts fold into the **Khipu** ledger; the chain is **tamper-EVIDENT, not tamper-proof**, and its rolled-up energy estimate is honestly labeled SAMPLE/ESTIMATE until a hardware power meter is wired. *"Every watt and every decision, measured and cryptographically receipted across a distributed mesh."*
@@ -53,7 +57,7 @@ The same governance primitives the terrestrial mesh proves on real metal — hon
 
 ### Why this wins Warhacker
 
-Warhacker measures success by **apps in mission environments**, not cleverness ([Defense Unicorns Warhacker](https://defenseunicorns.com/warhacker/)). SZL ships a **working live demo** (two production apps, real data, real signed verify), a **provenance chain** judges can verify against a public key, and direct **mission relevance** (counter-UAS with human-on-loop). The only structural gap is UDS-Core packaging — covered by the air-gap bundles (`uds-bundles`, `warhacker-demo`) and the `demo/jack-in.sh` switch-over kit. Everything claimed is verifiable; **the half-state — claiming more than is real — is the one outcome we refuse.**
+Warhacker measures success by **apps in mission environments**, not cleverness ([Defense Unicorns Warhacker](https://defenseunicorns.com/warhacker/)). SZL ships a **working live demo** (two production apps, real data, real signed verify), a **provenance chain** judges can verify against a public key, and direct **mission relevance** (counter-UAS with human-on-loop). The UDS-Core packaging gap is closed by the **TAWANTIN Zarf/UDS bundle** (`bundles/tawantin`, commit `4b6fbbcf`) — one airgap-deployable, cosign-signable OCI artifact (`uds deploy oci://ghcr.io/szl-holdings/tawantin-bundle:0.1.0 --confirm`) that composes the a11oy router + energy signal + Khipu receipt chain; the `szl-a11oy` member is **LIVE / digest-pinned**, the energy + tawantin members are **build-valid / GATED-on-IMAGE** (no fabricated digest pinned), plus the air-gap `demo/jack-in.sh` switch-over kit. Everything claimed is verifiable; **the half-state — claiming more than is real — is the one outcome we refuse.**
 
 ---
-*SZL Holdings · Apache-2.0 · tamper-EVIDENT · trust < 1.0 · 0 runtime CDN · Doctrine v11 LOCKED 749/14/163 @ c7c0ba17 · Λ = Conjecture 1*
+*SZL Holdings · **TAWANTIN** = the unified Governed Distributed Compute Fabric (Chaski = messenger · Khipu = ledger) · Apache-2.0 · tamper-EVIDENT · trust < 1.0 · 0 runtime CDN · Doctrine v11 LOCKED 749/14/163 @ c7c0ba17 · Λ = Conjecture 1 · locked = EXACTLY 8 {F1,F4,F7,F11,F12,F18,F19,F22}*
