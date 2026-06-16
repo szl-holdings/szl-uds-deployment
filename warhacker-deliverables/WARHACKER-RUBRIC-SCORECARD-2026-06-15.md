@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- SUPERSEDED BY warhacker-deliverables/WARHACKER-RUBRIC-SCORECARD-2026-06-16.md (A1 airgap + A2 SLSA-provenance now EARNED; bundle published+signed+attested; prove-coboot GREEN; prove-organs glob fixed; rosie image gap recorded). This 2026-06-15 file is kept for audit history. -->
 # Warhacker Rubric Scorecard + Honest Gap Analysis — 2026-06-15
 
 **Author:** Forge (SZL Holdings CTO/engineer)
