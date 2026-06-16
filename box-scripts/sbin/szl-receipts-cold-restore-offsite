@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+#
+# szl-receipts-cold-restore-offsite — one-command recovery of the szl-receipts
+# store from the OFFSITE cold archive after box loss (box 167.233.50.75).
+#
+# WHY THIS EXISTS
+# `szl-receipts-cold-offsite` mirrors the sealed cold receipt archive OFF the box
+# (a 2nd host over ssh, a mounted volume, or an rclone/s3 object store) so the
+# full receipt history survives loss of the box. server.py already supports
+# reading STRAIGHT from that off-box copy — `restore-shards` with the matching
+# `--remote-local|--remote-ssh|--remote-rclone|--remote-s3` flags (or
+# `--from-offsite`, which reads the SAME OFFSITE_* environment the mirror uses) —
+# staging each `<bucket>.tar.gz` + manifest into a temp dir and running the
+# UNCHANGED per-tarball gate (tarball_sha256 + chain linkage) before unpacking, so
+# an off-box restore is verified exactly like a local one. But wiring that up by
+# hand after a box loss is multi-step and error-prone: find the OFFSITE_* config,
+# translate it into the right flags, find a Ready receipts-server pod, and exec
+# the CLI inside it (the live store lives on the pod PVC). This wrapper does all
+# of that from the SAME /etc/szl-receipts-cold-offsite.env the mirror reads — one
+# command.
+#
+# WHAT IT DOES
+#   1. Loads the offsite destination config from
+#      /etc/szl-receipts-cold-offsite.env (the EnvironmentFile the mirror uses),
+#      then resolves the transport exactly like the mirror's detect_transport
+#      (OFFSITE_TRANSPORT override, else the single OFFSITE_* var that is set).
+#   2. Translates that into the matching verified `restore-shards --remote-*`
+#      flags for server.py.
+#   3. Finds a Ready receipts-server pod in ns szl-receipts (the restore writes
+#      into the live store on the pod PVC, so it must run IN-pod, like retention).
+#   4. DRY-RUN BY DEFAULT: prints the resolved transport, the off-box source, the
+#      exact in-pod command it WOULD run, and the reachability prerequisite — and
+#      exits 0 WITHOUT touching the store. Pass --run to actually execute the
+#      verified restore. This makes an irreversible recovery action opt-in.
+#
+# REACHABILITY (the one prerequisite an off-box restore cannot avoid): the restore
+# runs INSIDE the receipts pod, so the off-box source must be reachable FROM THAT
+# POD, not just from the box —
+#   * local : OFFSITE_LOCAL_DIR must be MOUNTED INTO the pod at that same path.
+#   * ssh   : the pod needs the ssh key (OFFSITE_SSH_KEY path) + network to the host.
+#   * rclone: the pod needs the rclone binary + remote config.
+#   * s3    : the pod needs the aws cli + credentials.
+# server.py records each per-bucket fetch failure under `failed` (never a silent
+# skip), so an unreachable source surfaces as a refused restore, not data loss.
+# The `--bucket` flag (repeatable) restores only named buckets.
+#
+# SAFE: dry-run by default, no mutation; no-op exit 0 (NOT an error) when the
+# cluster is down or the receipts module is not deployed (mirrors retention).
+# Versioned in repo box-scripts/. Installed at
+# /usr/local/sbin/szl-receipts-cold-restore-offsite. On-demand recovery tool — no
+# timer/service (it must never run unattended).
+set -uo pipefail
+
+# ---- config (overridable via env for testing) -------------------------------
+# The mirror's EnvironmentFile carries the OFFSITE_* destination. Source it so a
+# restore uses the SAME config that wrote the offsite copy. An explicit
+# OFFSITE_ENV_FILE override (or already-exported OFFSITE_* vars) wins.
+OFFSITE_ENV_FILE="${OFFSITE_ENV_FILE:-/etc/szl-receipts-cold-offsite.env}"
+if [ -r "$OFFSITE_ENV_FILE" ]; then
+  # shellcheck disable=SC1090
+  set -a; . "$OFFSITE_ENV_FILE"; set +a
+fi
+
+CLUSTER="${CLUSTER:-uds-szl-demo}"
+KUBECONFIG_FILE="${KUBECONFIG_FILE:-}"
+RNS="${RNS:-szl-receipts}"
+RX_SELECTOR="${RX_SELECTOR:-app.kubernetes.io/name=szl-receipts-server}"
+RX_CONTAINER="${RX_CONTAINER:-receipts-server}"
+# Path to server.py inside the container (image WORKDIR /app).
+SERVER_PY="${SERVER_PY:-/app/server.py}"
+
+KREQ_TIMEOUT="${KREQ_TIMEOUT:-20s}"   # kubectl --request-timeout for quick ops
+# A full restore stages + verifies + unpacks every bucket; give it room.
+EXEC_TIMEOUT="${EXEC_TIMEOUT:-1800s}"
+
+# ---- offsite source (same vars as szl-receipts-cold-offsite) -----------------
+OFFSITE_TRANSPORT="${OFFSITE_TRANSPORT:-}"
+OFFSITE_SSH_TARGET="${OFFSITE_SSH_TARGET:-}"       # user@host:/srv/szl/receipts-cold
+OFFSITE_SSH_KEY="${OFFSITE_SSH_KEY:-}"             # ssh identity file (optional)
+OFFSITE_LOCAL_DIR="${OFFSITE_LOCAL_DIR:-}"         # /mnt/offsite/receipts-cold
+OFFSITE_RCLONE_REMOTE="${OFFSITE_RCLONE_REMOTE:-}" # remote:bucket/receipts-cold
+OFFSITE_S3_URI="${OFFSITE_S3_URI:-}"               # s3://bucket/receipts-cold
+OFFSITE_S3_ENDPOINT="${OFFSITE_S3_ENDPOINT:-}"     # optional non-AWS endpoint URL
+
+# Python for JSON parsing on the BOX (not the pod). Falls back to python.
+PY="${PY:-python3}"; command -v "$PY" >/dev/null 2>&1 || PY=python
+
+now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+err()  { printf 'ERROR %s\n' "$1" >&2; }
+note() { printf '%s\n' "$1" >&2; }
+
+usage() {
+  cat >&2 <<EOF
+usage: szl-receipts-cold-restore-offsite [--run] [--bucket NAME]... [--cluster NAME]
+
+  Restore the szl-receipts store from the OFFSITE cold archive configured in
+  $OFFSITE_ENV_FILE (the same config szl-receipts-cold-offsite mirrors to).
+
+  --run            actually run the verified restore in the receipts pod.
+                   WITHOUT --run this is a DRY-RUN: it prints what it would do
+                   and exits 0 without touching the store.
+  --bucket NAME    restore only this bucket (repeatable). Default: all sealed
+                   buckets present off-box.
+  --cluster NAME   k3d cluster name (default: \$CLUSTER / uds-szl-demo).
+  -h, --help       this help.
+
+  The off-box source must be reachable FROM INSIDE the receipts pod (see the
+  REACHABILITY notes in this script's header).
+EOF
+}
+
+# ---- args -------------------------------------------------------------------
+DO_RUN=0
+BUCKETS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --run) DO_RUN=1; shift ;;
+    --bucket) [ $# -ge 2 ] || { err "--bucket needs a value"; exit 2; }
+              BUCKETS+=("$2"); shift 2 ;;
+    --cluster) [ $# -ge 2 ] || { err "--cluster needs a value"; exit 2; }
+               CLUSTER="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) err "unknown argument: $1"; usage; exit 2 ;;
+  esac
+done
+
+# ---- resolve transport (mirrors szl-receipts-cold-offsite detect_transport) --
+detect_transport() {
+  if [ -n "$OFFSITE_TRANSPORT" ];     then echo "$OFFSITE_TRANSPORT"; return; fi
+  if [ -n "$OFFSITE_SSH_TARGET" ];    then echo ssh;    return; fi
+  if [ -n "$OFFSITE_LOCAL_DIR" ];     then echo local;  return; fi
+  if [ -n "$OFFSITE_RCLONE_REMOTE" ]; then echo rclone; return; fi
+  if [ -n "$OFFSITE_S3_URI" ];        then echo s3;     return; fi
+  echo ""
+}
+TRANSPORT="$(detect_transport)"
+if [ -z "$TRANSPORT" ]; then
+  err "no OFFSITE_* destination configured in $OFFSITE_ENV_FILE — nothing to restore from"
+  err "set OFFSITE_SSH_TARGET / OFFSITE_LOCAL_DIR / OFFSITE_RCLONE_REMOTE / OFFSITE_S3_URI"
+  exit 2
+fi
+
+# ---- build the matching restore-shards --remote-* flags ----------------------
+# These mirror server.py's _resolve_remote_source: exactly ONE transport, the
+# same source label the mirror used, so the restore reads the identical objects.
+REMOTE_ARGS=()
+SOURCE=""
+case "$TRANSPORT" in
+  local)
+    [ -n "$OFFSITE_LOCAL_DIR" ] || { err "OFFSITE_TRANSPORT=local but OFFSITE_LOCAL_DIR is unset"; exit 2; }
+    REMOTE_ARGS=(--remote-local "$OFFSITE_LOCAL_DIR"); SOURCE="local:$OFFSITE_LOCAL_DIR" ;;
+  ssh)
+    [ -n "$OFFSITE_SSH_TARGET" ] || { err "OFFSITE_TRANSPORT=ssh but OFFSITE_SSH_TARGET is unset"; exit 2; }
+    case "$OFFSITE_SSH_TARGET" in *:*) : ;; *) err "OFFSITE_SSH_TARGET must be USER@HOST:/PATH"; exit 2 ;; esac
+    REMOTE_ARGS=(--remote-ssh "$OFFSITE_SSH_TARGET")
+    [ -n "$OFFSITE_SSH_KEY" ] && REMOTE_ARGS+=(--remote-ssh-key "$OFFSITE_SSH_KEY")
+    SOURCE="ssh:$OFFSITE_SSH_TARGET" ;;
+  rclone)
+    [ -n "$OFFSITE_RCLONE_REMOTE" ] || { err "OFFSITE_TRANSPORT=rclone but OFFSITE_RCLONE_REMOTE is unset"; exit 2; }
+    REMOTE_ARGS=(--remote-rclone "$OFFSITE_RCLONE_REMOTE"); SOURCE="rclone:$OFFSITE_RCLONE_REMOTE" ;;
+  s3)
+    [ -n "$OFFSITE_S3_URI" ] || { err "OFFSITE_TRANSPORT=s3 but OFFSITE_S3_URI is unset"; exit 2; }
+    REMOTE_ARGS=(--remote-s3 "$OFFSITE_S3_URI")
+    [ -n "$OFFSITE_S3_ENDPOINT" ] && REMOTE_ARGS+=(--remote-s3-endpoint "$OFFSITE_S3_ENDPOINT")
+    SOURCE="s3:$OFFSITE_S3_URI" ;;
+  *) err "unknown OFFSITE_TRANSPORT '$TRANSPORT'"; exit 2 ;;
+esac
+
+BUCKET_ARGS=()
+for b in "${BUCKETS[@]:-}"; do [ -n "$b" ] && BUCKET_ARGS+=(--bucket "$b"); done
+
+# The full CLI argv that server.py will run inside the pod.
+CLI_ARGS=(restore-shards "${REMOTE_ARGS[@]}")
+[ "${#BUCKET_ARGS[@]}" -gt 0 ] && CLI_ARGS+=("${BUCKET_ARGS[@]}")
+
+# ---- resolve cluster; no-op (exit 0) if it is down --------------------------
+if [ -n "$KUBECONFIG_FILE" ]; then
+  [ -r "$KUBECONFIG_FILE" ] || { note "kubeconfig '$KUBECONFIG_FILE' unreadable — nothing to do"; exit 0; }
+  export KUBECONFIG="$KUBECONFIG_FILE"
+else
+  KC="$(k3d kubeconfig write "$CLUSTER" 2>/dev/null)" || { note "cluster '$CLUSTER' absent — nothing to do"; exit 0; }
+  export KUBECONFIG="$KC"
+fi
+kubectl --request-timeout="$KREQ_TIMEOUT" get --raw='/readyz' >/dev/null 2>&1 \
+  || { note "cluster '$CLUSTER' not reachable — nothing to do"; exit 0; }
+kubectl --request-timeout="$KREQ_TIMEOUT" -n "$RNS" get deploy szl-receipts-server >/dev/null 2>&1 \
+  || { note "$RNS/szl-receipts-server absent — receipts module not deployed, nothing to do"; exit 0; }
+
+# ---- find a Ready receipts-server pod ---------------------------------------
+pods_json="$(kubectl --request-timeout="$KREQ_TIMEOUT" -n "$RNS" get pods -l "$RX_SELECTOR" -o json 2>/dev/null)"
+pod="$(printf '%s' "$pods_json" | RX_CONTAINER="$RX_CONTAINER" "$PY" -c '
+import sys,json,os
+c=os.environ["RX_CONTAINER"]
+try: d=json.load(sys.stdin)
+except Exception: print(""); sys.exit()
+for p in d.get("items",[]):
+    for cs in (p.get("status",{}).get("containerStatuses") or []):
+        if cs.get("name")==c and cs.get("ready"):
+            print(p["metadata"]["name"]); sys.exit()
+print("")' 2>/dev/null)"
+if [ -z "$pod" ]; then
+  err "no Ready '$RX_CONTAINER' pod in ns/$RNS — cannot restore (deploy the receipts module first)"
+  exit 1
+fi
+
+kx() { kubectl --request-timeout="$EXEC_TIMEOUT" -n "$RNS" exec "$pod" -c "$RX_CONTAINER" -- "$@"; }
+
+# Human-readable rendering of the exact in-pod command.
+printf_cmd() {
+  printf 'kubectl -n %s exec %s -c %s -- %s %s' "$RNS" "$pod" "$RX_CONTAINER" "$PY" "$SERVER_PY"
+  for a in "${CLI_ARGS[@]}"; do printf ' %q' "$a"; done
+  printf '\n'
+}
+
+note "== szl-receipts off-box restore =="
+note "  when      : $(now_iso)"
+note "  cluster   : $CLUSTER   pod: $pod   ns: $RNS"
+note "  transport : $TRANSPORT"
+note "  source    : $SOURCE"
+if [ "${#BUCKETS[@]:-0}" -gt 0 ]; then note "  buckets   : ${BUCKETS[*]}"; else note "  buckets   : (all sealed buckets present off-box)"; fi
+note "  command   :"
+note "    $(printf_cmd)"
+note "  REACHABILITY: the restore runs INSIDE the pod — the off-box source above"
+note "    must be reachable from THAT pod (mount/key/creds). Each unreachable"
+note "    bucket is reported under 'failed', never silently skipped."
+
+if [ "$DO_RUN" -ne 1 ]; then
+  note ""
+  note "DRY-RUN (no --run): nothing was changed. Re-run with --run to execute the"
+  note "verified restore above."
+  exit 0
+fi
+
+note ""
+note "RUNNING verified off-box restore (server.py re-verifies tarball_sha256 +"
+note "chain linkage per bucket before unpacking; a mismatch is refused)..."
+out="$(kx "$PY" "$SERVER_PY" "${CLI_ARGS[@]}" 2>&1)"; rc=$?
+printf '%s\n' "$out"
+# server.py prints log lines then a trailing JSON report; surface the report's
+# restored[]/failed[] verdict and propagate a non-zero rc faithfully.
+verdict="$(printf '%s' "$out" | "$PY" -c 'import sys,json,re
+raw=sys.stdin.read()
+body="\n".join(l for l in raw.splitlines() if not re.match(r"^\[(DEBUG|INFO|WARN|ERROR)\] ",l))
+try: d=json.loads(body)
+except Exception: sys.exit(0)
+print("restored=%s failed=%s source=%s%s" % (
+  d.get("restored"), d.get("failed"), d.get("source"),
+  (" error="+str(d["error"])) if d.get("error") else ""))' 2>/dev/null)"
+[ -n "$verdict" ] && note "verdict: $verdict"
+if [ "$rc" -ne 0 ]; then
+  err "restore exited non-zero (rc=$rc) — see the report above; failed buckets were REFUSED, not partially applied"
+  exit "$rc"
+fi
+note "restore OK — run 'kubectl -n $RNS exec $pod -c $RX_CONTAINER -- $PY $SERVER_PY verify-store' to audit the reunited store."
+exit 0
