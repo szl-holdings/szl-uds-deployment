@@ -1,0 +1,230 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+# yaml-language-server: $schema=https://raw.githubusercontent.com/defenseunicorns/uds-cli/refs/heads/main/tasks.schema.json
+#
+# Co-boot proof — szl-uds-deployment
+# =============================================================================
+# `uds run prove-coboot` proves the TWO post-consolidation deployable organs —
+# a11oy (governed-AI decision substrate; the umbrella that rosie/amaru/sentra
+# were consolidated INTO, 2026-06) and killinchu (maritime + drone C2) — BOOT
+# TOGETHER on ONE clean k3d cluster from the PUBLISHED, COSIGN-SIGNED UDS bundle,
+# and that EACH serves an in-cluster HTTP 200 on its health endpoint.
+#
+# Relationship to tasks/prove-bundle.yaml:
+#   prove-bundle deploys exactly ONE member per throwaway cluster and DELIBERATELY
+#   does NOT claim "all five boot together" — the correct honest stance while
+#   there were five organs on a 2-vCPU box. After the 2026-06 consolidation there
+#   are exactly TWO deployable products, so the honest, demonstrable upgrade is:
+#   a11oy + killinchu CO-BOOT on one cluster. This task proves THAT — and nothing
+#   more (it does NOT resurrect an all-five co-residency claim).
+#
+# Steps:
+#   1. cosign verify the published bundle (keyless Fulcio/Rekor) — LOUD fail.
+#   2. uds pull the published OCI bundle to a local tarball (the customer fetch).
+#   3. Stand up the UDS substrate (init + core-base + identity) ONCE.
+#   4. uds deploy BOTH szl-a11oy AND szl-killinchu onto the SAME cluster.
+#   5. Assert BOTH Deployments reach Available. The chart readiness probe gates
+#      Available on a kubelet HTTP 200 to each healthPath (kubelet probes bypass
+#      Istio mTLS), so Available already implies a live 200 — then make the 200
+#      EXPLICIT: kubectl port-forward straight to each pod (loopback is excluded
+#      from Istio's iptables / ztunnel capture, so this reaches the app directly;
+#      a meshless ClusterIP curl WOULD be rejected by STRICT mTLS) and curl the
+#      healthPath, asserting HTTP 200.
+#
+# HONESTY: proves co-residency of the TWO consolidated deployables ONLY. Does NOT
+# claim the legacy 5-organ fleet co-boots. Energy SAMPLE. The signature gate is
+# the cosign verify in step 1 (keyless; no embedded uds key, hence
+# --skip-signature-validation on pull/deploy).
+
+variables:
+  - name: BUNDLE_REF
+    description: "Published bundle OCI ref WITHOUT scheme (registry/org/name:tag)"
+    default: "ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.3.0"
+  - name: CERT_IDENTITY
+    description: "EXACT cosign certificate-identity of the bundle's keyless signer (the publish workflow)."
+    default: "https://github.com/szl-holdings/szl-uds-deployment/.github/workflows/uds-bundle-publish.yml@refs/heads/main"
+  - name: CERT_IDENTITY_FALLBACK
+    description: "Second EXACT identity tried only if CERT_IDENTITY fails (e.g. a tag-ref published bundle)."
+    default: ""
+  - name: CERT_ISSUER
+    description: "cosign certificate-oidc-issuer (GitHub Actions OIDC)"
+    default: "https://token.actions.githubusercontent.com"
+  - name: PROVE_CLUSTER
+    description: "Name for the throwaway k3d cluster"
+    default: "uds-coboot"
+  - name: WAIT_TIMEOUT
+    description: "How long to wait for EACH member Deployment to reach Available"
+    default: "480s"
+  - name: DOMAIN
+    description: "Istio VirtualService base domain (matches the substrate + organ packages)"
+    default: "uds.dev"
+  - name: BUILD_TMPDIR
+    description: "Intermediate build dir (repo-local so it shares the large fs)"
+    default: ".uds-build-tmp"
+
+tasks:
+  - name: prove
+    description: "Prove a11oy + killinchu CO-BOOT on one cluster from the published, signed bundle"
+    actions:
+      - description: "Check required tools (cosign included — the signature gate)"
+        cmd: |
+          for tool in uds zarf k3d docker kubectl cosign curl; do
+            command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: $tool not installed."; exit 1; }
+          done
+          echo "All required tools found."
+
+      - description: "GATE: cosign verify the PUBLISHED bundle signature (keyless Fulcio/Rekor) — LOUD fail"
+        shell:
+          linux: bash
+        cmd: |
+          set -uo pipefail
+          echo "== cosign verify ${BUNDLE_REF} =="
+          echo "   identity (primary):  ${CERT_IDENTITY}"
+          [ -n "${CERT_IDENTITY_FALLBACK}" ] && echo "   identity (fallback): ${CERT_IDENTITY_FALLBACK}"
+          echo "   issuer:              ${CERT_ISSUER}"
+          verify_with() {
+            COSIGN_EXPERIMENTAL=1 cosign verify "${BUNDLE_REF}" \
+              --certificate-identity="$1" \
+              --certificate-oidc-issuer="${CERT_ISSUER}" >/tmp/cosign-verify.out 2>&1
+          }
+          if verify_with "${CERT_IDENTITY}"; then
+            echo "PASS: bundle signature verified against primary identity."
+            sed -n '1,12p' /tmp/cosign-verify.out || true
+          elif [ -n "${CERT_IDENTITY_FALLBACK}" ] && verify_with "${CERT_IDENTITY_FALLBACK}"; then
+            echo "PASS: bundle signature verified against fallback identity."
+            sed -n '1,12p' /tmp/cosign-verify.out || true
+          else
+            echo "FAIL: cosign could NOT verify ${BUNDLE_REF} against the pinned identity/issuer."
+            echo "---- cosign output ----"; cat /tmp/cosign-verify.out || true
+            exit 1
+          fi
+
+      - description: "Create a COLD throwaway k3d cluster for the co-boot proof"
+        cmd: |
+          CL="${PROVE_CLUSTER}"
+          if k3d cluster list 2>/dev/null | grep -q "${CL}"; then
+            echo "Cluster ${CL} already exists — deleting for a cold start."
+            k3d cluster delete "${CL}"
+          fi
+          k3d cluster create "${CL}" \
+            --k3s-arg "--disable=traefik@server:0" \
+            --wait
+          echo "Throwaway cluster ${CL} created."
+
+      - description: "Stand up the UDS substrate (init + core-base + identity) — UDS Operator + Package CRD + Keycloak"
+        cmd: |
+          mkdir -p "${BUILD_TMPDIR}"
+          uds create bundles/prove-organs \
+            --skip-signature-validation \
+            --confirm \
+            --no-progress \
+            --tmpdir "${BUILD_TMPDIR}"
+          BUNDLE=$(ls -t bundles/prove-organs/uds-bundle-szl-prove-substrate-*.tar.zst 2>/dev/null | head -1)
+          if [ -z "${BUNDLE}" ]; then
+            echo "ERROR: no uds-bundle-szl-prove-substrate-*.tar.zst found after build." >&2
+            exit 1
+          fi
+          echo "Deploying substrate bundle: ${BUNDLE}"
+          uds deploy "${BUNDLE}" \
+            --skip-signature-validation \
+            --set DOMAIN="${DOMAIN}" \
+            --set INSECURE_ADMIN_PASSWORD_GENERATION=true \
+            --confirm \
+            --no-progress
+
+      - description: "PULL the published OCI bundle to a local tarball (the customer fetch path)"
+        shell:
+          linux: bash
+        cmd: |
+          set -euo pipefail
+          mkdir -p "${BUILD_TMPDIR}"
+          echo "Pulling oci://${BUNDLE_REF} ..."
+          uds pull "oci://${BUNDLE_REF}" \
+            --skip-signature-validation \
+            -o "${BUILD_TMPDIR}" \
+            --no-progress
+          PULLED=$(ls -t "${BUILD_TMPDIR}"/uds-bundle-szl-uds-bundle-*.tar.zst 2>/dev/null | head -1)
+          if [ -z "${PULLED}" ]; then
+            echo "ERROR: no pulled uds-bundle-szl-uds-bundle-*.tar.zst found in ${BUILD_TMPDIR}." >&2
+            ls -lh "${BUILD_TMPDIR}" || true
+            exit 1
+          fi
+          echo "Pulled bundle tarball: ${PULLED}"
+
+      - description: "Deploy BOTH szl-a11oy AND szl-killinchu FROM THE PULLED PUBLISHED BUNDLE onto ONE cluster"
+        shell:
+          linux: bash
+        cmd: |
+          set -euo pipefail
+          PULLED=$(ls -t "${BUILD_TMPDIR}"/uds-bundle-szl-uds-bundle-*.tar.zst 2>/dev/null | head -1)
+          if [ -z "${PULLED}" ]; then
+            echo "ERROR: pulled bundle tarball missing (expected from the previous step)." >&2
+            exit 1
+          fi
+          echo "Co-deploying members szl-a11oy + szl-killinchu from ${PULLED}"
+          uds deploy "${PULLED}" \
+            --packages "szl-a11oy,szl-killinchu" \
+            --skip-signature-validation \
+            --set DOMAIN="${DOMAIN}" \
+            --confirm \
+            --no-progress
+
+      - description: "ASSERT: BOTH Deployments reached Available on the SAME cluster (loud fail + diagnostics)"
+        cmd: |
+          rc=0
+          for pair in "a11oy:szl-a11oy" "killinchu:szl-killinchu"; do
+            D="${pair%%:*}"; NS="${pair##*:}"
+            echo "== waiting for ${D} in ${NS} =="
+            if kubectl wait --for=condition=Available "deployment/${D}" -n "${NS}" --timeout="${WAIT_TIMEOUT}"; then
+              echo "PASS: ${D} Deployment is Available in ${NS}."
+            else
+              echo "FAIL: ${D} did NOT reach Available in ${NS}."
+              kubectl -n "${NS}" get deploy,pods -o wide || true
+              kubectl -n "${NS}" describe "deployment/${D}" || true
+              kubectl -n "${NS}" get events --sort-by=.lastTimestamp || true
+              kubectl -n "${NS}" logs "deployment/${D}" --all-containers --tail=120 || true
+              rc=1
+            fi
+          done
+          [ "${rc}" -eq 0 ] || exit 1
+          echo "CO-BOOT: both a11oy and killinchu are Available on ONE cluster."
+
+      - description: "ASSERT: EXPLICIT in-cluster HTTP 200 on each health endpoint (port-forward bypasses STRICT mTLS)"
+        shell:
+          linux: bash
+        cmd: |
+          set -uo pipefail
+          health_check() {
+            ns="$1"; deploy="$2"; port="$3"; path="$4"; lp="$5"
+            kubectl port-forward -n "${ns}" "deployment/${deploy}" "${lp}:${port}" >/tmp/pf-${deploy}.log 2>&1 &
+            pid=$!
+            code="000"
+            for i in $(seq 1 30); do
+              code=$(curl -s -o /tmp/health-${deploy}.out -w '%{http_code}' "http://127.0.0.1:${lp}${path}" 2>/dev/null || echo "000")
+              [ "${code}" = "200" ] && break
+              sleep 2
+            done
+            kill "${pid}" 2>/dev/null || true
+            wait "${pid}" 2>/dev/null || true
+            echo "${code}"
+          }
+          rc=0
+          A=$(health_check szl-a11oy a11oy 7860 /healthz 18760)
+          echo "a11oy     /healthz                 -> HTTP ${A}"
+          [ "${A}" = "200" ] || { echo "FAIL: a11oy in-cluster health != 200"; head -5 /tmp/health-a11oy.out 2>/dev/null || true; rc=1; }
+          K=$(health_check szl-killinchu killinchu 7860 /api/killinchu/healthz 18761)
+          echo "killinchu /api/killinchu/healthz   -> HTTP ${K}"
+          [ "${K}" = "200" ] || { echo "FAIL: killinchu in-cluster health != 200"; head -5 /tmp/health-killinchu.out 2>/dev/null || true; rc=1; }
+          [ "${rc}" -eq 0 ] || exit 1
+          echo "IN-CLUSTER HEALTH 200: both a11oy and killinchu serve HTTP 200 while CO-RESIDENT on one cluster."
+
+      - description: "Proof summary"
+        cmd: |
+          echo "----"
+          echo "PROVEN: the TWO post-consolidation deployable organs — a11oy (umbrella) +"
+          echo "        killinchu — CO-BOOT on ONE clean UDS cluster from the PUBLISHED,"
+          echo "        cosign-verified bundle oci://${BUNDLE_REF} (verify -> pull -> deploy"
+          echo "        BOTH -> both Available -> both serve in-cluster HTTP 200)."
+          echo "HONEST SCOPE: co-residency of the TWO consolidated deployables ONLY; this does"
+          echo "        NOT claim the legacy 5-organ fleet co-boots. Energy SAMPLE."
+          echo "Cluster left intact for inspection: ${PROVE_CLUSTER} (delete: k3d cluster delete ${PROVE_CLUSTER})"

@@ -1,0 +1,128 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# Prove Co-Boot — szl-uds-deployment
+# =============================================================================
+# Proof that the TWO post-consolidation deployable organs — a11oy (governed-AI
+# decision substrate; the umbrella rosie/amaru/sentra were consolidated INTO) and
+# killinchu (maritime + drone C2) — BOOT TOGETHER on ONE clean k3d cluster from
+# the PUBLISHED, COSIGN-SIGNED UDS bundle, and each serves an in-cluster HTTP 200.
+#
+#   1. cosign verify oci://ghcr.io/szl-holdings/szl-uds-bundle:<tag> (keyless
+#      Fulcio/Rekor) — the supply-chain gate a customer runs before deploying.
+#   2. uds pull the published bundle to a local tarball (the customer fetch).
+#   3. Stand up the UDS substrate (init + core-base + identity) ONCE.
+#   4. uds deploy BOTH szl-a11oy AND szl-killinchu onto the SAME cluster.
+#   5. Assert BOTH Deployments Available + each serves in-cluster HTTP 200
+#      (port-forward straight to the pod, bypassing Istio STRICT mTLS).
+#
+# This is the post-consolidation upgrade of prove-bundle-install (which proves
+# ONE member per throwaway cluster and deliberately does NOT claim co-residency).
+# After the 2026-06 consolidation there are exactly TWO deployable products, so
+# the honest, demonstrable claim is now: a11oy + killinchu CO-BOOT on one cluster.
+# It does NOT resurrect an all-five co-residency claim. Implemented in
+# tasks/prove-coboot.yaml; aliased as `prove-coboot` in tasks.yaml.
+#
+# Action SHA pins + uds/zarf/cosign versions mirror prove-bundle-install.yml.
+
+name: Prove Co-Boot
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_tag:
+        description: "Published bundle OCI tag to verify + co-boot"
+        type: string
+        default: uds-v0.3.0
+      cert_identity:
+        description: "EXACT cosign certificate-identity of the bundle signer (publish workflow). Leave blank for the @refs/heads/main default."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  ZARF_VERSION: "v0.77.0"
+  UDS_CLI_VERSION: "v0.32.0"
+  COSIGN_VERSION: "v2.4.3"
+  REGISTRY: "ghcr.io"
+  ORG: "szl-holdings"
+  BUNDLE_NAME: "szl-uds-bundle"
+
+jobs:
+  coboot:
+    name: Prove a11oy + killinchu co-boot (published bundle)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install UDS CLI
+        uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1 (v1.0.1)
+        with:
+          version: ${{ env.UDS_CLI_VERSION }}
+
+      - name: Install Zarf
+        run: |
+          curl -sL "https://github.com/zarf-dev/zarf/releases/download/${ZARF_VERSION}/zarf_${ZARF_VERSION}_Linux_amd64" \
+            -o /usr/local/bin/zarf && chmod +x /usr/local/bin/zarf
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+      - name: Install kubectl
+        run: |
+          curl -sLO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+
+      - name: Free runner disk (two organ images co-resident need headroom)
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - name: Log in to GHCR (anonymous pull works for the public bundle; auth raises rate limits)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Resolve bundle ref
+        id: b
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.bundle_tag }}"; TAG="${TAG:-uds-v0.3.0}"
+          echo "bundle_ref=${REGISTRY}/${ORG}/${BUNDLE_NAME}:${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved bundle_ref=${REGISTRY}/${ORG}/${BUNDLE_NAME}:${TAG}"
+
+      - name: Prove a11oy + killinchu CO-BOOT from the published, signed bundle
+        run: |
+          EXTRA=""
+          if [ -n "${{ inputs.cert_identity }}" ]; then
+            EXTRA="--set CERT_IDENTITY=${{ inputs.cert_identity }}"
+          fi
+          uds run prove-coboot \
+            --set BUNDLE_REF=${{ steps.b.outputs.bundle_ref }} \
+            --set PROVE_CLUSTER=uds-coboot \
+            ${EXTRA}
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          for NS in szl-a11oy szl-killinchu; do
+            echo "==== ${NS} ===="
+            kubectl -n "${NS}" get deploy,pods,svc -o wide || true
+            kubectl -n "${NS}" describe deploy || true
+            kubectl -n "${NS}" get events --sort-by=.lastTimestamp || true
+            kubectl -n "${NS}" logs deploy --all-containers --tail=120 || true
+          done
+          echo "==== UDS operator (pepr) logs ===="
+          kubectl -n pepr-system logs deploy/pepr-uds-core-watcher --tail=120 2>/dev/null || true
+          df -h / || true
+
+      - name: Teardown throwaway cluster
+        if: always()
+        run: k3d cluster delete uds-coboot || true

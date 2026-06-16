@@ -102,6 +102,7 @@ includes:
   - smoke: ./tasks/smoke.yaml
   - prove-organs-impl: ./tasks/prove-organs.yaml
   - prove-bundle-impl: ./tasks/prove-bundle.yaml
+  - prove-coboot-impl: ./tasks/prove-coboot.yaml
 
 tasks:
   # ── Cold smoke entry point ────────────────────────────────────────────────
@@ -138,6 +139,17 @@ tasks:
     description: "Prove the PUBLISHED bundle installs (--set ORGAN=...): cosign-verify, pull, deploy ONE member on a clean cluster, reach Available"
     actions:
       - task: prove-bundle-impl:prove
+
+  # `uds run prove-coboot`: prove the TWO post-consolidation deployables
+  # (a11oy + killinchu) CO-BOOT on ONE cluster from the published, signed bundle
+  # (verify -> pull -> deploy BOTH -> both Available -> both serve in-cluster
+  # HTTP 200). The honest post-consolidation upgrade of prove-bundle (one member
+  # per cluster); does NOT claim the legacy 5-organ fleet co-boots. Implemented in
+  # tasks/prove-coboot.yaml; CI job .github/workflows/prove-coboot.yml.
+  - name: prove-coboot
+    description: "Prove a11oy + killinchu CO-BOOT on one cluster from the published, signed bundle (verify -> pull -> deploy both -> Available + in-cluster HTTP 200)"
+    actions:
+      - task: prove-coboot-impl:prove
 
   # ── Primary entry point ───────────────────────────────────────────────────
   - name: start
