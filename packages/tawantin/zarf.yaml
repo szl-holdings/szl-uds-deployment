@@ -1,0 +1,117 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# zarf.yaml — szl-tawantin (UDS-bundle-member-style package)
+# =============================================================================
+# Packages the TAWANTIN governed-compute-fabric overview surface as a self-
+# contained, manifest-based Zarf package — the same shape as packages/energy-
+# harvest + packages/sentra: a namespace + the UDS Operator Package CR (Istio
+# ambient mesh / NetworkPolicy / ServiceMonitor) plus the workload Deployment +
+# Service. TAWANTIN ("the four united regions" — Tawantinsuyu) is the unifying
+# fabric member: it composes the a11oy mesh router, the energy signal, and the
+# Khipu signed-receipt chain into one airgap-deployable, cosign-signable story.
+#
+# IMAGE GATING (energy-harvest / FA-001 idiom): ghcr.io/szl-holdings/tawantin is
+# NOT yet published. So the `images:` bake list below is intentionally COMMENTED
+# OUT — `zarf package create` would otherwise try to pull a non-existent image
+# and fail. Once the overview image is built, pushed and cosign keyless-signed on
+# GHCR:
+#   1. uncomment the images: entry and DIGEST-PIN it to the linux/amd64 child,
+#   2. digest-pin the same ref in manifests/deployment.yaml,
+#   3. only then add this package to a UDSBundle for a LIVE (vs validated) deploy.
+# Until then this package is build-valid (manifests internally consistent, the
+# deploy-entry consistency class passes) but deliberately not live-deployed.
+# Honest BLOCKED beats fake green: we do NOT pin a fabricated digest.
+#
+# The two LIVE, digest-pinned members the bundle co-composes (a11oy organ +
+# energy signal) carry the real workload; this member carries the unifying
+# fabric-overview surface + the governed UDS Package CR.
+#
+# DOCTRINE v11: honest labels; locked = EXACTLY 8 {F1,F4,F7,F11,F12,F18,F19,F22}
+# @ kernel c7c0ba17; Lambda = Conjecture 1; Khipu BFT = Conjecture 2; trust never
+# 100% (tamper-EVIDENT); effectors SIMULATED human-on-loop; NEVER fused/combined
+# VRAM (nodes scale horizontally); orbital = ROADMAP; SLSA L1 honest / L2
+# attested (organ images) / L3 roadmap; no bare FedRAMP/IronBank/CMMC/ATO.
+#
+# Build (once the image exists; single-arch so the @sha256 pin is create-safe):
+#   uds zarf package create packages/tawantin \
+#     --set VERSION=0.1.0 --set DOMAIN=uds.dev -a amd64 --confirm
+#
+# References:
+#   Zarf schema:  https://docs.zarf.dev/ref/zarf-package/
+#   UDS Operator: https://uds.defenseunicorns.com/reference/uds-core/overview/
+
+# yaml-language-server: $schema=https://raw.githubusercontent.com/zarf-dev/zarf/main/zarf.schema.json
+kind: ZarfPackageConfig
+
+metadata:
+  name: szl-tawantin
+  version: "###ZARF_PKG_TMPL_VERSION###"
+  description: >-
+    SZL TAWANTIN — the governed distributed compute fabric, unified. Composes the
+    a11oy sovereign GPU-mesh router, the energy-per-successful-goal signal, and
+    the Khipu signed-receipt chain into one airgap-deployable UDS bundle member.
+    Deploys on UDS Core (AGPL-3.0, defenseunicorns/uds-core). Not affiliated with
+    Defense Unicorns. Doctrine v11: locked = 8 formulas @ kernel c7c0ba17,
+    Lambda = Conjecture 1, Khipu BFT = Conjecture 2, trust never 100% (tamper-
+    evident), effectors SIMULATED, NEVER fused VRAM (horizontal scale only),
+    orbital = ROADMAP, SLSA L1 honest / L2 attested / L3 roadmap. Image GATED
+    until published + cosign-signed.
+  url: "https://szlholdings.com"
+  authors: "SZL Holdings <eng@szlholdings.com>"
+  documentation: "https://github.com/szl-holdings/szl-uds-deployment"
+
+variables:
+  - name: VERSION
+    description: "Image tag / package version (injected from the release tag, 'v'/'uds-' stripped)"
+    default: "0.1.0"
+  - name: DOMAIN
+    description: "Cluster domain — must match UDS Core DOMAIN"
+    default: "uds.dev"
+
+components:
+  # 1. Namespace + UDS Operator Package CR (Istio ambient / NetworkPolicy /
+  #    DSSE-receipt + a11oy-router egress / ServiceMonitor).
+  - name: szl-tawantin-operator
+    required: true
+    description: >-
+      Create the szl-tawantin namespace and apply the UDS Operator Package CR
+      that generates the ambient mesh config, the default-deny NetworkPolicies
+      (Prometheus scrape, DSSE-receipt egress, a11oy-router egress, OTel,
+      KubeAPI), the tenant-gateway expose, and the ServiceMonitor.
+    manifests:
+      - name: szl-tawantin-namespace
+        namespace: szl-tawantin
+        files:
+          - manifests/namespace.yaml
+      - name: szl-tawantin-uds-package
+        namespace: szl-tawantin
+        files:
+          - uds-package.yaml
+
+  # 2. The tawantin-fabric overview workload (Deployment + Service).
+  - name: szl-tawantin-workload
+    required: true
+    description: >-
+      Deploy the tawantin-fabric Deployment + Service (governed-compute-fabric
+      overview surface). The image is GATED until published (see header) —
+      uncomment + digest-pin images: before any LIVE deploy.
+    # images:
+    #   # Uncomment + DIGEST-PIN once published + cosign keyless-signed on GHCR.
+    #   - ghcr.io/szl-holdings/tawantin:uds-v0.1.0@sha256:<linux-amd64-child-digest>
+    manifests:
+      - name: szl-tawantin-workload
+        namespace: szl-tawantin
+        files:
+          - manifests/deployment.yaml
+    actions:
+      onDeploy:
+        after:
+          - description: "Wait for tawantin-fabric Deployment to be Available"
+            maxTotalSeconds: 180
+            wait:
+              cluster:
+                kind: Deployment
+                name: tawantin-fabric
+                namespace: szl-tawantin
+                condition: Available

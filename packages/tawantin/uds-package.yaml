@@ -1,0 +1,142 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# UDS Package CR — tawantin (governed-compute-fabric overview surface)
+# =============================================================================
+# Declares the governed surface for the tawantin-fabric workload on UDS Core:
+#   - network.expose  -> Istio VirtualService (tenant gateway) + uptime checks
+#   - network.allow   -> UDS-operated NetworkPolicy on top of default-deny
+#                        (Prometheus scrape, DSSE receipt egress, OTel, KubeAPI)
+#   - monitor         -> Prometheus ServiceMonitor
+#
+# This manifest TARGETS the UDS Operator (defenseunicorns/uds-core, AGPL-3.0).
+# We write CRs that conform to its published uds.dev/v1alpha1 API; we do NOT copy
+# uds-core source code. Original SZL Holdings work (Apache-2.0). Not affiliated
+# with Defense Unicorns.
+#
+# DOCTRINE v11: honest labels (LIVE only on a real HTTP 200); this overview
+# surface NEVER claims fused/combined VRAM (nodes scale horizontally — memory
+# does NOT merge across the network); effectors SIMULATED human-on-loop; trust
+# never 100% (tamper-EVIDENT, not tamper-proof); orbital framing = ROADMAP;
+# locked = EXACTLY 8 {F1,F4,F7,F11,F12,F18,F19,F22} @ kernel c7c0ba17; Lambda =
+# Conjecture 1; Khipu BFT = Conjecture 2; SLSA L1 honest / L2 attested (organ
+# images) / L3 roadmap. No bare FedRAMP / IronBank / CMMC / ATO claims.
+#
+# UDS Package CR (v1alpha1) reference:
+#   https://uds.defenseunicorns.com/reference/configuration/custom-resources/packages-v1alpha1-cr/
+#
+# Validate (no cluster needed): yamllint + python yaml.safe_load.
+# Full reconcile happens at `uds deploy` time against a live UDS Core cluster.
+---
+apiVersion: uds.dev/v1alpha1
+kind: Package
+metadata:
+  name: tawantin
+  namespace: szl-tawantin
+  labels:
+    app.kubernetes.io/name: tawantin
+    szl.io/component: uds-package
+    szl.io/profile: fabric-overview
+  annotations:
+    # HONEST: organ-image SLSA Build L2; bundle-level attestation NOT earned
+    # (the cosign signature is the bundle provenance). L3 = roadmap.
+    szl.io/slsa-level: "L1-honest/L2-organ-image/L3-roadmap"
+    szl.io/doctrine-version: "v11"
+    szl.io/formula-lock: "Conjecture-1"
+    szl.io/locked-formulas: "8 {F1,F4,F7,F11,F12,F18,F19,F22}"
+    szl.io/kernel-commit: "c7c0ba17"
+    szl.io/khipu-bft: "Conjecture-2"
+    szl.io/orbital: "ROADMAP (terrestrial mesh is the proven core; no satellites run)"
+    szl.io/vram: "horizontal-scale-only (memory does NOT merge across nodes)"
+    szl.io/effectors: "SIMULATED human-on-loop"
+    szl.io/made-for-uds: "true (not affiliated with Defense Unicorns)"
+spec:
+  # ── SERVICE MESH ───────────────────────────────────────────────────────────
+  # ambient = UDS Core 1.x default (sidecar-less).
+  network:
+    serviceMesh:
+      mode: ambient
+
+    # ── EXPOSE — Istio VirtualService entry (+ uptime checks) ────────────────
+    expose:
+      - service: tawantin-fabric
+        selector:
+          app.kubernetes.io/name: tawantin
+        gateway: tenant
+        host: tawantin
+        port: 8080
+        targetPort: 8080
+        description: TAWANTIN governed-compute-fabric overview surface
+        uptime:
+          checks:
+            paths:
+              - /healthz
+              - /readyz
+
+    # ── NETWORK ALLOW — NetworkPolicies on top of default-deny ───────────────
+    allow:
+      # Intra-namespace traffic
+      - direction: Ingress
+        remoteGenerated: IntraNamespace
+        description: Intra-namespace pod communication
+
+      - direction: Egress
+        remoteGenerated: IntraNamespace
+        description: Intra-namespace pod communication
+
+      # Prometheus scrape ingress
+      - direction: Ingress
+        remoteNamespace: monitoring
+        remoteSelector:
+          app.kubernetes.io/name: prometheus
+        selector:
+          app.kubernetes.io/name: tawantin
+        port: 8080
+        description: Prometheus metrics scrape
+
+      # DSSE receipt service egress (tawantin overview -> szl-receipts)
+      - direction: Egress
+        remoteNamespace: szl-receipts
+        remoteSelector:
+          app.kubernetes.io/name: szl-receipts
+        selector:
+          app.kubernetes.io/name: tawantin
+        port: 8443
+        description: SZL DSSE receipt verification service (Khipu signed-receipt chain)
+
+      # a11oy governed router egress (fabric composition — read-only status)
+      - direction: Egress
+        remoteNamespace: szl-a11oy
+        remoteSelector:
+          app.kubernetes.io/name: a11oy
+        selector:
+          app.kubernetes.io/name: tawantin
+        port: 7860
+        description: a11oy governed router status (fabric overview, read-only)
+
+      # OTel Collector egress (gRPC + HTTP OTLP)
+      - direction: Egress
+        remoteNamespace: monitoring
+        remoteSelector:
+          app.kubernetes.io/name: opentelemetry-collector
+        selector:
+          app.kubernetes.io/name: tawantin
+        ports:
+          - 4317
+          - 4318
+        description: OpenTelemetry traces + metrics export
+
+      # KubeAPI access for operator self-inspection
+      - direction: Egress
+        remoteGenerated: KubeAPI
+        description: Kubernetes API access for self-inspection
+
+  # ── MONITOR — Prometheus ServiceMonitor ─────────────────────────────────────
+  monitor:
+    - selector:
+        app.kubernetes.io/name: tawantin
+      portName: http
+      targetPort: 8080
+      path: /metrics
+      kind: ServiceMonitor
+      description: TAWANTIN fabric-overview metrics

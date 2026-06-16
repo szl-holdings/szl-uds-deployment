@@ -1,0 +1,98 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# tawantin-fabric — the governed-compute-fabric overview surface.
+# ============================================================================
+# This Deployment is the thin "fabric" workload of the TAWANTIN bundle: a static
+# overview surface that composes the governed-compute-fabric story (a11oy mesh
+# router + energy signal + Khipu signed-receipt chain) into one airgap-deployable
+# member. It serves an honest, doctrine-labelled status page only — it does NOT
+# itself route inference, merge VRAM, or run effectors. The live work is done by
+# the a11oy organ + energy-harvest members composed alongside it in the bundle.
+#
+# IMAGE GATING (energy-harvest / FA-001 idiom): ghcr.io/szl-holdings/tawantin is
+# NOT yet published, so the image below is a PLACEHOLDER and the package's
+# `images:` bake list (packages/tawantin/zarf.yaml) is intentionally COMMENTED
+# OUT — `zarf package create` would otherwise try to pull a non-existent image
+# and fail. Honest BLOCKED beats fake green: we do NOT pin a fabricated digest.
+# Go-live: build + push + cosign keyless-sign the image, resolve the linux/amd64
+# child digest, then DIGEST-PIN it in BOTH this file and zarf.yaml's images: list.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tawantin-fabric
+  namespace: szl-tawantin
+  labels:
+    app: tawantin-fabric
+    app.kubernetes.io/name: tawantin
+    szl.io/component: uds-workload
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tawantin-fabric
+  template:
+    metadata:
+      labels:
+        app: tawantin-fabric
+        app.kubernetes.io/name: tawantin
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: tawantin-fabric
+          # PLACEHOLDER — image GATED until published + cosign keyless-signed on
+          # GHCR. Zarf rewrites this to the in-cluster registry at deploy time.
+          # DIGEST-PIN (@sha256:...) the linux/amd64 child before any live deploy.
+          image: ghcr.io/szl-holdings/tawantin:uds-v0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          env:
+            # Static overview server listens on $PORT (default 8080).
+            - name: PORT
+              value: "8080"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tawantin-fabric
+  namespace: szl-tawantin
+  labels:
+    app: tawantin-fabric
+    app.kubernetes.io/name: tawantin
+spec:
+  selector:
+    app: tawantin-fabric
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP

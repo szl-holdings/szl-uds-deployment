@@ -1,0 +1,128 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# UDS Bundle — TAWANTIN (the governed distributed compute fabric, unified)
+# =============================================================================
+# TAWANTIN (Quechua "tawantin" — the four united regions of Tawantinsuyu) is the
+# UNIFIED FABRIC bundle: it composes the governed-compute-fabric story into one
+# airgap-deployable, cosign-signable OCI bundle so the platform deploys with ONE
+# command:
+#     uds deploy oci://ghcr.io/szl-holdings/tawantin-bundle:0.1.0 --confirm
+#
+# The three surfaces of the fabric, composed as separate Zarf-package members:
+#   1. a11oy        — the live sovereign GPU-mesh governed router (the compute
+#                     fabric: RTX 5050 + OMEN RTX 4060 Ti + chaski + cloud-NIM
+#                     failover under one governed OpenAI-compatible router).
+#   2. energy       — the energy-per-successful-goal signal (joules SAMPLE here;
+#                     MEASURED on-box via NVML is the a11oy organ's job).
+#   3. tawantin     — the fabric-overview surface + governed UDS Package CR that
+#                     unifies the story (a11oy mesh + energy + Khipu receipts).
+#
+# The UDSBundle kind conforms to the uds-cli API (AGPL-3.0,
+# github.com/defenseunicorns/uds-cli). This YAML is original SZL Holdings work;
+# we use the uds-cli BINARY and do not embed its source. Not affiliated with
+# Defense Unicorns.
+#
+# ── HONEST STATUS (Doctrine v11 §10 — "no 'ready' without HTTP 200") ─────────
+#   - a11oy MEMBER: LIVE. Resolved via path: build from packages/a11oy, which
+#     wraps the live, cosign-signed, digest-pinned organ image (verified HTTP
+#     200, 2026-06-15):
+#       ghcr.io/szl-holdings/a11oy:uds-v0.3.0
+#         @sha256:715e0af70307115cfa3238da1a8f02e4cd872318b5f83582b7af1daca0a90e10
+#     The uds-v0.3.0 tag is MUTABLE (CI rebuilds it); re-resolve the digest
+#     immediately before an air-gap freeze — do not trust this literal if CI has
+#     rebuilt since. a11oy is the ONE flavor-gated organ (only.flavor:
+#     upstream|unicorn), so its member is pre-built `--flavor upstream`; zarf
+#     names the tarball ...-0.1.0-upstream.tar.zst, so its ref carries the
+#     -upstream suffix.
+#   - energy MEMBER: VALIDATED, GATED-on-IMAGE. packages/energy-harvest is build-
+#     valid but ghcr.io/szl-holdings/energy-harvest is NOT yet published (the
+#     images: list in its zarf.yaml is correctly commented out). `uds create`
+#     bakes its workload image only after that entry is uncommented + digest-
+#     pinned. Honest BLOCKED beats fake green.
+#   - tawantin MEMBER: VALIDATED, GATED-on-IMAGE. packages/tawantin is build-valid
+#     (namespace + UDS Package CR + workload manifests internally consistent), but
+#     ghcr.io/szl-holdings/tawantin is NOT yet published (its images: list is
+#     correctly commented out). Same gate as energy.
+#
+#   CONSEQUENCE: this bundle is SCHEMA-VALID and every member is build-valid. The
+#   a11oy member is live + digest-pinned; the energy + tawantin members are
+#   image-gated (VALIDATED, not yet live-deployed). This bundle does NOT claim all
+#   three members co-boot on one cluster, and the published OCI artifact is NOT
+#   cosign-signed (founder FA-001 step — see ./README.md). We do NOT pin a
+#   fabricated digest for the gated members.
+#
+# ── GO-LIVE / SIGN CHECKLIST (founder / build dev) — see ./README.md ─────────
+#   The exact `uds create` / `uds publish` / founder `cosign sign` commands are
+#   documented in ./README.md (mirrors the cosign founder-handoff style). This
+#   bundle is staged + ready; signing is the one remaining founder-held step
+#   (FA-001 key — NEVER committed/faked).
+#
+# DOCTRINE v11: honest labels (LIVE only on a real HTTP 200); locked = EXACTLY 8
+# {F1,F4,F7,F11,F12,F18,F19,F22} @ kernel c7c0ba17; Lambda = Conjecture 1; Khipu
+# BFT = Conjecture 2; trust never 100% (tamper-EVIDENT, not tamper-proof);
+# effectors SIMULATED human-on-loop; NEVER fused/combined VRAM (nodes scale
+# horizontally — memory does NOT merge across the network); orbital = ROADMAP
+# (terrestrial governed mesh is the proven core; no satellites run); SLSA L1
+# honest / L2 attested (organ images) / L3 roadmap. No bare FedRAMP / IronBank /
+# CMMC / ATO claims. Never commit a key.
+#
+# References:
+#   UDS Bundle schema:  https://github.com/defenseunicorns/uds-cli
+#   UDS Core releases:  https://github.com/defenseunicorns/uds-core/releases
+#   Sibling bundles:    ../szl-warhacker/uds-bundle.yaml · ../a11oy/uds-bundle.yaml · ../energy/uds-bundle.yaml
+kind: UDSBundle
+metadata:
+  name: tawantin
+  description: >-
+    SZL TAWANTIN — the governed distributed compute fabric, unified. Composes the
+    a11oy sovereign GPU-mesh governed router (LIVE, digest-pinned), the energy-
+    per-successful-goal signal, and the tawantin fabric-overview surface + Khipu
+    signed-receipt chain into one airgap-deployable UDS bundle. Deploys on UDS
+    Core (AGPL-3.0, defenseunicorns/uds-core). Not affiliated with Defense
+    Unicorns. Doctrine v11: locked = 8 formulas @ kernel c7c0ba17, Lambda =
+    Conjecture 1, Khipu BFT = Conjecture 2, trust never 100% (tamper-evident),
+    effectors SIMULATED, NEVER fused VRAM (horizontal scale only), orbital =
+    ROADMAP, SLSA L1 honest / L2 attested / L3 roadmap. Bundle artifact NOT yet
+    cosign-signed (founder FA-001 step).
+  version: "0.1.0"
+  architecture: amd64
+  authors: "SZL Holdings <eng@szlholdings.com>"
+  url: "https://github.com/szl-holdings/szl-uds-deployment"
+
+packages:
+  # ── Member 1: a11oy — the live sovereign GPU-mesh governed router ───────────
+  # LIVE. Resolved via path: build so `uds create` composes the member straight
+  # from source and picks up the fresh, digest-pinned organ image automatically.
+  # a11oy is flavor-gated (only.flavor: upstream|unicorn), so pre-build it
+  # `--flavor upstream`; zarf names the tarball ...-0.1.0-upstream.tar.zst, so the
+  # ref carries the -upstream suffix (mirrors bundles/szl-warhacker member ref).
+  - name: szl-a11oy
+    path: ../../packages/a11oy
+    ref: 0.1.0-upstream
+    overrides:
+      a11oy:
+        a11oy:
+          variables:
+            - name: DOMAIN
+              description: "Istio VirtualService base domain (must match UDS Core DOMAIN)"
+              path: domain
+
+  # ── Member 2: energy — the energy-per-successful-goal signal ────────────────
+  # VALIDATED, GATED-on-IMAGE. Resolved via path: build. The workload image is
+  # GATED (packages/energy-harvest/zarf.yaml images: list stays commented until
+  # the image is published + digest-pinned), so `uds create` is itself gated on
+  # this member until then. Honest BLOCKED beats fake green.
+  - name: szl-energy-harvest
+    path: ../../packages/energy-harvest
+    ref: "0.1.0"
+
+  # ── Member 3: tawantin — the unifying fabric-overview surface ───────────────
+  # VALIDATED, GATED-on-IMAGE. Resolved via path: build. Carries the governed UDS
+  # Package CR that unifies the fabric story (a11oy mesh + energy + Khipu
+  # signed-receipt chain). The workload image is GATED (packages/tawantin/zarf.yaml
+  # images: list stays commented until the image is published + digest-pinned),
+  # so `uds create` is gated on this member until then.
+  - name: szl-tawantin
+    path: ../../packages/tawantin
+    ref: "0.1.0"
