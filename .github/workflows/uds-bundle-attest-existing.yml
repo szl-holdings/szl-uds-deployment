@@ -1,0 +1,219 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# uds-bundle-attest-existing.yml
+#
+# Attach a keyless SLSA-provenance attestation to an ALREADY-PUBLISHED UDS bundle
+# OCI artifact WITHOUT rebuilding/re-publishing it. The live demo bundle
+# (ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.3.0) was published by an earlier run
+# of uds-bundle-publish.yml that attached an SBOM attestation but NOT a provenance
+# attestation. Re-publishing would re-pull the flaky organ images; this job
+# touches only the attestation layer, so it is low-risk.
+#
+# HONESTY (doctrine v11): the provenance produced here is POST-PUBLISH provenance
+# — it records WHO attested and WHEN and CITES the original publish run/commit it
+# was given, but it is NOT build-time provenance (this job did not build the
+# bundle). buildType + the `postPublish: true` field make that explicit; it must
+# never be presented as equivalent to in-line build provenance. Signing is keyless
+# Sigstore via GitHub OIDC only — no private key. GUARDS, all LOUD-fail:
+#   1. a required `expected_digest` input pins the immutable artifact (name@sha256).
+#   2. the tag is resolved to its current digest and MUST equal expected_digest,
+#      so the tag label on the provenance can never describe a different artifact.
+#   3. before attesting, `cosign verify` the EXISTING publish signature on that
+#      digest — proving it really is the published+signed bundle.
+# The attestation is self-verified (with retry for Rekor consistency) before exit.
+#
+# References:
+#   cosign attest:  https://docs.sigstore.dev/cosign/signing/other_types/
+#   SLSA prov v0.2: https://slsa.dev/provenance/v0.2
+
+name: UDS Bundle Attest (existing)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Published bundle OCI tag being attested (resolved to a digest and checked against expected_digest)'
+        required: true
+        default: 'uds-v0.3.0'
+      expected_digest:
+        description: 'Bundle manifest digest to attest (sha256:...) — authoritative, must match the tag'
+        required: true
+      publish_identity:
+        description: 'Exact keyless cert-identity that SIGNED the bundle (the publish workflow ref)'
+        required: true
+        default: 'https://github.com/szl-holdings/szl-uds-deployment/.github/workflows/uds-bundle-publish.yml@refs/heads/main'
+      original_publish_run:
+        description: 'URL or run-id of the original uds-bundle-publish run (provenance citation)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  COSIGN_VERSION: "v2.4.3"
+  REGISTRY: "ghcr.io"
+  ORG: "szl-holdings"
+  BUNDLE_NAME: "szl-uds-bundle"
+
+jobs:
+  attest-existing:
+    name: Attest existing bundle (provenance, keyless)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write    # keyless cosign OIDC token exchange
+      packages: write    # push the attestation to ghcr.io
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+      - name: Verify cosign
+        run: cosign version
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          # The szl-uds-bundle GHCR package is repo-linked to szl-holdings/uds-bundles,
+          # so the built-in GITHUB_TOKEN cannot write its attestation layer. Use the
+          # org-owner PAT (same as the publish workflow) which has write:packages.
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GHCR_PUBLISH_TOKEN }}
+
+      # ── Resolve tag->digest, assert == expected, GATE on the publish signature ─
+      - name: Resolve + verify pinned bundle digest
+        id: resolve
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+          DIGEST: ${{ github.event.inputs.expected_digest }}
+          PUBLISH_IDENTITY: ${{ github.event.inputs.publish_identity }}
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          set -euo pipefail
+          case "${DIGEST}" in
+            sha256:*) : ;;
+            *) echo "::error title=bad-digest::expected_digest must be sha256:... (got ${DIGEST})"; exit 1 ;;
+          esac
+          TAG_REF="${REGISTRY}/${ORG}/${BUNDLE_NAME}:${TAG}"
+          # cosign triangulate --type digest resolves a tag to its immutable
+          # manifest ref (no crane/skopeo needed). Assert it equals expected.
+          RESOLVED_REF="$(cosign triangulate --type digest "${TAG_REF}")"
+          RESOLVED_DIGEST="${RESOLVED_REF##*@}"
+          echo "tag ${TAG_REF} -> ${RESOLVED_DIGEST}"
+          if [ "${RESOLVED_DIGEST}" != "${DIGEST}" ]; then
+            echo "::error title=tag-digest-mismatch::tag resolves to ${RESOLVED_DIGEST} but expected ${DIGEST} — refusing to attest"
+            exit 1
+          fi
+          DIGEST_REF="${REGISTRY}/${ORG}/${BUNDLE_NAME}@${DIGEST}"
+          CERT_ISSUER="https://token.actions.githubusercontent.com"
+          echo "GATE: cosign verify the existing publish signature on ${DIGEST_REF}"
+          cosign verify \
+            --certificate-identity "${PUBLISH_IDENTITY}" \
+            --certificate-oidc-issuer "${CERT_ISSUER}" \
+            "${DIGEST_REF}" > /dev/null
+          echo "Publish signature verified — digest is the real signed bundle."
+          echo "digest_ref=${DIGEST_REF}" >> "$GITHUB_OUTPUT"
+
+      # ── Build the post-publish SLSA provenance predicate (jq, no heredoc) ────
+      - name: Build provenance predicate
+        id: prov
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+          DIGEST: ${{ github.event.inputs.expected_digest }}
+          DIGEST_REF: ${{ steps.resolve.outputs.digest_ref }}
+          ORIG_RUN: ${{ github.event.inputs.original_publish_run }}
+        run: |
+          set -euo pipefail
+          PROV="provenance-${BUNDLE_NAME}-${TAG}.slsa.json"
+          BUILDER_ID="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/uds-bundle-attest-existing.yml@${GITHUB_REF}"
+          jq -n \
+            --arg builder "${BUILDER_ID}" \
+            --arg repo "${GITHUB_REPOSITORY}" \
+            --arg ref "${GITHUB_REF}" \
+            --arg sha "${GITHUB_SHA}" \
+            --arg tag "${TAG}" \
+            --arg digest "${DIGEST}" \
+            --arg digestref "${DIGEST_REF}" \
+            --arg runid "${GITHUB_RUN_ID}" \
+            --arg origrun "${ORIG_RUN}" \
+            '{
+              buildType: "https://github.com/szl-holdings/szl-uds-deployment/uds-bundle-attest-existing",
+              builder: { id: $builder },
+              invocation: {
+                configSource: {
+                  uri: ("git+https://github.com/" + $repo + "@" + $ref),
+                  digest: { sha1: $sha },
+                  entryPoint: ".github/workflows/uds-bundle-attest-existing.yml"
+                },
+                parameters: { tag: $tag, attestedDigest: $digest },
+                environment: { github_run_id: $runid, postPublish: true, originalPublishRun: $origrun }
+              },
+              metadata: {
+                buildInvocationId: $runid,
+                completeness: { parameters: true, environment: false, materials: false },
+                reproducible: false
+              },
+              materials: [
+                { uri: ("git+https://github.com/" + $repo + "@" + $ref), digest: { sha1: $sha } },
+                { uri: $digestref, digest: { sha256: ($digest | sub("^sha256:"; "")) } }
+              ]
+            }' > "${PROV}"
+          echo "Predicate written to ${PROV}:"
+          cat "${PROV}"
+          echo "file=${PROV}" >> "$GITHUB_OUTPUT"
+
+      # ── Attest provenance (keyless) against the immutable digest ────────────
+      - name: Attest provenance (keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          DIGEST_REF: ${{ steps.resolve.outputs.digest_ref }}
+          PROV: ${{ steps.prov.outputs.file }}
+        run: |
+          set -euo pipefail
+          cosign attest --yes --predicate "${PROV}" --type slsaprovenance "${DIGEST_REF}"
+          echo "Attested SLSA provenance to ${DIGEST_REF}"
+
+      # ── Self-gate: verify the provenance attestation keylessly (retry; LOUD) ─
+      - name: Verify provenance attestation (keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          DIGEST_REF: ${{ steps.resolve.outputs.digest_ref }}
+        run: |
+          set -euo pipefail
+          CERT_IDENTITY="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/uds-bundle-attest-existing.yml@${GITHUB_REF}"
+          CERT_ISSUER="https://token.actions.githubusercontent.com"
+          ok=0
+          for attempt in 1 2 3 4 5 6; do
+            if cosign verify-attestation --type slsaprovenance \
+                --certificate-identity "${CERT_IDENTITY}" \
+                --certificate-oidc-issuer "${CERT_ISSUER}" \
+                "${DIGEST_REF}" > /dev/null 2>/tmp/va.err; then
+              ok=1; echo "provenance attestation verified (attempt ${attempt})"; break
+            fi
+            echo "verify-attestation not ready (attempt ${attempt}/6); sleeping 15s"
+            sleep 15
+          done
+          if [ "${ok}" -ne 1 ]; then
+            echo "::error title=verify-attestation::provenance verify FAILED after retries"
+            tail -5 /tmp/va.err || true
+            exit 1
+          fi
+          {
+            echo "### Provenance attached (post-publish)"
+            echo ""
+            echo "Digest ref: \`${DIGEST_REF}\`"
+            echo ""
+            echo "Verify offline (keyless, public — no key needed):"
+            echo '```bash'
+            echo "cosign verify-attestation --type slsaprovenance \\"
+            echo "  --certificate-identity \"${CERT_IDENTITY}\" \\"
+            echo "  --certificate-oidc-issuer \"${CERT_ISSUER}\" \\"
+            echo "  ${DIGEST_REF}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

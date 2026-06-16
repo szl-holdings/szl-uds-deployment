@@ -441,6 +441,102 @@ jobs:
           cosign attest --yes --predicate "${SBOM}" --type spdxjson "${REF}"
           echo "Attested SBOM ${SBOM} to ${REF}"
 
+      # ── SLSA provenance attestation (keyless) ───────────────────────────────
+      # Second supply-chain attestation (SBOM is attested above). Predicate is
+      # SLSA provenance v0.2 (cosign --type slsaprovenance), built with jq. Honest
+      # SLSA L1: records the build workflow, source commit/ref, parameters, the
+      # bundle tarball sha256 AND the immutable OCI digest ref as materials.
+      # Keyless via GitHub OIDC — no key.
+      - name: Generate + attest SLSA provenance (keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          REF="${REGISTRY}/${ORG}/${BUNDLE_NAME}:${TAG}"
+          BUNDLE_TAR="${{ steps.bundle.outputs.tar }}"
+          TAR_SHA="$(sha256sum "${BUNDLE_TAR}" | awk '{print $1}')"
+          # Resolve the immutable digest of the bundle we just published+signed.
+          DIGEST_REF="$(cosign triangulate --type digest "${REF}")"
+          DIGEST="${DIGEST_REF##*@}"
+          PROV="provenance-${BUNDLE_NAME}-${{ matrix.arch }}-${{ steps.version.outputs.version }}.slsa.json"
+          BUILDER_ID="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/uds-bundle-publish.yml@${GITHUB_REF}"
+          jq -n \
+            --arg builder "${BUILDER_ID}" \
+            --arg repo "${GITHUB_REPOSITORY}" \
+            --arg ref "${GITHUB_REF}" \
+            --arg sha "${GITHUB_SHA}" \
+            --arg tag "${TAG}" \
+            --arg arch "${{ matrix.arch }}" \
+            --arg runid "${GITHUB_RUN_ID}" \
+            --arg tarsha "${TAR_SHA}" \
+            --arg digestref "${DIGEST_REF}" \
+            --arg digest "${DIGEST}" \
+            '{
+              buildType: "https://github.com/szl-holdings/szl-uds-deployment/uds-bundle-publish",
+              builder: { id: $builder },
+              invocation: {
+                configSource: {
+                  uri: ("git+https://github.com/" + $repo + "@" + $ref),
+                  digest: { sha1: $sha },
+                  entryPoint: ".github/workflows/uds-bundle-publish.yml"
+                },
+                parameters: { tag: $tag, arch: $arch },
+                environment: { github_run_id: $runid }
+              },
+              metadata: {
+                buildInvocationId: $runid,
+                completeness: { parameters: true, environment: false, materials: true },
+                reproducible: false
+              },
+              materials: [
+                { uri: ("git+https://github.com/" + $repo + "@" + $ref), digest: { sha1: $sha } },
+                { uri: ("pkg:generic/szl-uds-bundle@" + $tag), digest: { sha256: $tarsha } },
+                { uri: $digestref, digest: { sha256: ($digest | sub("^sha256:"; "")) } }
+              ]
+            }' > "${PROV}"
+          cat "${PROV}"
+          cosign attest --yes --predicate "${PROV}" --type slsaprovenance "${REF}"
+          echo "Attested SLSA provenance ${PROV} to ${REF}"
+
+      # ── Verify BOTH attestations (keyless) — self-gate, retry, LOUD fail ──────
+      # Proves the just-attached SBOM + provenance attestations are independently
+      # verifiable keylessly (exactly what a customer/judge runs offline). If
+      # either cannot be verified against this workflow's identity, publish FAILS.
+      # Retry/backoff absorbs Rekor/registry eventual-consistency without ever
+      # suppressing a real final failure.
+      - name: Verify bundle attestations (keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          REF="${REGISTRY}/${ORG}/${BUNDLE_NAME}:${TAG}"
+          CERT_IDENTITY="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/uds-bundle-publish.yml@${GITHUB_REF}"
+          CERT_ISSUER="https://token.actions.githubusercontent.com"
+          verify_att() {
+            local atype="$1"
+            local ok=0 attempt
+            for attempt in 1 2 3 4 5 6; do
+              if cosign verify-attestation --type "${atype}" \
+                  --certificate-identity "${CERT_IDENTITY}" \
+                  --certificate-oidc-issuer "${CERT_ISSUER}" \
+                  "${REF}" > /dev/null 2>/tmp/va.err; then
+                ok=1; echo "verify-attestation ${atype} OK (attempt ${attempt})"; break
+              fi
+              echo "verify-attestation ${atype} not ready (attempt ${attempt}/6); sleeping 15s"
+              sleep 15
+            done
+            if [ "${ok}" -ne 1 ]; then
+              echo "::error title=verify-attestation::${atype} verify FAILED after retries"
+              tail -5 /tmp/va.err || true
+              return 1
+            fi
+          }
+          verify_att spdxjson
+          verify_att slsaprovenance
+          echo "Both attestations verified keylessly."
+
       # ── Upload local artifacts for traceability ─────────────────────────────
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -450,3 +546,4 @@ jobs:
           path: |
             dist/uds-bundle-*.tar.zst
             sbom-*.spdx.json
+            provenance-*.slsa.json
