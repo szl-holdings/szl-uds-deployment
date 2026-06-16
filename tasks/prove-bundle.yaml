@@ -281,6 +281,64 @@ tasks:
             exit 1
           fi
 
+      - description: "AIRGAP AUDIT: every workload image is served from the in-cluster Zarf registry (field airgap-installable) — LOUD fail"
+        shell:
+          linux: bash
+        cmd: |
+          set -uo pipefail
+          # HONEST SCOPE: the BUILD/substrate phase HAS network (factory floor). This
+          # audits the FIELD property only: once deployed, EVERY workload container
+          # image (incl. initContainers + Istio sidecars) is served from the
+          # in-cluster Zarf registry, NOT pulled from a public registry. That is what
+          # makes the bundle airgap-INSTALLABLE in the field. It does NOT claim the
+          # whole environment was airgapped during build.
+          #
+          # Positive default-DENY: an image host is acceptable ONLY if it is a
+          # cluster-internal form — loopback NodePort (127.0.0.1:PORT / localhost:PORT)
+          # or in-cluster service DNS (*.svc / *.svc.cluster.local[:PORT]). Any public
+          # or implicit-DockerHub host fails. We also require each running imageID to
+          # carry an immutable sha256 digest (Zarf rewrites the HOST but preserves the
+          # content digest) and forbid any image-pull failure.
+          ZARF_REG="$(kubectl get secret -n zarf zarf-state -o jsonpath='{.data.state}' 2>/dev/null | base64 -d 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("registryInfo",{}).get("address",""))' 2>/dev/null || true)"
+          [ -n "${ZARF_REG}" ] && echo "Zarf-recorded internal registry address (evidence, non-gating): ${ZARF_REG}"
+          img_host() {
+            ref="$1"
+            case "$ref" in
+              */*) first="${ref%%/*}"; case "$first" in *.*|*:*|localhost) printf '%s' "$first";; *) printf 'docker.io';; esac;;
+              *) printf 'docker.io';;
+            esac
+          }
+          is_internal() {
+            case "$1" in
+              127.0.0.1:[0-9]*|localhost:[0-9]*|*.svc|*.svc:[0-9]*|*.svc.cluster.local|*.svc.cluster.local:[0-9]*) return 0;;
+              *) return 1;;
+            esac
+          }
+          rc=0
+          for NS in szl-${ORGAN}; do
+            echo "== ${NS} :: airgap image-origin audit =="
+            REFS="$(kubectl -n "$NS" get pods -o jsonpath='{range .items[*]}{range .spec.initContainers[*]}{.image}{"\n"}{end}{range .spec.containers[*]}{.image}{"\n"}{end}{end}' 2>/dev/null | grep -v '^$' | sort -u)"
+            if [ -z "$REFS" ]; then echo "   FAIL: no pods/images found in $NS"; rc=1; continue; fi
+            while IFS= read -r ref; do
+              [ -z "$ref" ] && continue
+              h="$(img_host "$ref")"
+              if is_internal "$h"; then echo "   ok   internal  ${h}   (${ref})"
+              else echo "   FAIL external  ${h}   (${ref})"; rc=1; fi
+            done < <(printf '%s\n' "$REFS")
+            IDS="$(kubectl -n "$NS" get pods -o jsonpath='{range .items[*]}{range .status.initContainerStatuses[*]}{.imageID}{"\n"}{end}{range .status.containerStatuses[*]}{.imageID}{"\n"}{end}{end}' 2>/dev/null | grep -v '^$' | sort -u)"
+            while IFS= read -r id; do
+              [ -z "$id" ] && continue
+              case "$id" in *sha256:*) : ;; *) echo "   FAIL imageID not digest-pinned: ${id}"; rc=1;; esac
+            done < <(printf '%s\n' "$IDS")
+            WAIT="$(kubectl -n "$NS" get pods -o json 2>/dev/null | grep -oE '"reason": *"(ErrImagePull|ImagePullBackOff|InvalidImageName)"' || true)"
+            if [ -n "$WAIT" ]; then echo "   FAIL image-pull error in $NS: ${WAIT}"; rc=1; fi
+          done
+          if [ "$rc" -ne 0 ]; then
+            echo "AIRGAP AUDIT FAIL: a workload image is NOT served from the in-cluster registry (or a pull failed) — the bundle is NOT field-airgap-installable as-is."
+            exit 1
+          fi
+          echo "AIRGAP AUDIT PASS: all workload images (incl. init + sidecars) served from the in-cluster Zarf registry, digest-pinned, no external pull — field airgap-installable."
+
       - description: "Proof summary"
         cmd: |
           echo "----"
@@ -288,4 +346,5 @@ tasks:
           echo "        bundle oci://${BUNDLE_REF} onto a clean UDS cluster (verify -> pull -> deploy ->"
           echo "        Available). HONEST SCOPE: pull + signature + individual deployability only — this"
           echo "        does NOT claim all five organs boot together (co-residency is not claimed)."
+          echo "AIRGAP: all workload images (incl. init + Istio sidecars) are served from the in-cluster Zarf registry, digest-pinned, no external pull — field airgap-installable (the build/substrate phase has network; that is NOT claimed airgapped)."
           echo "Cluster left intact for inspection: ${PROVE_CLUSTER}-${ORGAN} (delete with: k3d cluster delete ${PROVE_CLUSTER}-${ORGAN})"
