@@ -128,8 +128,13 @@ lula evaluate  ...                                   # track compliance over tim
 #   Posture: SLSA L1+L2 attested ONLY where attest-build-provenance runs +
 #   cosign verify-attestation succeeds; else L1 honest / L2 roadmap; L3 roadmap.
 #   ATO-ALIGNED ROADMAP ONLY — never a real ATO. No FedRAMP / Iron Bank / CMMC
-#   without "roadmap". Bundle-level build-provenance is NOT earned (CI token lacks
-#   attestations:write) — the cosign signature is the bundle provenance.
+#   without "roadmap". Bundle-level SLSA provenance IS now earned: uds-bundle-publish.yml
+#   (and uds-bundle-attest-existing.yml for already-published tags) runs
+#   `cosign attest --type slsaprovenance` KEYLESS (Fulcio/Rekor OIDC — needs only
+#   packages:write, NOT GitHub attestations:write) alongside the SBOM attestation;
+#   prove-bundle/prove-coboot hard-gate on `cosign verify-attestation` for BOTH
+#   (spdxjson + slsaprovenance, exact signer identity). The cosign signature plus
+#   these two keyless attestations ARE the bundle provenance.
 ```
 
 ## 10. Reach the UIs (Istio ingress / Keycloak SSO)
@@ -165,10 +170,15 @@ gh workflow run prove-coboot.yml -f bundle_tag=uds-v0.3.0
 # Local task equivalent (connected build box):
 uds run prove-coboot --set BUNDLE_REF=ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.3.0
 
-# LIVE EVIDENCE (CI run 27586435539, 2026-06-16) — all GREEN:
+# LIVE EVIDENCE (CI run 27592855545, 2026-06-16) — all GREEN:
 #   cosign verify PASS (keyless Fulcio/Rekor; signer uds-bundle-publish.yml@refs/heads/main)
+#   cosign verify-attestation PASS — SBOM (spdxjson) + SLSA provenance (slsaprovenance),
+#     keyless, exact signer identity (HARD gate; a bogus identity is rejected)
 #   a11oy + killinchu BOTH Available on ONE cluster (co-resident)
 #   a11oy /healthz -> HTTP 200 ; killinchu /api/killinchu/healthz -> HTTP 200
+#   AIRGAP AUDIT PASS — every a11oy+killinchu workload image (incl. init + Istio
+#     sidecars) served from the in-cluster Zarf registry, digest-pinned, no external
+#     pull (field airgap-installable; the build/substrate phase has network)
 # Honest scope: proves co-residency of the TWO consolidated deployables ONLY;
 # does NOT claim the legacy 5-organ fleet co-boots. Energy SAMPLE.
 ```
@@ -182,8 +192,14 @@ uds run prove-coboot --set BUNDLE_REF=ghcr.io/szl-holdings/szl-uds-bundle:uds-v0
 - **Mesh interconnect** — cross-organ Istio AuthorizationPolicy / strict
   PeerAuthentication in `uds-mesh` is **roadmap v0.4.0** (per-organ Package-CR
   allow/expose already authored; full interconnect not yet live).
-- **SLSA** — L1+L2 attested where `attest-build-provenance` runs + `cosign
-  verify-attestation` succeeds (else L1 honest / L2 roadmap; L3 roadmap).
+- **SLSA** — bundle carries keyless SBOM + SLSA-provenance attestations (cosign
+  `--type slsaprovenance`, Fulcio/Rekor OIDC; no GitHub attestations:write needed);
+  prove-bundle/prove-coboot hard-gate on `cosign verify-attestation` for both.
+  L1+L2 earned at the bundle level; L3 roadmap.
+- **Airgap-installable (field)** — prove-bundle/prove-coboot AIRGAP AUDIT asserts every
+  workload image (incl. init + Istio sidecars) resolves to the in-cluster Zarf registry
+  (no external pull) + is digest-pinned. Scope: the FIELD install is airgapped; the
+  BUILD/substrate phase has network.
 - **No real ATO** — ATO-aligned roadmap only.
 
 ## References
