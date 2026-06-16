@@ -7,17 +7,17 @@
 # 5 flagship SZL organs (a11oy, sentra, amaru, killinchu, yupana) — each already
 # live and cosign-signed on ghcr.io — into one OCI artifact:
 #
-#     oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.2.0   (+ :latest)
+#     oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.3.0   (+ :latest)
 #
 # Customer then runs:
-#     uds deploy oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.2.0 --confirm
+#     uds deploy oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.3.0 --confirm
 #
 # Flow:
 #   1. Build a Zarf package for each organ (packages/<organ>/zarf.yaml) directly
 #      from its live ghcr.io image (uds-v0.2.0). Zarf pulls the signed image.
 #   2. `uds create bundles/szl-uds-bundle` composes the 5 local packages into a
 #      bundle tarball.
-#   3. `uds publish` pushes the bundle to ghcr.io as szl-uds-bundle:uds-v0.2.0
+#   3. `uds publish` pushes the bundle to ghcr.io as szl-uds-bundle:uds-v0.3.0
 #      and szl-uds-bundle:latest.
 #   4. Keyless cosign signs the published bundle OCI artifact (GitHub OIDC),
 #      so `cosign verify` succeeds on the bundle.
@@ -37,9 +37,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Bundle OCI tag (e.g. uds-v0.2.0)'
+        description: 'Bundle OCI tag (e.g. uds-v0.3.0)'
         required: true
-        default: 'uds-v0.2.0'
+        default: 'uds-v0.3.0'
   push:
     tags:
       - 'uds-v*'
@@ -78,7 +78,7 @@ jobs:
           fetch-depth: 0
 
       # ── Resolve tag + bundle version ───────────────────────────────────────
-      # OCI tag is e.g. uds-v0.2.0; the bundle metadata version is 0.2.0.
+      # OCI tag is e.g. uds-v0.3.0; the bundle metadata version is 0.3.0.
       - name: Resolve version
         id: version
         run: |
@@ -231,10 +231,10 @@ jobs:
       # does NOT pick the image tag — it only fills metadata.version (and thus the
       # built tarball name zarf-package-<name>-<arch>-<version>.tar.zst). uds
       # create resolves each local-path member by the member `ref:` in
-      # bundles/szl-uds-bundle/uds-bundle.yaml (0.2.0 for the 4 templated organs;
-      # a11oy is hardcoded 0.3.0), so we MUST feed the STRIPPED bundle version
-      # (0.2.0), not the OCI tag (uds-v0.2.0) — otherwise the tarball is named
-      # ...-uds-v0.2.0.tar.zst and uds create fails "no such file".
+      # bundles/szl-uds-bundle/uds-bundle.yaml (all 5 members are at ref 0.3.0),
+      # so we MUST feed the STRIPPED bundle version (0.3.0), not the OCI tag
+      # (uds-v0.3.0) — otherwise the tarball is named
+      # ...-uds-v0.3.0.tar.zst and uds create fails "no such file".
       - name: Build member Zarf packages
         env:
           PKG_VERSION: ${{ steps.version.outputs.version }}
@@ -248,7 +248,7 @@ jobs:
           set -uo pipefail
           # Images are baked as literal digest-pinned refs in each package, so
           # PKG_VERSION only names the built tarball — it must equal the member
-          # `ref:` in the bundle (stripped bundle version 0.2.0).
+          # `ref:` in the bundle (stripped bundle version 0.3.0).
           mkdir -p dist
           # Flavor gating: ONLY packages/a11oy/zarf.yaml has flavor-gated
           # components (only.flavor: upstream|unicorn) — its sole workload
@@ -362,14 +362,14 @@ jobs:
           echo "tar=${BUNDLE_TAR}" >> "$GITHUB_OUTPUT"
           echo "Resolved bundle tar: ${BUNDLE_TAR}"
 
-      # ── Publish bundle to ghcr.io (uds-v0.2.0 + latest) ─────────────────────
+      # ── Publish bundle to ghcr.io (uds-v0.3.0 + latest) ─────────────────────
       - name: Publish bundle to ghcr.io
         env:
           TAG: ${{ steps.version.outputs.tag }}
           BUNDLE_TAR: ${{ steps.bundle.outputs.tar }}
         run: |
           set -euo pipefail
-          # Primary tag (e.g. uds-v0.2.0)
+          # Primary tag (e.g. uds-v0.3.0)
           uds publish "${BUNDLE_TAR}" "oci://${REGISTRY}/${ORG}" \
             --version "${TAG}" \
             --no-progress
