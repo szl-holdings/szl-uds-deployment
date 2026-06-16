@@ -613,6 +613,9 @@ def main():
         store_e2 = os.path.join(work, "store_e2")
         store_e3 = os.path.join(work, "store_e3")
         store_e4 = os.path.join(work, "store_e4")
+        store_e5 = os.path.join(work, "store_e5")
+        store_e6 = os.path.join(work, "store_e6")
+        store_e7 = os.path.join(work, "store_e7")
         store_f = os.path.join(work, "store_f")
         shutil.copytree(store, store_b)
         shutil.copytree(store, store_c)
@@ -621,6 +624,9 @@ def main():
         shutil.copytree(store, store_e2)
         shutil.copytree(store, store_e3)
         shutil.copytree(store, store_e4)
+        shutil.copytree(store, store_e5)
+        shutil.copytree(store, store_e6)
+        shutil.copytree(store, store_e7)
         shutil.copytree(store, store_f)
 
         # ── PHASE A: sharding layout + verify-store + archive-shards ─────────────
@@ -992,6 +998,106 @@ def main():
                          and rep.get("restored") == [],
                          f"E4 restore refuses to clobber an already-live bucket "
                          f"(rc={rc} failed={rep.get('failed')})")
+
+        # ── PHASE E-DRY: restore-shards --dry-run previews WITHOUT touching disk ──
+        # A recovery operator must be able to REHEARSE a restore: verify every cold
+        # tarball (sha256 + chain linkage), see which buckets WOULD be restored vs
+        # skipped (already-live), and get a non-zero exit on any verify failure —
+        # all while making ZERO changes to the live store or the cold ledger/
+        # artifacts. These phases prove exactly that.
+        print("\n== PHASE E-DRY: restore-shards --dry-run previews, makes no changes ==")
+
+        # E5: dry-run over a fully-archived store. Every sealed bucket WAS swept to
+        #     cold (only the tail stays live), so a dry-run must report would-restore
+        #     for all of them, change nothing, and exit 0 — and a REAL restore right
+        #     after must still succeed, proving the dry-run left the cold store intact.
+        cold_e5 = os.path.join(work, "cold_e5")
+        _cli(store_e5, key, shard_size,
+             ["archive-shards", "--delete"], cold_dir=cold_e5)
+        live_before = _bucket_names(store_e5)
+        cold_files_before = sorted(os.listdir(cold_e5))
+        ledger_before = _read_json(os.path.join(cold_e5, "archived.json"))
+        rc, rep = _cli(store_e5, key, shard_size,
+                       ["restore-shards", "--dry-run"], cold_dir=cold_e5)
+        print(f"  dry-run (all): rc={rc} would_restore={rep.get('would_restore')} "
+              f"verify_fail={rep.get('verify_fail')} restored={rep.get('restored')}")
+        fails += _assert(rc == 0 and rep.get("dry_run") is True
+                         and rep.get("restored") == [],
+                         f"E5 dry-run exits 0 and restores nothing "
+                         f"(rc={rc} restored={rep.get('restored')})")
+        fails += _assert(sorted(rep.get("would_restore", [])) == sealed_expected
+                         and rep.get("verify_fail") == []
+                         and rep.get("already_live_skip") == [],
+                         f"E5 every archived bucket is verdict=would-restore "
+                         f"(would_restore={sorted(rep.get('would_restore', []))})")
+        fails += _assert(_bucket_names(store_e5) == live_before,
+                         f"E5 dry-run made NO change to the live store "
+                         f"({_bucket_names(store_e5)} == {live_before})")
+        fails += _assert(sorted(os.listdir(cold_e5)) == cold_files_before,
+                         f"E5 dry-run left every cold artifact in place "
+                         f"({sorted(os.listdir(cold_e5))} == {cold_files_before})")
+        fails += _assert(_read_json(os.path.join(cold_e5, "archived.json"))
+                         == ledger_before,
+                         "E5 dry-run did NOT mutate the cold ledger")
+        # The real restore still works afterwards (dry-run was non-destructive).
+        rc, rep = _cli(store_e5, key, shard_size,
+                       ["restore-shards"], cold_dir=cold_e5)
+        fails += _assert(rc == 0 and sorted(rep.get("restored", [])) == sealed_expected
+                         and rep.get("failed") == [],
+                         f"E5 a REAL restore after the dry-run still restores every "
+                         f"bucket (restored={sorted(rep.get('restored', []))})")
+        rc, rep = _cli(store_e5, key, shard_size, ["verify-store"])
+        fails += _assert(rc == 0 and rep["chain_ok"] is True and rep["total"] == n,
+                         f"E5 the reunited store verifies after the post-dry-run "
+                         f"restore (chain_ok={rep['chain_ok']} total={rep['total']})")
+
+        # E6: dry-run must FAIL CLOSED on a corrupt cold tarball exactly like the
+        #     live path — verdict=verify-FAIL, non-zero exit, and STILL no changes
+        #     (the bucket is not placed live and the cold ledger/tarball are intact).
+        cold_e6 = os.path.join(work, "cold_e6")
+        _cli(store_e6, key, shard_size,
+             ["archive-shards", "--delete"], cold_dir=cold_e6)
+        bad6 = sealed_expected[0]
+        with open(os.path.join(cold_e6, f"{bad6}.tar.gz"), "ab") as fh:
+            fh.write(b"corrupting-trailer")
+        cold_files_before6 = sorted(os.listdir(cold_e6))
+        rc, rep = _cli(store_e6, key, shard_size,
+                       ["restore-shards", "--dry-run"], cold_dir=cold_e6)
+        print(f"  dry-run corrupt {bad6}: rc={rc} verify_fail={rep.get('verify_fail')} "
+              f"would_restore={rep.get('would_restore')}")
+        fails += _assert(rc == 1 and rep.get("verify_fail") == [bad6]
+                         and bad6 not in rep.get("would_restore", []),
+                         f"E6 dry-run flags the corrupt tarball verify-FAIL with a "
+                         f"non-zero exit (rc={rc} verify_fail={rep.get('verify_fail')})")
+        fails += _assert(rep.get("failed") == [bad6] and rep.get("restored") == [],
+                         f"E6 dry-run reports failure but restores nothing "
+                         f"(failed={rep.get('failed')})")
+        fails += _assert(bad6 not in _bucket_names(store_e6),
+                         f"E6 dry-run did NOT place the corrupt bucket live "
+                         f"({_bucket_names(store_e6)})")
+        fails += _assert(sorted(os.listdir(cold_e6)) == cold_files_before6,
+                         "E6 dry-run left the (corrupt) cold artifacts untouched")
+
+        # E7: a bucket that is already live is reported already-live-skip — a benign
+        #     skip, NOT a verify failure — so a dry-run over a partially-restored
+        #     store still exits 0. Archive WITHOUT --delete so a sealed bucket exists
+        #     both live and in cold.
+        cold_e7 = os.path.join(work, "cold_e7")
+        _cli(store_e7, key, shard_size, ["archive-shards"], cold_dir=cold_e7)
+        live7 = sealed_expected[0]
+        rc, rep = _cli(store_e7, key, shard_size,
+                       ["restore-shards", "--bucket", live7, "--dry-run"],
+                       cold_dir=cold_e7)
+        print(f"  dry-run already-live {live7}: rc={rc} "
+              f"already_live_skip={rep.get('already_live_skip')}")
+        fails += _assert(rc == 0 and rep.get("already_live_skip") == [live7]
+                         and rep.get("verify_fail") == []
+                         and rep.get("would_restore") == [],
+                         f"E7 an already-live bucket is a benign already-live-skip "
+                         f"(rc={rc} already_live_skip={rep.get('already_live_skip')})")
+        fails += _assert(rep.get("failed") == [],
+                         f"E7 already-live-skip is NOT counted as a failure "
+                         f"(failed={rep.get('failed')})")
 
         # ── PHASE F: cold-storage offload OFF the data volume round-trips ─────────
         # PHASE E proved archive→restore from the SAME cold dir, but the box
