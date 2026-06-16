@@ -113,8 +113,17 @@ tasks:
           # --set VERSION feeds ###ZARF_PKG_TMPL_VERSION### for the manifest-based
           # organs (killinchu/amaru/sentra/rosie); a11oy hard-codes 0.3.0 and
           # ignores it. Output into BUILD_TMPDIR so the glob below is unambiguous.
+          # a11oy is the SOLE flavor-gated organ (its workload component is
+          # only.flavor: upstream) — it MUST build with --flavor upstream or the
+          # Deployment is dropped and only the flavor-agnostic keygen Job deploys
+          # (mirrors uds-bundle-publish.yml). The other organs have no flavor gate;
+          # passing --flavor to them would trip bundle-build-guard symmetry drift,
+          # so ONLY a11oy gets it.
+          FLAVOR_ARGS=""
+          if [ "${ORGAN}" = "a11oy" ]; then FLAVOR_ARGS="--flavor upstream"; fi
           zarf package create "packages/${ORGAN}" \
             --set VERSION="${VERSION}" \
+            ${FLAVOR_ARGS} \
             --architecture amd64 \
             --output "${BUILD_TMPDIR}" \
             --tmpdir "${BUILD_TMPDIR}" \
