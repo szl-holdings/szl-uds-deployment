@@ -617,6 +617,7 @@ def main():
         store_g = os.path.join(work, "store_g")
         store_g2 = os.path.join(work, "store_g2")
         store_g3 = os.path.join(work, "store_g3")
+        store_h = os.path.join(work, "store_h")
         shutil.copytree(store, store_b)
         shutil.copytree(store, store_c)
         shutil.copytree(store, store_d)
@@ -628,6 +629,7 @@ def main():
         shutil.copytree(store, store_g)
         shutil.copytree(store, store_g2)
         shutil.copytree(store, store_g3)
+        shutil.copytree(store, store_h)
 
         # ── PHASE A: sharding layout + verify-store + archive-shards ─────────────
         print("\n== PHASE A: sharding write path + verify-store + archive-shards ==")
@@ -1211,6 +1213,85 @@ def main():
                          and rep.get("restored") == [],
                          f"G3 a bucket absent off-box is refused as a fetch failure "
                          f"(rc={rc} failed={rep.get('failed')})")
+
+        # ── PHASE H: the ssh transport stages + verifies + restores like local ───
+        # PHASE G exercised the `local` off-box transport end to end. ssh/rclone/s3
+        # share the IDENTICAL stage-then-verified-restore path; the only difference
+        # is how each object's bytes are pulled in _remote_fetch_object. Prove the
+        # `ssh` branch FOR REAL — its command construction, its clean-miss (remote
+        # `test -f` rc=1) vs present handling, and that a fetched bucket runs the
+        # SAME tarball_sha256 + chain gate — without needing a live sshd in CI: put
+        # a fake `ssh`/`scp` on PATH that execute the remote command / copy the
+        # object locally, so server.py's real ssh code path runs unmodified.
+        print("\n== PHASE H: off-box restore over the ssh transport (faked ssh/scp) ==")
+        fakebin = os.path.join(work, "fakebin")
+        os.makedirs(fakebin, exist_ok=True)
+        # fake ssh: ignore the connection flags, run the FINAL arg (the remote
+        # command, e.g. `test -f '<path>'`) locally so its exit code is faithful
+        # (rc=0 present, rc=1 absent) — exactly what _remote_fetch_object branches on.
+        with open(os.path.join(fakebin, "ssh"), "w") as fh:
+            fh.write('#!/usr/bin/env bash\nexec bash -c "${@: -1}"\n')
+        # fake scp: copy "<host>:<path>" (2nd-to-last arg) to <dest> (last arg).
+        with open(os.path.join(fakebin, "scp"), "w") as fh:
+            fh.write('#!/usr/bin/env bash\nsrc="${@: -2:1}"; dest="${@: -1}"\n'
+                     'cp "${src#*:}" "$dest"\n')
+        os.chmod(os.path.join(fakebin, "ssh"), 0o755)
+        os.chmod(os.path.join(fakebin, "scp"), 0o755)
+        saved_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = fakebin + os.pathsep + saved_path
+        try:
+            cold_h = os.path.join(work, "cold_h")
+            offbox_h = os.path.join(work, "offbox_h")
+            _cli(store_h, key, shard_size,
+                 ["archive-shards", "--delete"], cold_dir=cold_h)
+            # mirror the cold archive to the off-box location, then drop the on-box
+            # copy entirely — only the ssh-reachable backup survives.
+            shutil.copytree(cold_h, offbox_h)
+            shutil.rmtree(cold_h)
+            ssh_target = f"recv@fakehost:{offbox_h}"
+            # H1: full off-box restore OVER ssh — every sealed bucket re-imports.
+            rc, rep = _cli(store_h, key, shard_size,
+                           ["restore-shards", "--remote-ssh", ssh_target])
+            print(f"  restore --remote-ssh (all): rc={rc} "
+                  f"restored={rep.get('restored')} failed={rep.get('failed')} "
+                  f"source={rep.get('source')}")
+            fails += _assert(rc == 0 and not rep.get("error")
+                             and sorted(rep.get("restored", [])) == sealed_expected
+                             and rep.get("failed") == [],
+                             f"H1 ssh-transport off-box restore re-imports every "
+                             f"bucket (restored={sorted(rep.get('restored', []))}, "
+                             f"failed={rep.get('failed')})")
+            fails += _assert(rep.get("source") == f"ssh:{ssh_target}",
+                             f"H1 report names the ssh off-box source "
+                             f"({rep.get('source')})")
+            fails += _assert(_bucket_names(store_h) == sealed_expected + [tail_bucket],
+                             f"H1 all buckets live again under shards/ "
+                             f"({_bucket_names(store_h)} == "
+                             f"{sealed_expected + [tail_bucket]})")
+            rc, rep = _cli(store_h, key, shard_size, ["verify-store"])
+            print(f"  ssh-reunited verify-store: total={rep['total']} "
+                  f"valid={rep['valid']} bad_sig={rep['bad_sig']} "
+                  f"bad_hash={rep['bad_hash']} chain_ok={rep['chain_ok']}")
+            fails += _assert(rc == 0 and rep["chain_ok"] is True
+                             and rep["total"] == n and rep["valid"] == n,
+                             f"H1 verify-store passes over the FULL store reunited "
+                             f"over ssh (total={rep['total']} valid={rep['valid']} "
+                             f"chain_ok={rep['chain_ok']})")
+            # H2: a bucket MISSING off-box is a fetch failure over ssh too — the
+            #     remote `test -f` returns rc=1 (clean miss) and restore REFUSES it,
+            #     never silently skips (same contract as the local transport in G3).
+            missing = "99999999"
+            rc, rep = _cli(store_h, key, shard_size,
+                           ["restore-shards", "--remote-ssh", ssh_target,
+                            "--bucket", missing])
+            print(f"  ssh restore MISSING {missing}: rc={rc} "
+                  f"failed={rep.get('failed')} fetch_failed={rep.get('fetch_failed')}")
+            fails += _assert(rc == 1 and rep.get("failed") == [missing]
+                             and rep.get("restored") == [],
+                             f"H2 a bucket absent off-box is refused as a fetch "
+                             f"failure over ssh (rc={rc} failed={rep.get('failed')})")
+        finally:
+            os.environ["PATH"] = saved_path
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
