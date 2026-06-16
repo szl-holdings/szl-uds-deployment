@@ -1,0 +1,340 @@
+#!/usr/bin/env bash
+#
+# szl-receipts-cold-offsite-restore-drill — periodically PROVE the OFFSITE cold
+# receipt backup can actually be RESTORED, not merely that bytes were uploaded.
+#
+# WHY THIS EXISTS
+# `szl-receipts-cold-offsite` mirrors each sealed cold bucket (`<bucket>.tar.gz` +
+# `<bucket>.manifest.json`) off the box so the receipt history survives loss of
+# box 167.233.50.75, and it sha256-verifies the offsite copy AT UPLOAD TIME.
+# `szl-receipts-cold-archive-audit` re-verifies the ON-BOX cold tarballs offline.
+# But NOTHING ever exercises the RESTORE path: pull a bucket back DOWN from the
+# offsite destination, confirm it still hashes to its manifest, and confirm it
+# unpacks into a well-formed receipt shard. An untested backup is a hope, not a
+# backup — the offsite credentials could rot, the remote could silently start
+# returning truncated/empty objects, a lifecycle rule could expire objects, or
+# the bucket could be unreadable, and the upload-time mirror would never notice
+# (it only ever writes UP). The first time anyone discovers the offsite copy
+# cannot be restored must NOT be the day the box is gone. This drill closes that
+# gap: on a cadence it does a real round-trip RESTORE of ONE offsite bucket into
+# a throwaway scratch dir and pages on the failure edge.
+#
+# WHAT IT DOES (one bucket per run, read-only against the offsite destination)
+#   1. Resolves the SAME offsite destination as szl-receipts-cold-offsite
+#      (OFFSITE_* vars / OFFSITE_TRANSPORT). Unconfigured => SKIPPED_UNCONFIGURED
+#      no-op, exit 0, NO page.
+#   2. LISTS the offsite destination for `<bucket>.manifest.json` objects. None
+#      yet (nothing has been mirrored) => silent no-op, exit 0, NO page.
+#   3. Picks ONE bucket to drill (DRILL_BUCKET override, else the most recent —
+#      buckets are zero-padded numeric, so the lexically-highest name is newest).
+#   4. DOWNLOADS that bucket's `<bucket>.tar.gz` + `<bucket>.manifest.json` from
+#      the offsite destination into a fresh scratch dir (the RESTORE).
+#   5. SHA256 GATE: the downloaded tarball's sha256 must equal the downloaded
+#      manifest's `tarball_sha256`. A mismatch means the offsite copy is corrupt
+#      / truncated and would NOT restore — ALERT.
+#   6. WELL-FORMED GATE: extracts the tarball and confirms it restores into a
+#      well-formed receipt shard — a top-level `<bucket>/` dir of `*.json`
+#      receipts, each parseable JSON carrying a `chain` object, and (when the
+#      manifest records a `count`) exactly that many receipts. A tarball that
+#      cannot be opened, is empty, or does not match its manifest count is a
+#      backup that would not restore — ALERT.
+#   7. Cleans up the scratch dir. The drill NEVER writes to the offsite
+#      destination, the on-box cold archive, or the live store — it only reads.
+#
+# This is deliberately a STRUCTURAL restore proof (download + sha256 + unpack +
+# shard well-formedness), NOT a cryptographic re-verification — the per-receipt
+# Ed25519/DSSE signature + hash-linkage + stitch re-verify is owned by
+# szl-receipts-cold-archive-audit (public key only) and needs the cluster/key,
+# whereas this drill must run fully self-contained with nothing but the offsite
+# credentials so it keeps proving the backup is RESTORABLE even with the cluster
+# down. The two are complementary: the audit proves the cold bytes are still a
+# valid chain; this drill proves those bytes can actually be fetched back.
+#
+# Transports (auto-detected from which OFFSITE_* var is set, or forced via
+# OFFSITE_TRANSPORT): ssh (scp/ssh to a 2nd host), local (a mounted volume / 2nd
+# disk), rclone (any rclone remote — S3/B2/GCS/...), s3 (aws s3 cli). The SAME
+# destination as szl-receipts-cold-offsite — this drill reads back what that job
+# wrote.
+#
+# SAFE NO-OP when nothing is configured (no OFFSITE_* destination) or there is
+# nothing offsite to restore yet: exit 0, status records the reason, NO page — an
+# unconfigured box must not become a paging storm (mirrors szl-receipts-cold-offsite
+# / szl-receipts-cold-archive-audit / vault-keystore-offbox-backup).
+#
+# EDGE-TRIGGERED + DE-DUPED via a state file: pages the notifier only on the
+# healthy->problem edge and once on RECOVERED, never every cycle. Every run still
+# appends to the log + status file, so a broken notifier can never hide a problem.
+#
+# NOTIFY: pipes the alert text on STDIN to NOTIFY_CMD (default the box's working
+# push channel /usr/local/sbin/a11oy-uptime-notify -> ntfy/Telegram/webhook,
+# channel in /etc/a11oy-uptime.env). Fail-soft: a missing/broken notifier is
+# logged, never fatal.
+#
+# Driven by szl-receipts-cold-offsite-restore-drill.timer (weekly). Installed at
+# /usr/local/sbin/szl-receipts-cold-offsite-restore-drill. Versioned in repo
+# box-scripts/.
+set -uo pipefail
+
+# ---- config (overridable via env for testing) -------------------------------
+STATE_DIR="${STATE_DIR:-/var/lib/szl-receipts-cold-offsite-restore-drill}"
+LOG_DIR="${LOG_DIR:-/var/log/szl-receipts-cold-offsite-restore-drill}"
+LAST_FILE="${LAST_FILE:-$STATE_DIR/last_status}"
+STATUS="${STATUS:-$STATE_DIR/status.json}"
+LOG="${LOG:-$LOG_DIR/restore-drill.log}"
+
+NOTIFY_CMD="${NOTIFY_CMD:-/usr/local/sbin/a11oy-uptime-notify}"
+ALERT_PREFIX="${ALERT_PREFIX:-}"
+
+# Optionally pin which bucket to drill; default = the most recent offsite bucket.
+DRILL_BUCKET="${DRILL_BUCKET:-}"
+
+# ---- offsite destination (set exactly ONE; transport auto-detected) ----------
+# These mirror szl-receipts-cold-offsite EXACTLY so the drill reads back the same
+# destination that job writes to (typically both load /etc/szl-receipts-cold-offsite.env).
+OFFSITE_TRANSPORT="${OFFSITE_TRANSPORT:-}"
+OFFSITE_SSH_TARGET="${OFFSITE_SSH_TARGET:-}"       # user@host:/srv/szl/receipts-cold
+OFFSITE_SSH_KEY="${OFFSITE_SSH_KEY:-}"             # ssh identity file (optional)
+OFFSITE_LOCAL_DIR="${OFFSITE_LOCAL_DIR:-}"         # /mnt/offsite/receipts-cold
+OFFSITE_RCLONE_REMOTE="${OFFSITE_RCLONE_REMOTE:-}" # remote:bucket/receipts-cold
+OFFSITE_S3_URI="${OFFSITE_S3_URI:-}"               # s3://bucket/receipts-cold
+OFFSITE_S3_ENDPOINT="${OFFSITE_S3_ENDPOINT:-}"     # optional non-AWS endpoint URL
+
+# Python for JSON parsing on the BOX. Falls back to python.
+PY="${PY:-python3}"; command -v "$PY" >/dev/null 2>&1 || PY=python
+
+mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null
+
+now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+log() { printf '%s %s\n' "$(now_iso)" "$1" >>"$LOG" 2>/dev/null; }
+
+notify() {
+  # $1 = message. Fail-soft: log a warning if the notifier is missing/fails.
+  [ -z "$NOTIFY_CMD" ] && return 0
+  printf '%s%s\n' "$ALERT_PREFIX" "$1" | $NOTIFY_CMD >>"$LOG" 2>&1 \
+    || log "WARN notifier '$NOTIFY_CMD' failed (alert was logged only)"
+}
+
+write_status() {
+  # $1 = overall (OK|ALERT|UNKNOWN)  $2 = reason
+  printf '{"overall":"%s","reason":"%s","checked_at":"%s","transport":"%s","bucket":"%s"}\n' \
+    "$1" "$(printf '%s' "$2" | sed 's/"/\\"/g')" "$(now_iso)" "${TRANSPORT:-none}" "${DRILLED_BUCKET:-}" \
+    >"$STATUS" 2>/dev/null
+}
+
+# json_get FILE EXPR — print a value from JSON file via python (EXPR uses `d`).
+json_get() {
+  "$PY" -c 'import sys,json
+try: d=json.load(open(sys.argv[1]))
+except Exception: sys.exit(3)
+try: print(eval(sys.argv[2]))
+except Exception: sys.exit(4)' "$1" "$2" 2>/dev/null
+}
+
+# ---- Resolve transport from configured OFFSITE_* vars ------------------------
+detect_transport() {
+  if [ -n "$OFFSITE_TRANSPORT" ]; then echo "$OFFSITE_TRANSPORT"; return; fi
+  if [ -n "$OFFSITE_SSH_TARGET" ];    then echo ssh;    return; fi
+  if [ -n "$OFFSITE_LOCAL_DIR" ];     then echo local;  return; fi
+  if [ -n "$OFFSITE_RCLONE_REMOTE" ]; then echo rclone; return; fi
+  if [ -n "$OFFSITE_S3_URI" ];        then echo s3;     return; fi
+  echo ""   # nothing configured
+}
+
+# offsite_list — print the basenames of every `<bucket>.manifest.json` object at
+# the offsite destination, one per line. Empty output = nothing mirrored yet (or
+# the listing failed — the caller treats "no buckets" as a no-op either way, and
+# a download failure on a named bucket is what actually pages).
+offsite_list() {
+  case "$TRANSPORT" in
+    local)
+      ls -1 "$OFFSITE_LOCAL_DIR"/*.manifest.json 2>/dev/null | xargs -r -n1 basename ;;
+    ssh)
+      local host="${OFFSITE_SSH_TARGET%%:*}" path="${OFFSITE_SSH_TARGET#*:}"
+      ssh ${OFFSITE_SSH_KEY:+-i "$OFFSITE_SSH_KEY"} -o BatchMode=yes \
+        -o StrictHostKeyChecking=accept-new "$host" \
+        "ls -1 '${path%/}'/*.manifest.json 2>/dev/null" 2>>"$LOG" | xargs -r -n1 basename ;;
+    rclone)
+      rclone lsf "${OFFSITE_RCLONE_REMOTE%/}/" --include '*.manifest.json' 2>>"$LOG" \
+        | sed 's#.*/##' ;;
+    s3)
+      aws ${OFFSITE_S3_ENDPOINT:+--endpoint-url "$OFFSITE_S3_ENDPOINT"} \
+        s3 ls "${OFFSITE_S3_URI%/}/" 2>>"$LOG" | awk '{print $NF}' \
+        | grep -E '\.manifest\.json$' || true ;;
+    *) : ;;
+  esac
+}
+
+# offsite_get NAME DEST — download the offsite object NAME to local path DEST.
+# Returns non-zero on transport failure.
+offsite_get() {
+  local name="$1" dest="$2"
+  case "$TRANSPORT" in
+    local)
+      cp -f "$OFFSITE_LOCAL_DIR/$name" "$dest" ;;
+    ssh)
+      local host="${OFFSITE_SSH_TARGET%%:*}" path="${OFFSITE_SSH_TARGET#*:}"
+      scp ${OFFSITE_SSH_KEY:+-i "$OFFSITE_SSH_KEY"} -B \
+        -o StrictHostKeyChecking=accept-new "$host:${path%/}/$name" "$dest" ;;
+    rclone)
+      rclone copyto "${OFFSITE_RCLONE_REMOTE%/}/$name" "$dest" ;;
+    s3)
+      aws ${OFFSITE_S3_ENDPOINT:+--endpoint-url "$OFFSITE_S3_ENDPOINT"} \
+        s3 cp "${OFFSITE_S3_URI%/}/$name" "$dest" ;;
+    *) return 2 ;;
+  esac
+}
+
+# assert_well_formed_shard TARBALL BUCKET WANT_COUNT — extract TARBALL into a
+# throwaway dir and confirm it restores into a well-formed receipt shard. Prints
+# a human reason and returns non-zero on the first problem. WANT_COUNT may be
+# empty (manifest had no count) — then the count check is skipped but a non-empty
+# shard is still required.
+assert_well_formed_shard() {
+  local tarball="$1" bucket="$2" want_count="$3"
+  TARBALL="$tarball" BUCKET="$bucket" WANT_COUNT="$want_count" "$PY" - <<'PYEOF'
+import os, sys, json, tarfile, tempfile, shutil
+
+tarball = os.environ["TARBALL"]
+bucket  = os.environ["BUCKET"]
+want    = os.environ.get("WANT_COUNT", "").strip()
+
+tmp = tempfile.mkdtemp(prefix="szl-restore-drill-")
+try:
+    try:
+        with tarfile.open(tarball, "r:gz") as tar:
+            tar.extractall(tmp)
+    except Exception as e:
+        print("offsite tarball could not be opened/extracted (%s)" % e)
+        sys.exit(1)
+
+    # The retention job tars the bucket as `tar.add(bdir, arcname=bucket)`, so
+    # receipts live under `<bucket>/*.json` inside the tarball.
+    bdir = os.path.join(tmp, bucket)
+    if not os.path.isdir(bdir):
+        print("restored tarball has no top-level '%s/' shard dir" % bucket)
+        sys.exit(1)
+
+    recs = [e.path for e in os.scandir(bdir)
+            if e.is_file() and e.name.endswith(".json")]
+    if not recs:
+        print("restored shard '%s/' contains no *.json receipts" % bucket)
+        sys.exit(1)
+
+    bad = 0
+    for p in recs:
+        try:
+            r = json.load(open(p))
+        except Exception:
+            bad += 1
+            continue
+        # A receipt must carry a chain object (chain_index / hash live there) —
+        # the minimal structural shape every sealed receipt has.
+        if not isinstance(r, dict) or not isinstance(r.get("chain"), dict):
+            bad += 1
+    if bad:
+        print("%d of %d restored receipt file(s) are not well-formed receipt JSON"
+              % (bad, len(recs)))
+        sys.exit(1)
+
+    if want:
+        try:
+            wc = int(want)
+        except Exception:
+            wc = None
+        if wc is not None and len(recs) != wc:
+            print("restored receipt count %d != manifest count %d" % (len(recs), wc))
+            sys.exit(1)
+
+    print("OK %d receipt(s)" % len(recs))
+    sys.exit(0)
+finally:
+    shutil.rmtree(tmp, ignore_errors=True)
+PYEOF
+}
+
+# ---- Decide transport; no-op if unconfigured --------------------------------
+DRILLED_BUCKET=""
+TRANSPORT="$(detect_transport)"
+if [ -z "$TRANSPORT" ]; then
+  log "INFO no OFFSITE_* destination configured — restore drill is a SKIPPED_UNCONFIGURED no-op"
+  write_status UNKNOWN "SKIPPED_UNCONFIGURED: no offsite destination set"
+  exit 0
+fi
+log "INFO transport=$TRANSPORT"
+
+# ---- Pick a bucket to restore-drill -----------------------------------------
+if [ -n "$DRILL_BUCKET" ]; then
+  bucket="$DRILL_BUCKET"
+  log "INFO DRILL_BUCKET override -> $bucket"
+else
+  # Newest offsite bucket: zero-padded numeric names, so lexically-highest = newest.
+  bucket="$(offsite_list | sed 's/\.manifest\.json$//' | sort | tail -n1)"
+fi
+
+if [ -z "$bucket" ]; then
+  log "INFO no offsite buckets to restore yet (nothing mirrored) — silent no-op"
+  write_status OK "no offsite buckets to restore yet"
+  echo OK >"$LAST_FILE" 2>/dev/null
+  exit 0
+fi
+DRILLED_BUCKET="$bucket"
+log "INFO restore-drilling bucket $bucket from offsite ($TRANSPORT)"
+
+# ---- Download (RESTORE) the bucket into a throwaway scratch dir --------------
+work="$(mktemp -d "${TMPDIR:-/tmp}/szl-cold-restore-drill.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+dl_tar="$work/$bucket.tar.gz"
+dl_man="$work/$bucket.manifest.json"
+
+reason=""
+if ! offsite_get "$bucket.manifest.json" "$dl_man" >>"$LOG" 2>&1; then
+  reason="could not DOWNLOAD manifest for bucket $bucket from offsite ($TRANSPORT) — backup is unreadable"
+elif ! offsite_get "$bucket.tar.gz" "$dl_tar" >>"$LOG" 2>&1; then
+  reason="could not DOWNLOAD tarball for bucket $bucket from offsite ($TRANSPORT) — backup is unreadable"
+fi
+
+# ---- SHA256 GATE: downloaded tarball must match its downloaded manifest ------
+if [ -z "$reason" ]; then
+  want="$(json_get "$dl_man" 'd.get("tarball_sha256")')"
+  got="$(sha256sum "$dl_tar" 2>/dev/null | awk '{print $1}')"
+  if [ -z "$want" ]; then
+    reason="restored manifest for bucket $bucket has no tarball_sha256 — cannot verify the restore"
+  elif [ -z "$got" ]; then
+    reason="restored tarball for bucket $bucket could not be hashed (empty/unreadable download)"
+  elif [ "$want" != "$got" ]; then
+    reason="RESTORE sha256 MISMATCH for bucket $bucket (manifest=$want restored=$got) — offsite copy is corrupt/truncated, would NOT restore"
+  fi
+fi
+
+# ---- WELL-FORMED GATE: the restored tarball must unpack into a valid shard ---
+if [ -z "$reason" ]; then
+  want_count="$(json_get "$dl_man" 'd.get("count")')"
+  if wf="$(assert_well_formed_shard "$dl_tar" "$bucket" "$want_count" 2>>"$LOG")"; then
+    log "RESTORE bucket $bucket OK — sha256 verified, $wf restored & well-formed"
+  else
+    reason="restored bucket $bucket is NOT well-formed: ${wf:-extraction/shape check failed} — backup would not restore"
+  fi
+fi
+
+# ---- Decide + edge-trigger --------------------------------------------------
+prev="$(cat "$LAST_FILE" 2>/dev/null || echo OK)"
+if [ -n "$reason" ]; then
+  write_status ALERT "$reason"
+  log "STATE ALERT :: $reason"
+  if [ "$prev" != "ALERT" ]; then
+    notify "ALERT: szl-receipts OFFSITE restore drill FAILED (transport=$TRANSPORT, bucket=$bucket). $reason. The offsite receipt backup may not be restorable — investigate the offsite destination. (see /var/log/szl-receipts-cold-offsite-restore-drill/restore-drill.log)"
+    log "EDGE OK->ALERT notified"
+  else
+    log "DEDUP still ALERT — no re-notify"
+  fi
+  echo ALERT >"$LAST_FILE" 2>/dev/null
+else
+  write_status OK "offsite restore drill ok (transport=$TRANSPORT, bucket=$bucket: downloaded, sha256-verified, restored & well-formed)"
+  log "STATE OK bucket=$bucket restored+verified"
+  if [ "$prev" = "ALERT" ]; then
+    notify "RECOVERED: szl-receipts offsite restore drill is healthy again (transport=$TRANSPORT) — bucket $bucket downloaded, sha256-verified, and restored into a well-formed shard."
+    log "EDGE ALERT->OK recovered, notified"
+  fi
+  echo OK >"$LAST_FILE" 2>/dev/null
+fi
+exit 0

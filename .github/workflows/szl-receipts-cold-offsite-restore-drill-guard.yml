@@ -1,0 +1,118 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# szl-receipts-cold-offsite-restore-drill-guard.yml — Guard the
+# `szl-receipts-cold-offsite-restore-drill` box job (the periodic RESTORE drill
+# that proves the OFFSITE cold receipt backup can actually be restored) from
+# silently losing its safety properties.
+#
+# szl-receipts-cold-offsite mirrors each sealed cold bucket OFFSITE and
+# sha256-verifies the upload AT WRITE TIME; szl-receipts-cold-archive-audit
+# re-verifies the ON-BOX cold tarballs offline. Neither ever exercises the RESTORE
+# path. szl-receipts-cold-offsite-restore-drill
+# (box-scripts/sbin/szl-receipts-cold-offsite-restore-drill) closes that gap: it
+# periodically DOWNLOADS one mirrored bucket back from the offsite destination,
+# sha256-verifies the download against its manifest, and unpacks it into a
+# well-formed shard. Its value rests on a handful of fragile safety properties
+# that produce NO visible symptom when a refactor breaks them — until the day a
+# restore is actually needed:
+#   * nothing configured (no OFFSITE_* destination) = no-op exit 0, no page;
+#   * nothing mirrored offsite yet = silent no-op (nothing to drill);
+#   * the SHA256 GATE: a downloaded tarball whose sha256 != its manifest
+#     tarball_sha256 is a corrupt/truncated copy that would NOT restore + pages;
+#   * the WELL-FORMED GATE: a downloaded tarball that does not unpack into a
+#     well-formed receipt shard is a backup that would not restore + pages;
+#   * the happy path downloads + sha-verifies + restores a healthy bucket silently;
+#   * alerts are EDGE-TRIGGERED + de-duped (page once on failure, RECOVERED edge);
+#   * it stays WIRED into install.sh (script + units, timer enabled) and documented.
+#
+# Unlike the pure text/lint guards, the checks here are BEHAVIOURAL: the guard
+# script actually RUNS the real drill using the `local` transport
+# (OFFSITE_LOCAL_DIR -> a temp dir, so no network/object store is needed) over a
+# fabricated offsite bucket and a capturing notifier, then asserts the observable
+# outcome (exit code, whether it paged, the status file). That proves the sha256
+# + well-formed gates and the edge-dedup are wired into the control flow, not
+# merely present as text.
+#
+# The check logic lives in
+# scripts/szl-receipts-cold-offsite-restore-drill-guard-checks.sh. It was
+# extracted from this workflow so it can be UNIT TESTED:
+# scripts/szl-receipts-cold-offsite-restore-drill-guard-checks.test.sh feeds each
+# check a deliberately-BROKEN copy of the script (a gate removed, a no-op removed,
+# the dedup removed, ...) and asserts the check FAILS, plus that the pristine repo
+# PASSES. That self-test runs as the `self-test` job below, so a future edit that
+# neuters a check (green while guarding nothing) is caught.
+#
+# The asserted invariants:
+#   chk1  the drill exists and parses clean (bash -n)
+#   chk2  unconfigured is a silent no-op (exit 0, no page, SKIPPED_UNCONFIGURED)
+#   chk3  nothing mirrored offsite yet is a silent no-op
+#   chk4  SHA256 GATE: a corrupt/truncated offsite copy pages an ALERT
+#   chk5  WELL-FORMED GATE: a tarball that won't restore into a valid shard pages
+#   chk6  happy path downloads + sha-verifies + restores well-formed (silent, OK)
+#   chk7  alerts are edge-triggered + de-duped (page once + RECOVERED edge)
+#   chk8  wired into install.sh (script + units, timer enabled)
+#   chk9  documented in the retention runbook + named in install.sh
+
+name: SZL Receipts Cold-Offsite Restore-Drill Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The self-test MUST pass for the guard to be trustworthy: it proves each check
+  # still FAILS on bad input (i.e. is not silently passing). The guard job
+  # depends on it so a broken check blocks the build before it can wave a
+  # regression through.
+  self-test:
+    name: Self-test the guard checks (negative fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Run negative-fixture self-test
+        run: bash scripts/szl-receipts-cold-offsite-restore-drill-guard-checks.test.sh
+
+  guard:
+    name: Assert the offsite receipt restore drill is wired and gate-protected
+    runs-on: ubuntu-latest
+    needs: self-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check 1 — drill exists and parses clean
+        run: bash scripts/szl-receipts-cold-offsite-restore-drill-guard-checks.sh chk1 .
+
+      - name: Check 2 — unconfigured is a silent no-op (SKIPPED_UNCONFIGURED)
+        run: bash scripts/szl-receipts-cold-offsite-restore-drill-guard-checks.sh chk2 .
+
+      - name: Check 3 — nothing mirrored offsite yet is a silent no-op
+        run: bash scripts/szl-receipts-cold-offsite-restore-drill-guard-checks.sh chk3 .
+
+      - name: Check 4 — SHA256 GATE (corrupt offsite copy pages an ALERT)
+        run: bash scripts/szl-receipts-cold-offsite-restore-drill-guard-checks.sh chk4 .
+
+      - name: Check 5 — WELL-FORMED GATE (unrestorable tarball pages an ALERT)
+        run: bash scripts/szl-receipts-cold-offsite-restore-drill-guard-checks.sh chk5 .
+
+      - name: Check 6 — happy path downloads + verifies + restores (silent, OK)
+        run: bash scripts/szl-receipts-cold-offsite-restore-drill-guard-checks.sh chk6 .
+
+      - name: Check 7 — alerts are edge-triggered + de-duped (page once, RECOVERED)
+        run: bash scripts/szl-receipts-cold-offsite-restore-drill-guard-checks.sh chk7 .
+
+      - name: Check 8 — wired into install.sh (script + units, timer enabled)
+        run: bash scripts/szl-receipts-cold-offsite-restore-drill-guard-checks.sh chk8 .
+
+      - name: Check 9 — documented in the retention runbook
+        run: bash scripts/szl-receipts-cold-offsite-restore-drill-guard-checks.sh chk9 .
+
+      - name: Offsite receipt restore drill is wired and gate-protected
+        run: echo "The szl-receipts-cold-offsite-restore-drill job is wired, gate-protected, and edge-deduped."

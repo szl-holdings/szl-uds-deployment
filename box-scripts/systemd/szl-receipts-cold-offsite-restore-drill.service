@@ -1,0 +1,19 @@
+[Unit]
+Description=szl-receipts offsite restore drill — prove the OFFSITE cold receipt backup can actually be restored (download + sha256 + unpack a bucket)
+Documentation=file:///usr/local/sbin/szl-receipts-cold-offsite-restore-drill
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Reads back the SAME offsite destination szl-receipts-cold-offsite writes to,
+# so it loads the SAME private destination file. The leading "-" makes it
+# optional, so the drill installs as a SAFE no-op (SKIPPED_UNCONFIGURED) until an
+# operator fills in a destination.
+EnvironmentFile=-/etc/szl-receipts-cold-offsite.env
+# Real push notifications use the SAME notifier + credentials file as the
+# a11oy-uptime / receipt-chain-watch / szl-receipts-retention monitors.
+EnvironmentFile=-/etc/a11oy-uptime.env
+Environment=NOTIFY_TITLE=szl-receipts offsite restore drill
+Environment=NOTIFY_CMD=/usr/local/sbin/a11oy-uptime-notify
+ExecStart=/usr/local/sbin/szl-receipts-cold-offsite-restore-drill
