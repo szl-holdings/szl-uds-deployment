@@ -14,9 +14,9 @@
   `ghcr-build-push.yml`, but `cosign verify-attestation --type slsaprovenance` still
   returns "no matching attestations" on the deployed images (verified 2026-06-04) —
   so L2 is NOT claimed as earned. **SLSA L1 holds on all.** The **bundle**
-  (`szl-uds-bundle:uds-v0.2.1`) is **signed** (cosign keyless, Fulcio+Rekor) **and carries a
+  (`szl-uds-bundle:uds-v0.3.0`) is **signed** (cosign keyless, Fulcio+Rekor) **and carries a
   build-provenance attestation** produced via `actions/attest-build-provenance` — verify with
-  `gh attestation verify oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.2.1 --owner szl-holdings`
+  `gh attestation verify oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.3.0 --owner szl-holdings`
   (run from a non-GHES host; the sandbox proxy is detected as GHES and `gh attestation` refuses).
 - **Not SLSA L3, not FedRAMP-authorized, no Iron Bank acceptance, not CMMC-certified.**
   None of these are claimed or held; not pursued for this release.
@@ -86,11 +86,11 @@ make quickstart          # k3d + uds-cli + Pepr receipt policy, cosign-verified
 
 ## 4. Deploy order — the one-USB UDS command
 
-The **real mesh bundle** is `szl-uds-bundle:uds-v0.2.1` (composes all 5 organ Zarf
+The **real mesh bundle** is `szl-uds-bundle:uds-v0.3.0` (composes all 5 organ Zarf
 packages; signed + build-provenance attested). One command for an air-gapped / single-USB deploy:
 
 ```bash
-uds-cli bundle deploy oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.2.1 --confirm
+uds-cli bundle deploy oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.3.0 --confirm
 ```
 
 Underlying layer order on a fresh cluster: **Zarf init → UDS Core (Istio/Pepr/Keycloak)
@@ -135,10 +135,10 @@ register to it).
 
 ## 7. Honest status
 
-- **Live:** all 5 Spaces UP (core routes). Mesh bundle `szl-uds-bundle:uds-v0.2.1` builds + publishes.
+- **Live:** all 5 Spaces UP (core routes). Mesh bundle `szl-uds-bundle:uds-v0.3.0` builds + publishes.
 - **L1 cosign signatures:** present on all 6 packages (5 organs + the bundle).
 - **L2 attestation:** ✅ 5/5 organs (cosign verify-attestation, strict identity). Bundle
-  `uds-v0.2.1` is signed + carries a build-provenance attestation
+  `uds-v0.3.0` is signed + carries a build-provenance attestation
   (`actions/attest-build-provenance`); verify with `gh attestation verify` from a non-GHES host.
 - **Supply chain gap:** no `@sha256` digest pins anywhere — tag-only refs.
 - **Front door:** GitHub Pages surfaces (developers/docs-site/szl-trust) return HTTP 000
@@ -156,7 +156,7 @@ register to it).
   1. one real end-to-end mesh transaction proven on a real cluster,
   2. CodeQL + Grype made **blocking** checks,
   3. bundle attestation independently re-verified (`gh attestation verify` from a non-GHES
-     host — the `uds-v0.2.1` build published it; confirm the verify returns a provenance payload),
+     host — the `uds-v0.3.0` build published it; confirm the verify returns a provenance payload),
   4. HF Space drift resolved (new tabs baked into images).
 
 ---
@@ -166,9 +166,9 @@ register to it).
 1. **`HF_TOKEN` org secret** — set/repair so Space-deploy workflows authenticate.
 2. **Bundle attestation re-verify** — the `szl-uds-bundle` GHCR package is linked to the
    **`uds-bundles`** repo (not this one), so the bundle build/publish/sign/attest runs from
-   `uds-bundles` (`uds-bundle-publish.yml`); the `uds-v0.2.1` run completed SUCCESS (publish,
+   `uds-bundles` (`uds-bundle-publish.yml`); the `uds-v0.3.0` run completed SUCCESS (publish,
    cosign sign, `attest-build-provenance`). Final step is to run
-   `gh attestation verify oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.2.1 --owner szl-holdings`
+   `gh attestation verify oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.3.0 --owner szl-holdings`
    from a non-GHES host (the sandbox proxy is detected as GHES and refuses). Do NOT claim the
    bundle is L2-attested in public copy until that verify returns a provenance payload.
 3. **Zarf tag reconciliation** — flagship `deploy/zarf.yaml` files were repointed from
