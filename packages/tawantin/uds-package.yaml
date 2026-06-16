@@ -61,7 +61,7 @@ spec:
     expose:
       - service: tawantin-fabric
         selector:
-          app.kubernetes.io/name: tawantin
+          app: tawantin-fabric
         gateway: tenant
         host: tawantin
         port: 8080
@@ -88,9 +88,9 @@ spec:
       - direction: Ingress
         remoteNamespace: monitoring
         remoteSelector:
-          app.kubernetes.io/name: prometheus
+          app: prometheus
         selector:
-          app.kubernetes.io/name: tawantin
+          app: tawantin-fabric
         port: 8080
         description: Prometheus metrics scrape
 
@@ -98,19 +98,19 @@ spec:
       - direction: Egress
         remoteNamespace: szl-receipts
         remoteSelector:
-          app.kubernetes.io/name: szl-receipts
+          app: szl-receipts-server
         selector:
-          app.kubernetes.io/name: tawantin
-        port: 8443
+          app: tawantin-fabric
+        port: 8080
         description: SZL DSSE receipt verification service (Khipu signed-receipt chain)
 
       # a11oy governed router egress (fabric composition — read-only status)
       - direction: Egress
         remoteNamespace: szl-a11oy
         remoteSelector:
-          app.kubernetes.io/name: a11oy
+          app: a11oy
         selector:
-          app.kubernetes.io/name: tawantin
+          app: tawantin-fabric
         port: 7860
         description: a11oy governed router status (fabric overview, read-only)
 
@@ -118,9 +118,9 @@ spec:
       - direction: Egress
         remoteNamespace: monitoring
         remoteSelector:
-          app.kubernetes.io/name: opentelemetry-collector
+          app: opentelemetry-collector
         selector:
-          app.kubernetes.io/name: tawantin
+          app: tawantin-fabric
         ports:
           - 4317
           - 4318
@@ -134,7 +134,7 @@ spec:
   # ── MONITOR — Prometheus ServiceMonitor ─────────────────────────────────────
   monitor:
     - selector:
-        app.kubernetes.io/name: tawantin
+        app: tawantin-fabric
       portName: http
       targetPort: 8080
       path: /metrics
