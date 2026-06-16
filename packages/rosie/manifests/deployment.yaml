@@ -33,7 +33,7 @@ spec:
         - name: rosie
           # Live, cosign-signed image. Zarf rewrites this to the in-cluster
           # registry reference at deploy time.
-          image: ghcr.io/szl-holdings/rosie:uds-v0.2.0@sha256:1984a15f53c2e1b91c7dafaa0ed5df9148d57e3e86eb73db879c2b0443302848
+          image: ghcr.io/szl-holdings/rosie:uds-v0.2.1@sha256:f59dc4818950a7b30effc297714dd3dbd13a983094aee1125ab41678e9f504e7
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

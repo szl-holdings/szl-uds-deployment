@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # rosie per-flagship Helm chart — UDS Core / Big Bang compatible.
-# References the LIVE, cosign-signed image ghcr.io/szl-holdings/rosie:uds-v0.2.0.
+# References the LIVE, cosign-signed image ghcr.io/szl-holdings/rosie:uds-v0.2.1.
 # Includes a receipt-key init pre-install hook (charts/szl-key-init pattern) and
 # mounts the receipt-signing secret + doctrine configmap.
 #
@@ -12,7 +12,7 @@ name: rosie
 description: "SZL rosie — Governed decision fabric — mandatory witnesses on every decision (ROSIE-V1)"
 type: application
 version: 0.2.0
-appVersion: "uds-v0.2.0"
+appVersion: "uds-v0.2.1"
 home: https://github.com/szl-holdings/rosie
 sources:
   - https://github.com/szl-holdings/rosie
@@ -25,4 +25,4 @@ annotations:
   szl.ai/slsa-level: "L1"
   helm.sh/images: |
     - name: rosie
-      image: ghcr.io/szl-holdings/rosie:uds-v0.2.0
+      image: ghcr.io/szl-holdings/rosie:uds-v0.2.1
