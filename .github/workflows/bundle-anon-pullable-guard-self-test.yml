@@ -1,0 +1,58 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# bundle-anon-pullable-guard-self-test.yml — Self-test the PUBLIC-BUNDLE
+# anon-pullability guard:
+#   (1) the PROBE actually fails (with a distinct verdict) when the install
+#       bundle / its cosign .sig / its SBOM .att stops being anonymously
+#       pullable, and
+#   (2) the PAGER in bundle-anon-pullable-guard.yml is not silently widened/broken.
+#
+# Why this exists
+# ---------------
+# bundle-anon-pullable-guard.yml HEADs the public install bundle's manifest +
+# cosign .sig + SBOM .att on GHCR *anonymously* and fails — loudly and distinctly
+# — when one is no longer pullable without credentials. That guard is only
+# trustworthy if two things hold:
+#
+#   * the probe (scripts/probe-bundle-anon-pullable.sh) genuinely FAILS on a
+#     privatized (401/403) or missing (404) manifest/signature/attestation, not a
+#     vacuous green. scripts/probe-bundle-anon-pullable.test.sh sources the probe,
+#     overrides its HTTP layer (no network), and asserts each regression state
+#     fails with the right "NOT ANON-PULLABLE" verdict and that the all-200 state
+#     passes. This is the task's required negative fixture proving the check
+#     actually fails when given a private/404 ref.
+#
+#   * the pager only fires on the unattended scheduled run when it actually finds
+#     the bundle not anon-pullable. That rests on one `if:` expression
+#     (always() && github.event_name == 'schedule' && notanon == '1'); drop a term
+#     and it spams PRs / pages on green / goes silent. scripts/
+#     bundle-anon-pullable-guard-checks.sh asserts the alert if + the probe-step
+#     contract (set +e, notanon/refs exports) + the final independent gate;
+#     scripts/bundle-anon-pullable-guard-checks.test.sh feeds each a broken copy of
+#     the workflow and asserts it FAILS.
+#
+# Both negative-fixture self-tests run as the scaffold's `self-test` job; the
+# `guard` job (which re-runs the pager checks against the live workflow) depends on
+# it, so a neutered check is caught before it can wave a regression through. Pure
+# text/offline — no cluster, no registry.
+
+name: Public Bundle Anon-Pullable Guard Self-Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    uses: ./.github/workflows/guard-scaffold.yml
+    with:
+      test-command: bash scripts/probe-bundle-anon-pullable.test.sh && bash scripts/bundle-anon-pullable-guard-checks.test.sh
+      checks-command: bash scripts/bundle-anon-pullable-guard-checks.sh
+      checks-args: "chk1 chk2 chk3 chk4 chk5"
+      success-message: "The bundle anon-pullability probe fails on a privatized/missing ref and its pager only fires on a scheduled regression (alert if + probe contract + gate intact)."

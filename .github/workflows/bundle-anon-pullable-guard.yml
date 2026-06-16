@@ -1,0 +1,142 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# bundle-anon-pullable-guard.yml — Alert EARLY if the PUBLIC one-command install
+# bundle ever stops being *anonymously* pullable from GHCR.
+#
+# Why this exists
+# ---------------
+# `oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.2.0` (and the current
+# `uds-v0.3.0`) is documented as the one-command UDS install:
+#     uds deploy oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.2.0 --confirm
+# That command, and the documented anonymous `cosign verify` / `gh attestation
+# verify` story, all require the bundle manifest AND its cosign signature (.sig)
+# AND its SBOM attestation (.att) to be pullable WITH NO CREDENTIALS.
+#
+# GHCR package visibility can be silently flipped back to private from the web UI
+# (there is no REST API to read or set it), which would make the documented
+# anonymous install 401/403 with NO warning. Existing prior art does not catch
+# this: scripts/oci-ref-checks.py FALLS BACK to a repo PAT (it even classifies a
+# now-private ref as OK_PRIVATE), and scripts/probe-organ-image-present.sh accepts
+# an org PAT. This guard is deliberately different — it asserts *anonymous*
+# pullability specifically: scripts/probe-bundle-anon-pullable.sh uses ONLY an
+# anonymous GHCR pull token (no Authorization credential is ever sent) and has NO
+# PAT fallback, so a privatized bundle turns this red.
+#
+# Direct alerting
+# ---------------
+# On its DAILY scheduled run a loss of anonymous pullability must page the team,
+# not just turn the Actions tab red — nobody watches the tab, and a privatized
+# package can sit undiscovered until the next customer install fails. A
+# scheduled-run regression posts one clean line through the shared szl-alert-relay
+# -> ntfy path (SLACK_WEBHOOK_URL secret), exactly like organ-image-presence-guard
+# (no Slack — the relay forwards to ntfy). PR runs do NOT alert (the contributor
+# already sees the red check), so the relay only fires on the unattended schedule.
+
+name: Public Bundle Anon-Pullable Guard
+
+on:
+  pull_request:
+    paths:
+      - "scripts/probe-bundle-anon-pullable.sh"
+      - ".github/workflows/bundle-anon-pullable-guard.yml"
+  schedule:
+    # Daily — catch a privatized / deleted install bundle within a day, not at the
+    # next customer install. Offset from the organ image-presence cron (7 6),
+    # organ pin-drift (41 7) and receipts pin-drift (23 7) to spread registry load.
+    - cron: "37 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bundle-anon-pullable-guard:
+    name: Public install bundle is still anonymously pullable from GHCR
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      # Run the anonymous-pullability probe WITHOUT aborting, so a scheduled-run
+      # regression can be turned into a direct alert before the run is failed by
+      # the gate below. NO token is passed — the probe is anonymous by design (a
+      # PAT would mask a privatization).
+      - name: Probe anonymous pullability of the public install bundle
+        id: check
+        run: |
+          set +e
+          out="$(scripts/probe-bundle-anon-pullable.sh 2>&1)"
+          rc=$?
+          echo "${out}"
+
+          # Build a multi-line list of the distinct NOT-ANON-PULLABLE verdicts the
+          # probe printed, so the alert can name each broken ref. Empty when all OK.
+          refs="$(printf '%s\n' "${out}" | grep -E '^(BUNDLE NOT ANON-PULLABLE|SIGNATURE NOT ANON-PULLABLE|ATTESTATION NOT ANON-PULLABLE|BUNDLE PROBE INCONCLUSIVE): ' || true)"
+          {
+            echo "refs<<EOF"
+            echo "${refs}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "${rc}" -ne 0 ]; then
+            echo "notanon=1" >> "$GITHUB_OUTPUT"
+            echo "::warning::The public install bundle (or its cosign .sig/.att) is NO LONGER anonymously pullable. The documented one-command install is broken for anonymous users."
+          else
+            echo "notanon=0" >> "$GITHUB_OUTPUT"
+            echo "OK: the public install bundle + its cosign .sig/.att are anonymously pullable."
+          fi
+          exit 0
+
+      # Direct push notification so a regression found by the UNATTENDED daily run
+      # is noticed within a day, not whenever someone next looks at the Actions
+      # tab. Fires ONLY on a SCHEDULED run that found the bundle not anon-pullable
+      # — contributor PR failures already show a red check, so they never page the
+      # team. Posts a Slack-compatible payload via curl (no third-party action, so
+      # it stays within the org's github-owned/verified-actions-only policy) to the
+      # shared szl-alert-relay -> ntfy webhook. If the webhook secret is unset it
+      # logs a notice and soft-skips; the gate below still fails the run.
+      - name: Alert the team on a scheduled-run loss of anonymous pullability
+        if: ${{ always() && github.event_name == 'schedule' && steps.check.outputs.notanon == '1' }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          REFS: ${{ steps.check.outputs.refs }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL secret not configured — skipping direct alert. The failed run still stands."
+            exit 0
+          fi
+
+          # One clean block naming the repo and each ref that lost anonymous
+          # pullability. Distinct wording: this is a PUBLIC-VISIBILITY regression
+          # of the documented one-command install, NOT a deploy/build failure.
+          text=":rotating_light: *PUBLIC INSTALL BUNDLE NOT ANON-PULLABLE* in ${REPO} — the documented one-command \`uds deploy oci://ghcr.io/szl-holdings/szl-uds-bundle:...\` install (or its anonymous \`cosign verify\` / \`gh attestation verify\`) is BROKEN for anonymous users. The GHCR package was likely flipped back to PRIVATE. Affected:
+          ${REFS}
+          Run: ${RUN_URL}"
+
+          # JSON-encode with python so quotes/backticks can't break the payload.
+          payload=$(python3 -c 'import json,sys; print(json.dumps({"text": sys.argv[1]}))' "${text}")
+
+          echo "Posting bundle anon-pullability alert to the szl-alert-relay webhook..."
+          code=$(curl -sS -o /tmp/relay_resp.txt -w '%{http_code}' \
+                   -X POST -H 'Content-Type: application/json' \
+                   --max-time 20 --data "${payload}" "${SLACK_WEBHOOK_URL}")
+          echo "Webhook responded HTTP ${code}."
+          if [ "${code}" -lt 200 ] || [ "${code}" -ge 300 ]; then
+            echo "::error::Direct alert webhook POST failed (HTTP ${code}): $(cat /tmp/relay_resp.txt)"
+            exit 1
+          fi
+          echo "Direct alert delivered."
+
+      - name: Fail the run if the public install bundle is not anonymously pullable
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.check.outputs.notanon }}" = "1" ]; then
+            echo "::error::The public install bundle (or its cosign .sig/.att) is NO LONGER anonymously pullable (see the NOT ANON-PULLABLE line(s) above). The documented one-command \`uds deploy oci://...\` install is broken for anonymous users — the GHCR package was likely flipped back to private."
+            exit 1
+          fi
+          echo "OK: the public install bundle + its cosign .sig/.att are anonymously pullable."
