@@ -1470,7 +1470,7 @@ def _safe_extract_bucket(tar_path, bucket, dest_dir):
     return extracted
 
 
-def restore_archived_shards(cold_dir, bucket=None):
+def restore_archived_shards(cold_dir, bucket=None, dry_run=False):
     """Inverse of archive_sealed_shards: stitch one (or every) cold-archived
     shard bucket back into the LIVE store under <store>/shards/<bucket>/.
 
@@ -1494,7 +1494,16 @@ def restore_archived_shards(cold_dir, bucket=None):
     operator exit.
 
     `bucket` (optional) restores only that one bucket; otherwise every bucket in
-    the cold ledger is restored."""
+    the cold ledger is restored.
+
+    `dry_run` (optional) PREVIEW mode (already applied: dry_run): it runs every
+    verification step above — already-live detection, cold tarball presence,
+    tarball_sha256, clean extraction, and the full chain/count/boundary
+    check — and reports a per-bucket verdict (`would-restore` /
+    `already-live-skip` / `verify-FAIL`) WITHOUT writing a single byte to
+    the live store or mutating the cold ledger/artifacts, so an operator
+    can rehearse a recovery first. It still signals a non-zero exit if any
+    tarball fails verification, mirroring the live refuse-on-mismatch."""
     ledger_path = os.path.join(cold_dir, "archived.json")
     try:
         with open(ledger_path) as f:
@@ -1515,6 +1524,7 @@ def restore_archived_shards(cold_dir, bucket=None):
         targets = sorted(by_bucket)
 
     restored, failed = [], []
+    verdicts = {}
     for name in targets:
         entry = by_bucket[name]
         # Prefer the per-bucket manifest sidecar; fall back to the ledger entry
@@ -1532,12 +1542,18 @@ def restore_archived_shards(cold_dir, bucket=None):
         live_dir = os.path.join(SHARDS_DIR, name)
         if os.path.isdir(live_dir) and any(
                 e.name.endswith(".json") for e in os.scandir(live_dir)):
+            if dry_run:
+                verdicts[name] = "already-live-skip"
+                log("info", f"[restore:dry-run] bucket {name} already exists "
+                            f"live at {live_dir}; would skip (no clobber)")
+                continue
             failed.append(name)
             log("error", f"[restore] bucket {name} already exists live at "
                          f"{live_dir}; refusing to clobber")
             continue
         if not os.path.exists(tar_path):
             failed.append(name)
+            verdicts[name] = "verify-FAIL"
             log("error", f"[restore] cold tarball missing for bucket {name} "
                          f"({tar_path})")
             continue
@@ -1551,44 +1567,64 @@ def restore_archived_shards(cold_dir, bucket=None):
                 sha.update(chunk)
         if not expected_sha or sha.hexdigest() != expected_sha:
             failed.append(name)
+            verdicts[name] = "verify-FAIL"
             log("error", f"[restore] bucket {name} tarball sha256 mismatch "
                          f"(got {sha.hexdigest()[:12]}…, manifest "
                          f"{str(expected_sha)[:12]}…); refusing")
             continue
 
-        staging = os.path.join(cold_dir, f".restore-{name}")
-        if os.path.isdir(staging):
-            shutil.rmtree(staging, ignore_errors=True)
-        os.makedirs(staging, exist_ok=True)
+        if dry_run:
+            # Extract to a throwaway temp dir OFF the cold dir so a dry-run
+            # leaves no trace in the cold store at all.
+            staging = tempfile.mkdtemp(prefix=f"szl-restore-dry-{name}-")
+        else:
+            staging = os.path.join(cold_dir, f".restore-{name}")
+            if os.path.isdir(staging):
+                shutil.rmtree(staging, ignore_errors=True)
+            os.makedirs(staging, exist_ok=True)
         try:
             try:
                 paths = _safe_extract_bucket(tar_path, name, staging)
             except Exception as e:
                 failed.append(name)
+                verdicts[name] = "verify-FAIL"
                 log("error", f"[restore] bucket {name} failed to extract: {e}")
                 continue
             if not paths:
                 failed.append(name)
+                verdicts[name] = "verify-FAIL"
                 log("error", f"[restore] bucket {name} extracted no receipts")
                 continue
             # (2)/(3) chain verification of the extracted receipts.
             ok, count, first_prev, last_hash = _verify_bucket(paths)
             if not ok:
                 failed.append(name)
+                verdicts[name] = "verify-FAIL"
                 log("error", f"[restore] bucket {name} failed chain verification; "
                              f"refusing to restore")
                 continue
             exp_count = mf.get("count")
             if exp_count is not None and count != exp_count:
                 failed.append(name)
+                verdicts[name] = "verify-FAIL"
                 log("error", f"[restore] bucket {name} receipt count {count} != "
                              f"manifest count {exp_count}; refusing")
                 continue
             if (first_prev != mf.get("first_prev_hash")
                     or last_hash != mf.get("last_hash")):
                 failed.append(name)
+                verdicts[name] = "verify-FAIL"
                 log("error", f"[restore] bucket {name} boundary hashes do not "
                              f"match the manifest (chain linkage); refusing")
+                continue
+
+            if dry_run:
+                # Every check passed and the bucket is not live → it WOULD be
+                # restored. Make ZERO changes: no live-store write, no ledger
+                # mutation, no cold-artifact deletion.
+                verdicts[name] = "would-restore"
+                log("info", f"[restore:dry-run] bucket {name} verified "
+                            f"({count} receipts); would restore to {live_dir}")
                 continue
 
             # Verified — move the bucket into the live store atomically-ish.
@@ -1624,15 +1660,29 @@ def restore_archived_shards(cold_dir, bucket=None):
         log("info", f"[restore] bucket {name} → {live_dir} "
                     f"({count} receipts) restored from cold storage")
 
-    with open(ledger_path, "w") as f:
-        json.dump(ledger, f, indent=2)
-    return {
+    if not dry_run:
+        with open(ledger_path, "w") as f:
+            json.dump(ledger, f, indent=2)
+    result = {
         "cold_dir": cold_dir,
         "store_path": STORE_PATH,
         "requested": bucket or "(all)",
         "restored": restored,
         "failed": failed,
     }
+    if dry_run:
+        # Preview-only summary: no bytes were written. `failed` carries the
+        # verify-FAILs (already-live is a benign skip, NOT a failure), so the
+        # CLI still exits non-zero iff a tarball failed verification.
+        result["dry_run"] = True
+        result["verdicts"] = verdicts
+        result["would_restore"] = sorted(
+            k for k, v in verdicts.items() if v == "would-restore")
+        result["already_live_skip"] = sorted(
+            k for k, v in verdicts.items() if v == "already-live-skip")
+        result["verify_fail"] = sorted(
+            k for k, v in verdicts.items() if v == "verify-FAIL")
+    return result
 
 
 # ── off-box / remote cold-source staging (restore from an offsite backup) ────────
@@ -1868,7 +1918,7 @@ def _write_staging_ledger(stage_dir, remote, staged, fetch_failed):
         log("warn", f"[restore] could not write staging ledger: {e}")
 
 
-def restore_from_remote(remote, stage_dir, bucket=None):
+def restore_from_remote(remote, stage_dir, bucket=None, dry_run=False):
     """Stage the cold archive from an OFF-box source into stage_dir, then run the
     UNCHANGED restore_archived_shards over the staged copy — so an off-box restore
     is verified (tarball_sha256 + chain linkage) and refuses on mismatch exactly
@@ -1927,7 +1977,7 @@ def restore_from_remote(remote, stage_dir, bucket=None):
     # (4) run the UNCHANGED local restore over the staged copy. It applies the
     # full per-tarball verification (sha256 + chain linkage) and refuses on any
     # mismatch; an un-staged bucket surfaces there as a missing-tarball failure.
-    report = restore_archived_shards(stage_dir, bucket=bucket)
+    report = restore_archived_shards(stage_dir, bucket=bucket, dry_run=dry_run)
     report["source"] = source
     report["fetch_failed"] = fetch_failed
     # fold fetch misses into failed (deduped) so they are never lost.
@@ -1965,6 +2015,7 @@ def _cli(argv):
         cold_dir = os.environ.get(
             "SZL_RECEIPT_COLD_DIR", os.path.join(STORE_PATH, "cold"))
         bucket = None
+        dry_run = "--dry-run" in argv[1:]
         stage_dir = None
         rest = argv[1:]
         for i, a in enumerate(rest):
@@ -1980,17 +2031,20 @@ def _cli(argv):
             print(json.dumps({"error": str(e)}, indent=2))
             return 1
         if remote is None:
-            # local cold-dir restore (unchanged path).
-            report = restore_archived_shards(cold_dir, bucket=bucket)
+            # local cold-dir restore (unchanged path). --dry-run preview supported.
+            report = restore_archived_shards(cold_dir, bucket=bucket,
+                                             dry_run=dry_run)
         else:
             # off-box restore: stage from the remote, then verify+restore. A
             # temp staging dir is used (and cleaned up) unless --stage-dir is set.
+            # --dry-run is threaded through to the staged restore.
             tmp = None
             if stage_dir is None:
                 tmp = tempfile.mkdtemp(prefix="szl-cold-restore-")
                 stage_dir = tmp
             try:
-                report = restore_from_remote(remote, stage_dir, bucket=bucket)
+                report = restore_from_remote(remote, stage_dir, bucket=bucket,
+                                             dry_run=dry_run)
             finally:
                 if tmp is not None:
                     shutil.rmtree(tmp, ignore_errors=True)
@@ -1998,7 +2052,7 @@ def _cli(argv):
         return 1 if report.get("error") or report.get("failed") else 0
     print("usage: server.py [verify-store | "
           "archive-shards [--cold-dir DIR] [--delete] | "
-          "restore-shards [--cold-dir DIR] [--bucket NAME] "
+          "restore-shards [--cold-dir DIR] [--bucket NAME] [--dry-run] "
           "[--from-offsite | --remote-local DIR | --remote-ssh USER@HOST:/PATH "
           "[--remote-ssh-key FILE] | --remote-rclone REMOTE:PATH | "
           "--remote-s3 s3://BUCKET/PATH [--remote-s3-endpoint URL]] "
