@@ -5,7 +5,7 @@
 # Co-boot proof — szl-uds-deployment
 # =============================================================================
 # `uds run prove-coboot` proves the TWO post-consolidation deployable organs —
-# a11oy (governed-AI decision substrate; the umbrella that rosie/amaru/sentra
+# a11oy (governed-AI decision substrate; the umbrella that yupana/amaru/sentra
 # were consolidated INTO, 2026-06) and killinchu (maritime + drone C2) — BOOT
 # TOGETHER on ONE clean k3d cluster from the PUBLISHED, COSIGN-SIGNED UDS bundle,
 # and that EACH serves an in-cluster HTTP 200 on its health endpoint.

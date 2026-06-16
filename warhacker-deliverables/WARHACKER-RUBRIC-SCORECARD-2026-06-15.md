@@ -1,5 +1,5 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
-<!-- SUPERSEDED BY warhacker-deliverables/WARHACKER-RUBRIC-SCORECARD-2026-06-16.md (A1 airgap + A2 SLSA-provenance now EARNED; bundle published+signed+attested; prove-coboot GREEN; prove-organs glob fixed; rosie image gap recorded). This 2026-06-15 file is kept for audit history. -->
+<!-- SUPERSEDED BY warhacker-deliverables/WARHACKER-RUBRIC-SCORECARD-2026-06-16.md (A1 airgap + A2 SLSA-provenance now EARNED; bundle published+signed+attested; prove-coboot GREEN; prove-organs glob fixed; yupana image gap recorded). This 2026-06-15 file is kept for audit history. -->
 # Warhacker Rubric Scorecard + Honest Gap Analysis — 2026-06-15
 
 **Author:** Forge (SZL Holdings CTO/engineer)
@@ -18,7 +18,7 @@ live cluster or the published artifacts.
 ## The published bundle — what it will expose (publish+sign pending — ROADMAP)
 - **Bundle (TARGET ref):** `oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.3.0`
   @ `sha256:e61c2f9880560ec71812f546b9bad09de4b9d58ad15b27968cb9cf23dd6a4f4a`
-  — five mission organs (a11oy, killinchu, amaru, sentra, rosie). The publish step
+  — five mission organs (a11oy, killinchu, amaru, sentra, yupana). The publish step
   is pending Forge's box sign+publish — not yet live.
 - **Signature (roadmap):** keyless cosign (GitHub OIDC → Fulcio + Rekor) will sign
   on publish; `cosign verify` against the publisher workflow identity is the planned
@@ -48,7 +48,7 @@ whatever UDS Core cluster the mission has, get a working service. Organs in
   Istio admin gateway, proven live in k3d `uds-szl-demo`).
 - **killinchu** — maritime / sanctions / vessels surface (`GET /vessels` and
   `GET /sanctions` → 200 on the running organ).
-- **amaru, sentra, rosie** — additional mission organs, each an individually
+- **amaru, sentra, yupana** — additional mission organs, each an individually
   deployable UDS package (templated `###ZARF_PKG_TMPL_VERSION###`, built per-organ).
 
 The impact is *operational sovereignty*: signed, portable, auditable mission

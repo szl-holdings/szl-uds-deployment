@@ -265,31 +265,31 @@ spec:
       targetPort: 9090
 
 ---
-# ─── rosie ─────────────────────────────────────────────────────────────────
+# ─── yupana ─────────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: szl-rosie
-  namespace: szl-rosie
+  name: szl-yupana
+  namespace: szl-yupana
   labels:
-    app: szl-rosie
+    app: szl-yupana
     szl.io/doctrine-version: "v11"
     szl.io/doctrine-pin: "749/14/163"
-    szl.io/flagship: "rosie"
+    szl.io/flagship: "yupana"
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: szl-rosie
+      app: szl-yupana
   template:
     metadata:
       labels:
-        app: szl-rosie
+        app: szl-yupana
         szl.io/doctrine-version: "v11"
     spec:
       containers:
-        - name: rosie
-          image: ghcr.io/szl-holdings/rosie:latest
+        - name: yupana
+          image: ghcr.io/szl-holdings/yupana:latest
           imagePullPolicy: Always
           ports:
             - name: http
@@ -334,14 +334,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: szl-rosie
-  namespace: szl-rosie
+  name: szl-yupana
+  namespace: szl-yupana
   labels:
-    app: szl-rosie
+    app: szl-yupana
     szl.io/doctrine-version: "v11"
 spec:
   selector:
-    app: szl-rosie
+    app: szl-yupana
   ports:
     - name: http
       port: 8080

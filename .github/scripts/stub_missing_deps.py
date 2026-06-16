@@ -22,7 +22,7 @@
 #      case: charts/szl-receipts exists locally and is enabled by default.)
 #
 #   2. Otherwise (a genuinely staged/unpublished dependency, e.g. a11oy-runtime,
-#      sentra-gates, amaru-attestation, rosie-replay), a minimal placeholder
+#      sentra-gates, amaru-attestation, yupana-replay), a minimal placeholder
 #      subchart with no templates is written so the umbrella's own templates
 #      still render. An enabled placeholder renders nothing.
 #

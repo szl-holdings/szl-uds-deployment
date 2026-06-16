@@ -4,8 +4,8 @@
 # UDS Package CR — a11oy (policy + receipt substrate; the orchestrator)
 #
 # a11oy is the real orchestrator service the PhD Systems verdict asked for. It is
-# commanded by rosie, delegates to amaru (memory), sentra (immune), and vessels
-# (deployment fabric), emits events back to rosie, and emits decision-time
+# commanded by yupana, delegates to amaru (memory), sentra (immune), and vessels
+# (deployment fabric), emits events back to yupana, and emits decision-time
 # receipts. It is the busiest node in the mesh: it talks to every other module.
 #
 # UDS Package CR (v1alpha1) reference for every field:
@@ -81,15 +81,15 @@ spec:
           app: vessels
         port: 8080
         description: "a11oy commands vessels (deployment fabric)"
-      # a11oy -> rosie : ALLOW (emit events to operator console)
+      # a11oy -> yupana : ALLOW (emit events to operator console)
       - direction: Egress
         selector:
           app: a11oy
-        remoteNamespace: szl-rosie
+        remoteNamespace: szl-yupana
         remoteSelector:
-          app: rosie
+          app: yupana
         port: 7860
-        description: "a11oy emits events to rosie for human display"
+        description: "a11oy emits events to yupana for human display"
       # a11oy -> szl-receipts : ALLOW (decision-time receipt emission)
       - direction: Egress
         selector:
@@ -99,15 +99,15 @@ spec:
           app: szl-receipts-server
         port: 8080
         description: "a11oy emits gate accept/deny receipts to the chain authority"
-      # rosie -> a11oy : ALLOW (operator commands)
+      # yupana -> a11oy : ALLOW (operator commands)
       - direction: Ingress
         selector:
           app: a11oy
-        remoteNamespace: szl-rosie
+        remoteNamespace: szl-yupana
         remoteSelector:
-          app: rosie
+          app: yupana
         port: 7860
-        description: "rosie commands a11oy"
+        description: "yupana commands a11oy"
       # amaru -> a11oy : ALLOW (memory responses)
       - direction: Ingress
         selector:

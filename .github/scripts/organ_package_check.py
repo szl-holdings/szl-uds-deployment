@@ -6,7 +6,7 @@ organ_package_check.py — packaging-shape guard for one SZL organ.
 
 Generalizes a11oy-package-guard.yml to the OTHER four organs that ride the
 full-organ bundle bundles/szl-uds-bundle/uds-bundle.yaml: sentra, amaru,
-killinchu, rosie. None of the existing CI guards protect their packaging shape:
+killinchu, yupana. None of the existing CI guards protect their packaging shape:
   * image-pin-guard.yml only scans the root zarf.yaml + packages/szl-receipts.
   * chart-guard.yml lint/templates every chart but never checks how
     packages/<organ>/zarf.yaml is wrapped, nor bundle membership, nor image
@@ -108,7 +108,7 @@ def main():
         err(
             f"{ZARF} now renders {CHART_LP} via charts[].localPath "
             f"(component(s) {flipped}). The four organs "
-            f"(sentra/amaru/killinchu/rosie) are canonically MANIFESTS-based + "
+            f"(sentra/amaru/killinchu/yupana) are canonically MANIFESTS-based + "
             f"digest-pinned; only a11oy was upgraded to chart-based. Converting an "
             f"organ to chart-based is a deliberate packaging upgrade — give it the "
             f"chart-based checks (see a11oy-package-guard.yml) and update "

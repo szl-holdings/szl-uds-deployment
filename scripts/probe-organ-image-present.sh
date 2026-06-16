@@ -7,10 +7,10 @@
 #
 # WHY THIS EXISTS
 # ---------------
-# The amaru, sentra, and rosie GitHub source repos are DELETED (404). Their only
+# The amaru, sentra, and yupana GitHub source repos are DELETED (404). Their only
 # surviving build artifacts are the container images already published+signed on
 # GHCR before deletion:
-#     ghcr.io/szl-holdings/{amaru,sentra,rosie}@<the @sha256 pin in zarf.yaml>
+#     ghcr.io/szl-holdings/{amaru,sentra,yupana}@<the @sha256 pin in zarf.yaml>
 # Those three images are PUBLIC, pullable and cosign-signed today, so a failing
 # `prove-organs` leg for one of them means a REAL deploy regression worth fixing.
 #
@@ -38,7 +38,7 @@
 # image registry, exactly like the re-pin / pre-warm tooling.
 #
 # Usage:
-#   scripts/probe-organ-image-present.sh [--organ amaru|sentra|rosie] [--root DIR]
+#   scripts/probe-organ-image-present.sh [--organ amaru|sentra|yupana] [--root DIR]
 #
 #   --organ <name>  probe ONE retired organ. Omit to probe all three.
 #   --root DIR      repo root to read the pins from (default: this repo).
@@ -61,7 +61,7 @@ REGISTRY_BASE="szl-holdings"
 # The three RETIRED organs whose source repos are deleted (404). a11oy/killinchu
 # are intentionally excluded: they are actively rebuilt, their source lives, and
 # their pin drift is already covered by organ-pin-drift-guard.
-RETIRED_ORGANS="amaru sentra rosie"
+RETIRED_ORGANS="amaru sentra yupana"
 
 PROBE_CONNECT_TIMEOUT="${PROBE_CONNECT_TIMEOUT:-20}"
 PROBE_MAX_TIME="${PROBE_MAX_TIME:-30}"

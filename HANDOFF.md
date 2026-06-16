@@ -36,7 +36,7 @@ The five organs:
 | **sentra** | cyber-resilience runtime — fail-closed safety gates |
 | **amaru** | convergent data-sync + attestation / memory cortex |
 | **killinchu** | receipt / transport courier (counter-UAS rule engine) |
-| **rosie** | governed decision fabric + operator console |
+| **yupana** | governed decision fabric + operator console |
 
 ---
 
@@ -47,7 +47,7 @@ The five organs:
 git clone https://github.com/szl-holdings/szl-uds-deployment.git
 
 # 2. The five organs (source of the signed images)
-for r in a11oy sentra amaru rosie killinchu; do
+for r in a11oy sentra amaru yupana killinchu; do
   git clone https://github.com/szl-holdings/$r.git
 done
 # killinchu is PRIVATE — needs an authorized PAT.
@@ -94,7 +94,7 @@ uds-cli bundle deploy oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.2.1 --con
 ```
 
 Underlying layer order on a fresh cluster: **Zarf init → UDS Core (Istio/Pepr/Keycloak)
-→ szl-receipts → organs** (amaru → a11oy → sentra → rosie; a11oy up first so the others
+→ szl-receipts → organs** (amaru → a11oy → sentra → yupana; a11oy up first so the others
 register to it).
 
 > ⚠️ **Do NOT use `szl-warhacker` v0.4.0 as "the mesh."** It stages 4 organs OUT — only

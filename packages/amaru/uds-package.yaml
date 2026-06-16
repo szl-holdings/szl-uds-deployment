@@ -4,7 +4,7 @@
 # UDS Package CR — amaru (memory cortex; YACHAY + MUSQUY + AMARU shell)
 #
 # amaru only answers a11oy's memory queries and emits memory-write receipts. It
-# does NOT reach sentra, vessels, or rosie (memory has no need to talk to the
+# does NOT reach sentra, vessels, or yupana (memory has no need to talk to the
 # immune system, the skeleton, or the operator). It receives ingress from a11oy
 # and (because sentra is the immune system) from sentra for inspection.
 #
@@ -89,8 +89,8 @@ spec:
           app: sentra
         port: 8080
         description: "sentra (immune system) may inspect amaru"
-      # NOTE: there is intentionally NO ingress allow from vessels or rosie, and
-      # NO egress allow to sentra/vessels/rosie. Those pairs are DENY in the matrix.
+      # NOTE: there is intentionally NO ingress allow from vessels or yupana, and
+      # NO egress allow to sentra/vessels/yupana. Those pairs are DENY in the matrix.
 
   monitor:
     - portName: metrics

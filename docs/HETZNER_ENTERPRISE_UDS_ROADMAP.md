@@ -48,7 +48,7 @@ uds deploy oci://ghcr.io/szl-holdings/szl-mesh:0.4.0 --confirm
 
 # 6) VERIFY
 kubectl get packages -A
-for ns in szl-a11oy szl-sentra szl-amaru szl-rosie szl-killinchu; do
+for ns in szl-a11oy szl-sentra szl-amaru szl-yupana szl-killinchu; do
   kubectl wait --for=condition=Available deploy --all -n "$ns" --timeout=180s && echo "$ns OK"; done
 ```
 
@@ -78,21 +78,21 @@ for ns in szl-a11oy szl-sentra szl-amaru szl-rosie szl-killinchu; do
 **The decision in one line:** Start on **one Hetzner CCX dedicated-vCPU cloud server (`ccx33`: 8 vCPU / 32 GB / 240 GB NVMe), Ubuntu 24.04, single-node k3s**. Do **not** start with a multi-node cluster, and do **not** rent a GPU server yet.
 
 **Why single-node k3s on one CCX box (not a cluster, not a GPU server):**
-- **UDS Core + the 5 organs need headroom.** The full `szl-mesh` bundle is ~3.6 GB of images (rosie alone bakes ~2.9 GB), and UDS Core runs Istio (ambient), Keycloak, Pepr, Prometheus/Grafana, Vector→Loki, Falco, Velero. A single `ccx33` clears the **≥8 vCPU / ≥16 GB / ≥80 GB** floor with margin; `ccx43` (16 vCPU / 64 GB) is the comfortable upgrade.
+- **UDS Core + the 5 organs need headroom.** The full `szl-mesh` bundle is ~3.6 GB of images (yupana alone bakes ~2.9 GB), and UDS Core runs Istio (ambient), Keycloak, Pepr, Prometheus/Grafana, Vector→Loki, Falco, Velero. A single `ccx33` clears the **≥8 vCPU / ≥16 GB / ≥80 GB** floor with margin; `ccx43` (16 vCPU / 64 GB) is the comfortable upgrade.
 - **CCX (dedicated vCPU) over shared CX** so Istio/Keycloak/Prometheus aren't throttled by noisy neighbours. CCX is the [Hetzner dedicated-vCPU line](https://www.hetzner.com/cloud/general-purpose) (`ccx13/23/33/43/...`).
 - **k3s single-node is the easiest conformant Kubernetes.** One `curl | sh`, no etcd quorum to manage, full UDS Core compatibility. You can promote it to an HA cluster later by adding server/agent nodes on a Hetzner **private network** — the UDS layer above doesn't change.
-- **The GPU lives on your tower, not Hetzner (for now).** Hetzner's **cloud** servers have **no GPU**; GPUs are only on [Hetzner dedicated GPU root servers](https://www.hetzner.com/dedicated-rootserver/matrix-gpu/) (RTX 4000/5000-class, monthly, with setup) — overkill to start. The 5 organs are **CPU services**; the GPU only matters for **local model inference** (some a11oy /code + rosie capabilities). **Best path:** run the governed control plane on the Hetzner CCX box, and attach your **RTX 4060 Ti tower as a GPU worker node** (join it to the k3s cluster over WireGuard/Tailscale) only when you actually need GPU inference (§7). This is cheaper and keeps the GPU where it already is.
+- **The GPU lives on your tower, not Hetzner (for now).** Hetzner's **cloud** servers have **no GPU**; GPUs are only on [Hetzner dedicated GPU root servers](https://www.hetzner.com/dedicated-rootserver/matrix-gpu/) (RTX 4000/5000-class, monthly, with setup) — overkill to start. The 5 organs are **CPU services**; the GPU only matters for **local model inference** (some a11oy /code + yupana capabilities). **Best path:** run the governed control plane on the Hetzner CCX box, and attach your **RTX 4060 Ti tower as a GPU worker node** (join it to the k3s cluster over WireGuard/Tailscale) only when you actually need GPU inference (§7). This is cheaper and keeps the GPU where it already is.
 
 **Topology summary (recommended → future):**
 
 | Stage | Topology | Use when |
 |---|---|---|
 | **Now (recommended)** | 1× Hetzner `ccx33` CCX, single-node k3s, UDS Core + `szl-mesh:0.4.0` | stand up + demo + iterate today |
-| Add GPU | + RTX 4060 Ti tower joined as a k3s **agent (GPU) node** over a private overlay | local model inference for a11oy/rosie |
+| Add GPU | + RTX 4060 Ti tower joined as a k3s **agent (GPU) node** over a private overlay | local model inference for a11oy/yupana |
 | Scale out | 3× CCX server nodes (HA k3s embedded etcd) + N agents, Hetzner private network + LB | production HA |
 | Air-gap | one CCX (or on-prem) node, `uds pull` → USB `.tar.zst` → offline `uds deploy` | sovereign / disconnected (§6.2) |
 
-**What you get at the end of §6:** UDS Core healthy; a11oy (governance/command platform, port 8080), sentra (security gate, 8080), amaru (reasoning/memory, 8080), rosie (operator console, 7860), killinchu (counter-UAS field node, 7860) running as UDS-governed Packages — each with Istio routing, default-deny + explicit NetworkPolicies, Keycloak SSO, and Prometheus monitors, reconciled by the UDS Operator.
+**What you get at the end of §6:** UDS Core healthy; a11oy (governance/command platform, port 8080), sentra (security gate, 8080), amaru (reasoning/memory, 8080), yupana (operator console, 7860), killinchu (counter-UAS field node, 7860) running as UDS-governed Packages — each with Istio routing, default-deny + explicit NetworkPolicies, Keycloak SSO, and Prometheus monitors, reconciled by the UDS Operator.
 
 ---
 
@@ -281,8 +281,8 @@ kubectl get pods -A | grep -E 'vector|loki|falco|velero'
 
 | Bundle | OCI ref | Manifest digest | Composition | Status |
 |---|---|---|---|---|
-| **Full 5-organ mesh** (RECOMMENDED) | `oci://ghcr.io/szl-holdings/szl-mesh:0.4.0` (=`v0.4.0`=`latest`) | `sha256:7f5fce3238ce3d255b322340bbe18cad1eb656e677065a2757637337300cac7f` | a11oy+sentra+amaru+rosie+killinchu | **PUBLISHED + signed — current, maintained fallback** |
-| **Platform** (a11oy.uds) | `oci://ghcr.io/szl-holdings/a11oy-bundle:0.5.0` (=`latest`) | `sha256:d801f8e461dfd519b5f8593322e75b89a1e66d4da9f6d72d0937c8ff2de64b51` | a11oy + sentra/amaru/rosie backends | **PUBLISHED + signed — but STALE pin (see note)** |
+| **Full 5-organ mesh** (RECOMMENDED) | `oci://ghcr.io/szl-holdings/szl-mesh:0.4.0` (=`v0.4.0`=`latest`) | `sha256:7f5fce3238ce3d255b322340bbe18cad1eb656e677065a2757637337300cac7f` | a11oy+sentra+amaru+yupana+killinchu | **PUBLISHED + signed — current, maintained fallback** |
+| **Platform** (a11oy.uds) | `oci://ghcr.io/szl-holdings/a11oy-bundle:0.5.0` (=`latest`) | `sha256:d801f8e461dfd519b5f8593322e75b89a1e66d4da9f6d72d0937c8ff2de64b51` | a11oy + sentra/amaru/yupana backends | **PUBLISHED + signed — but STALE pin (see note)** |
 | **Field node** (killinchu.uds) | `oci://ghcr.io/szl-holdings/killinchu-bundle:0.5.0` (=`latest`) | `sha256:e59921332c37408fb5a62b270eeeafb1f1ab44aebb350f18662c37aa2c67426f` | killinchu + sentra/amaru backends | **PUBLISHED + signed + current** |
 
 ```bash
@@ -293,7 +293,7 @@ uds deploy oci://ghcr.io/szl-holdings/szl-mesh:0.4.0 --confirm
 uds deploy oci://ghcr.io/szl-holdings/a11oy-bundle:0.5.0 --confirm       # platform
 uds deploy oci://ghcr.io/szl-holdings/killinchu-bundle:0.5.0 --confirm   # field node
 ```
-You'll see, per organ: `Pushing N images to the zarf registry … Component <organ> successfully deployed`, ending `✔ deployed` for a11oy → sentra → amaru → rosie → killinchu.
+You'll see, per organ: `Pushing N images to the zarf registry … Component <organ> successfully deployed`, ending `✔ deployed` for a11oy → sentra → amaru → yupana → killinchu.
 
 > **⚠️ a11oy-bundle re-pin status (HONEST):** `a11oy-bundle:0.5.0` (`d801f8e4…`) was built against an **older a11oy organ image**; the a11oy image was rebuilt afterward, so the published a11oy-bundle is **STALE**. **Two safe options:** (1) use **`szl-mesh:0.4.0`** (composes all 5 organs; maintained), or (2) have the UDS squad **re-pin** a11oy-bundle (re-run the `uds-canonical-bundles-publish.yml` `workflow_dispatch` with `bundle=a11oy`) and deploy the **new** digest (must be ≠ `d801f8e4…`; re-verify per §6.3). `killinchu-bundle` does **not** need a re-pin.
 
@@ -369,7 +369,7 @@ spec:
 **Killinchu** is identical in shape but `port: 7860` (and a counter-UAS health path). To apply/re-apply CRs stand-alone (e.g. deploying a flagship independently of the full mesh), use the canonical CRs in **szl-fleet-overlay**:
 ```bash
 git clone https://github.com/szl-holdings/szl-fleet-overlay.git && cd szl-fleet-overlay
-kubectl apply -f uds-packages/            # a11oy, sentra, amaru, rosie, killinchu
+kubectl apply -f uds-packages/            # a11oy, sentra, amaru, yupana, killinchu
 kubectl get packages -A                   # UDS Operator reconciles each
 kubectl describe package szl-a11oy -n szl-a11oy   # see expose/allow/sso/monitor reconciled
 ```
@@ -394,8 +394,8 @@ packages:
   - name: szl-amaru
     path: bundles/szl-amaru        # reasoning / memory cortex
     ref: "0.2.0"
-  - name: szl-rosie
-    path: bundles/szl-rosie        # operator console (ask-&-act)
+  - name: szl-yupana
+    path: bundles/szl-yupana        # operator console (ask-&-act)
     ref: "0.2.0"
   - name: szl-killinchu
     path: bundles/szl-killinchu    # counter-UAS field node
@@ -538,9 +538,9 @@ uds deploy oci://ghcr.io/szl-holdings/szl-mesh:0.4.0 --confirm
 
 # === G) VERIFY ===
 kubectl get packages -A
-for ns in szl-a11oy szl-sentra szl-amaru szl-rosie szl-killinchu; do
+for ns in szl-a11oy szl-sentra szl-amaru szl-yupana szl-killinchu; do
   kubectl wait --for=condition=Available deploy --all -n "$ns" --timeout=180s && echo "$ns OK"; done
-# health ports: a11oy/sentra/amaru=8080, rosie/killinchu=7860
+# health ports: a11oy/sentra/amaru=8080, yupana/killinchu=7860
 kubectl port-forward -n szl-a11oy     svc/a11oy     8080:8080 & sleep 2; curl -fsS http://localhost:8080/api/health
 kubectl port-forward -n szl-killinchu svc/killinchu 7860:7860 & sleep 2; curl -fsS http://localhost:7860/api/killinchu/healthz
 # supply-chain verify (bundle signature is the provenance — no bundle SLSA attestation):
@@ -585,7 +585,7 @@ curl -sI -H "Authorization: Bearer $TOKEN" \
 
 ## 7. GPU — expose the RTX 4060 Ti to k3s for model workloads
 
-The 5 organs are CPU services; the GPU only matters for **local model inference** (a11oy `/code` agentic model serving, rosie model-backed responses). Attach the GPU on the node that has it (your **tower** joined as a k3s agent, or a Hetzner dedicated GPU server). Steps (Ubuntu, per [k3s advanced docs](https://docs.k3s.io/advanced)):
+The 5 organs are CPU services; the GPU only matters for **local model inference** (a11oy `/code` agentic model serving, yupana model-backed responses). Attach the GPU on the node that has it (your **tower** joined as a k3s agent, or a Hetzner dedicated GPU server). Steps (Ubuntu, per [k3s advanced docs](https://docs.k3s.io/advanced)):
 ```bash
 # 1) NVIDIA driver + container toolkit on the GPU node
 distribution=$(. /etc/os-release; echo $ID$VERSION_ID)
@@ -613,13 +613,13 @@ kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.1
 kubectl describe node | grep -A2 nvidia.com/gpu     # expect Capacity/Allocatable: nvidia.com/gpu: 1
 ```
 GPU-using pods then set `runtimeClassName: nvidia` and `resources.limits.nvidia.com/gpu: 1`.
-> **Which a11oy capabilities can use it:** the agentic `/code` model-serving and rosie's model-backed answers benefit from the GPU; governance/policy, sentra, amaru, killinchu counter-UAS decisioning are CPU. On the **RTX 4060 Ti (16 GB VRAM)** you can serve a quantized 7B–14B class model — size the model to VRAM. The tower joins the Hetzner cluster as a GPU **agent** over a private overlay (WireGuard/Tailscale); keep the control plane on the CCX box.
+> **Which a11oy capabilities can use it:** the agentic `/code` model-serving and yupana's model-backed answers benefit from the GPU; governance/policy, sentra, amaru, killinchu counter-UAS decisioning are CPU. On the **RTX 4060 Ti (16 GB VRAM)** you can serve a quantized 7B–14B class model — size the model to VRAM. The tower joins the Hetzner cluster as a GPU **agent** over a private overlay (WireGuard/Tailscale); keep the control plane on the CCX box.
 
 ---
 
 ## 8. DAY-2 OPERATIONS
 
-- **Backups (Velero, shipped in Core):** schedule cluster + PV backups to S3-compatible object storage (Hetzner Object Storage or any S3). `velero backup create szl-$(date +%F) --include-namespaces szl-a11oy,szl-sentra,szl-amaru,szl-rosie,szl-killinchu`. Test a restore quarterly. Also back up `/var/lib/rancher/k3s/server/db` (k3s etcd snapshot: `k3s etcd-snapshot save`).
+- **Backups (Velero, shipped in Core):** schedule cluster + PV backups to S3-compatible object storage (Hetzner Object Storage or any S3). `velero backup create szl-$(date +%F) --include-namespaces szl-a11oy,szl-sentra,szl-amaru,szl-yupana,szl-killinchu`. Test a restore quarterly. Also back up `/var/lib/rancher/k3s/server/db` (k3s etcd snapshot: `k3s etcd-snapshot save`).
 - **Upgrades (bump bundle versions + re-pin digests):** edit `uds-bundle.yaml` `ref:`/version, run `uds-canonical-bundles-publish.yml`, **re-verify the new digest** (§6.3), then `uds deploy oci://…:<newver>`. Always pin by version AND record the digest. Upgrade UDS Core by deploying the next `core:<ver>-upstream`.
 - **Monitoring (UDS Prometheus/Grafana):** dashboards via the admin gateway (`grafana.admin.<domain>`). Each organ's `Package.spec.monitor` creates a ServiceMonitor; confirm targets are UP in Prometheus. Alertmanager routes to your channel.
 - **Secrets:** the **receipt signing key** is auto-generated **in-cluster** by szl-uds-deployment's `szl-key-init` Helm pre-install hook (Ed25519 in `pepr-system`) — **zero founder action**, BYOK supported, SZL never sees it. For app secrets, prefer Keycloak-issued OIDC secrets (generated by the `sso` block) and Kubernetes Secrets sealed via your chosen sealing tool; do **not** commit secrets.
@@ -638,7 +638,7 @@ Clone in **this order**. Every repo below is real in the `szl-holdings` org.
 | 1 | **szl-build-env** (private) | `git clone https://github.com/szl-holdings/szl-build-env.git` | One-command local tower bootstrap: `make up` (kind + Istio ambient + OTEL/Jaeger + 5 organs + cosign gate); `make verify`/`make trace`/`make down`. | — |
 | 2 | **szl-uds-deployment** (private) | `git clone https://github.com/szl-holdings/szl-uds-deployment.git` | The live reference deploy target + task runner: `uds run start` (k3d + receipts bundle), `uds run demo:workload`, `uds run demo:verify`, `uds run teardown`. Carries `zarf.yaml`, `uds-bundle.yaml`, `tasks.yaml`, the Pepr governance-receipt policy, and `docs/` (INSTALL, AIRGAP, ARCHITECTURE, KEYCLOAK_SSO, OPERATOR_QUICKSTART, **and this doc**). | `uds-bundle-publish.yml`, `uds-package-release.yml`, `zarf-package-sign.yml`, `cosign.yml`, `sbom.yml`, `trivy.yml`, `scorecard.yml`, `verify-signed-assets.yml`, `doctrine.yml` |
 | 3 | **uds-bundles** (public) | `git clone https://github.com/szl-holdings/uds-bundles.git` | The bundle SOURCE: `bundles/szl-<organ>/` Zarf packages, `bundles/a11oy/` + `bundles/killinchu/` UDSBundle manifests, root `uds-bundle.yaml` (szl-mesh), `crds/`, `mesh/`, `DEPLOY.md`. Built on UDS Core v1.5.0, Zarf ≥ v0.77.0, uds-cli v0.32.0. | **`uds-canonical-bundles-publish.yml`** (re-pin/re-publish a bundle via `workflow_dispatch`), `uds-bundle-publish.yml`, `zarf-bundle-build.yml`, `cosign.yml`, `cosign-bootstrap.yml`, `sbom.yml`, `trivy.yml` |
-| 4 | **szl-fleet-overlay** (public) | `git clone https://github.com/szl-holdings/szl-fleet-overlay.git` | UDS Operator entry point + Helm chart: stand-alone `uds-packages/{a11oy,sentra,amaru,rosie,killinchu}.yaml`, `chart/` (dev/staging/prod values), Zarf air-gap variant. | — |
+| 4 | **szl-fleet-overlay** (public) | `git clone https://github.com/szl-holdings/szl-fleet-overlay.git` | UDS Operator entry point + Helm chart: stand-alone `uds-packages/{a11oy,sentra,amaru,yupana,killinchu}.yaml`, `chart/` (dev/staging/prod values), Zarf air-gap variant. | — |
 
 **Bare-box → running, today:**
 ```bash
@@ -672,7 +672,7 @@ kubectl apply -f szl-fleet-overlay/uds-packages/                                
 | Symptom | Cause | Fix |
 |---|---|---|
 | `ImagePullBackOff` on organ pods | GHCR token missing/expired or image private | `echo "$GHCR_TOKEN" \| docker login ghcr.io …` (`read:packages`); `kubectl describe pod -n szl-<organ>` |
-| Istio VirtualService → 503, no metrics | sidecar-vs-ambient selector mismatch | Package CR selectors `app: szl-<organ>`; ports a11oy/sentra/amaru=8080, rosie/killinchu=7860; re-apply from `szl-fleet-overlay/uds-packages/` |
+| Istio VirtualService → 503, no metrics | sidecar-vs-ambient selector mismatch | Package CR selectors `app: szl-<organ>`; ports a11oy/sentra/amaru=8080, yupana/killinchu=7860; re-apply from `szl-fleet-overlay/uds-packages/` |
 | Package CR stuck `Pending` | Istio not ready yet | wait for `ztunnel`/`istiod` Running in `istio-system`, then it reconciles |
 | SSO redirect loop | Keycloak client not registered | re-run `uds deploy` (re-syncs `sso` CRs); confirm group `/szl-operators` |
 | `zarf init` hangs / "requires a zarf-init package" | init seed not fetched | `zarf tools download-init` **before** `zarf init --confirm` (usually unnecessary on the UDS path) |
@@ -700,7 +700,7 @@ kubectl apply -f szl-fleet-overlay/uds-packages/                                
 | Organ image a11oy | `a11oy:uds-v0.2.0` | **200** | `sha256:e2ef6184b94397d279753dd7b84addb74677a5921c425eee6637d9d098a80171` (newer than the a11oy-bundle pin → re-pin needed) |
 | Organ image sentra | `sentra:uds-v0.2.0` | **200** | `sha256:60a0efc14366ba392bfe3f3cd4196863fe148bb87a17428be6a57f0a05ac3639` |
 | Organ image amaru | `amaru:uds-v0.2.0` | **200** | `sha256:53301e26adcde49e73df28d8c3b790f2496da9d495307fe8587ffa7452b289ff` |
-| Organ image rosie | `rosie:uds-v0.2.0` | **200** | `sha256:1984a15f53c2e1b91c7dafaa0ed5df9148d57e3e86eb73db879c2b0443302848` |
+| Organ image yupana | `yupana:uds-v0.2.0` | **200** | `sha256:1984a15f53c2e1b91c7dafaa0ed5df9148d57e3e86eb73db879c2b0443302848` |
 | Organ image killinchu | `killinchu:uds-v0.2.0` | **200** | `sha256:e0fb6c3aeaddadfbabc3ca7c5f29ef7b3ba31370b5ffb816e12495d5f29ca548` |
 | UDS Core | `defenseunicorns/packages/uds/core:1.5.0-upstream` | **200** | (Defense Unicorns) — *verify tag before deploy* |
 

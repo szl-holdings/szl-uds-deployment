@@ -31,11 +31,11 @@ tasks:
   # What this does:
   #   1. Launches scenario B (drone-deny-llm) from the embedded scenario runner.
   #   2. qwen2.5:7b planner (or deterministic stub on fallback) proposes 3 drone cmds.
-  #   3. ROSIE evaluates each against the 8 policy gates (G1-G8).
+  #   3. YUPANA evaluates each against the 8 policy gates (G1-G8).
   #   4. Gate G7 (geofence) fires DENY on uav-3 for restricted-airspace-R-2508.
   #   5. The raw verdict payload is POSTed to szl-receipts-server, which signs
   #      it with Ed25519 over the canonical DSSE PAE and chains it (PR-4).
-  #   6. Receipt appears in the rosie console dashboard in real time.
+  #   6. Receipt appears in the yupana console dashboard in real time.
   #   7. Verify offline, public-key only: `uds run demo:verify`.
   #
   # Expected terminal output (matches local_demo/expected_output/):
@@ -51,7 +51,7 @@ tasks:
   #
   # Reference: UDS_BUNDLE_POLISH_PLAN.md §5 PR-5 (Gap G9)
   - name: scenario
-    description: "Day 3 demo: drone-deny scenario B — LLM planner + ROSIE governance + receipt chain"
+    description: "Day 3 demo: drone-deny scenario B — LLM planner + YUPANA governance + receipt chain"
     actions:
       - description: "Check receipt server is reachable"
         cmd: |
@@ -71,7 +71,7 @@ tasks:
 
           echo ""
           echo "======================================================================"
-          echo "  ROSIE Day 3 Demo — Scenario B: Drone-Deny"
+          echo "  YUPANA Day 3 Demo — Scenario B: Drone-Deny"
           echo "======================================================================"
           echo "  Planner:  ${PLANNER}"
           echo "  Zone:     [37.7749, -122.4194, 120m] (SF Bay Area)"
@@ -176,7 +176,7 @@ tasks:
         cmd: |
           RECEIPTS_URL="${SZL_RECEIPTS_URL:-http://localhost:8080}"
           echo ""
-          echo "=== ROSIE Receipt Chain — Proof Query ==="
+          echo "=== YUPANA Receipt Chain — Proof Query ==="
           echo ""
           if curl -sf "${RECEIPTS_URL}/health" >/dev/null 2>&1; then
             CHAIN=$(curl -sf "${RECEIPTS_URL}/receipts" 2>/dev/null || echo "[]")
@@ -197,7 +197,7 @@ tasks:
             ts = r.get('timestamp', 'unknown')
             print(f'  #{i+1}: {verdict:5s}  actor={actor}  gate={gate}  prev_hash={prev_hash}  ts={ts}')
           print()
-          print('  [chain] All receipts listed above — click any receipt in rosie console to expand proof.')
+          print('  [chain] All receipts listed above — click any receipt in yupana console to expand proof.')
           " 2>/dev/null || echo "  ${CHAIN}"
           else
             echo "  [prove] receipt server not reachable at ${RECEIPTS_URL}"

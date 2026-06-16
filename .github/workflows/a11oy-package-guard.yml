@@ -34,7 +34,7 @@
 # NOTE: a11oy is intentionally NOT in the ROOT uds-bundle.yaml — commit a4c7dc9 split
 # that into the receipts-only "szl-receipts-bundle" (init + slim core + szl-receipts)
 # for the single-node offline redeploy. The organs (a11oy + sentra/amaru/killinchu/
-# rosie) live in bundles/szl-uds-bundle/uds-bundle.yaml, so that is the bundle this
+# yupana) live in bundles/szl-uds-bundle/uds-bundle.yaml, so that is the bundle this
 # guard checks.
 
 name: a11oy Package Guard

@@ -1,9 +1,9 @@
 # Copyright 2026 SZL Holdings — SPDX-License-Identifier: Apache-2.0
-# Doctrine config mounted into the rosie workload.
+# Doctrine config mounted into the yupana workload.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: rosie-doctrine
+  name: yupana-doctrine
   namespace: {{ .Values.namespace }}
 data:
   DOCTRINE_VERSION: "v11"
@@ -11,4 +11,4 @@ data:
   KERNEL_COMMIT: "c7c0ba17"
   SLSA_LEVEL: "L1"
   RECEIPTS_SINK: "{{ .Values.receiptsSink.service }}.{{ .Values.receiptsSink.namespace }}.svc:{{ .Values.receiptsSink.port }}"
-  ORGAN: "rosie"
+  ORGAN: "yupana"

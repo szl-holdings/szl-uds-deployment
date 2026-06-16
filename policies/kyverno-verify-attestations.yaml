@@ -24,7 +24,7 @@ spec:
                 - a11oy
                 - sentra
                 - amaru
-                - rosie
+                - yupana
                 - killinchu
       verifyImages:
         - imageReferences:
@@ -57,5 +57,5 @@ spec:
                         - https://github.com/szl-holdings/a11oy
                         - https://github.com/szl-holdings/sentra
                         - https://github.com/szl-holdings/amaru
-                        - https://github.com/szl-holdings/rosie
+                        - https://github.com/szl-holdings/yupana
                         - https://github.com/szl-holdings/killinchu

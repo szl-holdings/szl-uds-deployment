@@ -1,18 +1,18 @@
 # Copyright 2026 SZL Holdings — SPDX-License-Identifier: Apache-2.0
-# rosie Helm values — STIG-aligned securityContext, default-deny NetworkPolicy,
+# yupana Helm values — STIG-aligned securityContext, default-deny NetworkPolicy,
 # STRICT mTLS via Istio (managed by UDS Operator / uds-core).
-namespace: szl-rosie
+namespace: szl-yupana
 replicas: 1
 
 image:
-  repository: ghcr.io/szl-holdings/rosie
+  repository: ghcr.io/szl-holdings/yupana
   tag: "uds-v0.2.1"
   pullPolicy: IfNotPresent
 
 service:
   port: 7860
 
-healthPath: "/api/rosie/healthz"
+healthPath: "/api/yupana/healthz"
 
 # Receipt-signing key (Ed25519). Provisioned by the szl-key-init pre-install hook
 # into Secret `receiptKeySecret` unless it already exists (BYOK supported).

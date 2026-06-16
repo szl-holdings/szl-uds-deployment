@@ -34,7 +34,7 @@ Each flagship runs live on Hugging Face — same payload, different runtime:
 - **a11oy:** [szlholdings-a11oy.hf.space](https://szlholdings-a11oy.hf.space)
 - **sentra:** [szlholdings-sentra.hf.space](https://szlholdings-sentra.hf.space)
 - **amaru:** [szlholdings-amaru.hf.space](https://szlholdings-amaru.hf.space)
-- **rosie:** [szlholdings-rosie.hf.space](https://szlholdings-rosie.hf.space)
+- **yupana:** [szlholdings-yupana.hf.space](https://szlholdings-yupana.hf.space)
 - **killinchu:** [szlholdings-killinchu.hf.space](https://szlholdings-killinchu.hf.space)
 
 ## Troubleshooting
@@ -53,7 +53,7 @@ Each flagship runs live on Hugging Face — same payload, different runtime:
 
 
 
-`szl-fleet-overlay` registers each SZL flagship application — **a11oy, sentra, amaru, rosie, killinchu** — as a first-class UDS-managed application running on top of [UDS Core](https://github.com/defenseunicorns/uds-core).
+`szl-fleet-overlay` registers each SZL flagship application — **a11oy, sentra, amaru, yupana, killinchu** — as a first-class UDS-managed application running on top of [UDS Core](https://github.com/defenseunicorns/uds-core).
 
 It provides:
 
@@ -74,7 +74,7 @@ See [`SZL_FLEET_OVERLAY_DESIGN.md`](https://github.com/szl-holdings/szl-fleet-ov
 | a11oy      | `szl-a11oy`   | 8080 | `uds-szl-a11oy`     | Yes       |
 | sentra     | `szl-sentra`  | 8080 | `uds-szl-sentra`    | Yes       |
 | amaru      | `szl-amaru`   | 8080 | `uds-szl-amaru`     | Yes       |
-| rosie      | `szl-rosie`   | 8080 | `uds-szl-rosie`     | Yes       |
+| yupana      | `szl-yupana`   | 8080 | `uds-szl-yupana`     | Yes       |
 | killinchu  | `szl-killinchu`| 8080 | `uds-szl-killinchu` | Yes       |
 
 All applications are served over the UDS **tenant** gateway. SSO group gate: `/szl-operators`.
@@ -235,7 +235,7 @@ no Keycloak SSO client, no ServiceMonitor.
 | `uds-packages/a11oy.yaml` | a11oy | `szl-a11oy` |
 | `uds-packages/sentra.yaml` | sentra | `szl-sentra` |
 | `uds-packages/amaru.yaml` | amaru | `szl-amaru` |
-| `uds-packages/rosie.yaml` | rosie | `szl-rosie` |
+| `uds-packages/yupana.yaml` | yupana | `szl-yupana` |
 | `uds-packages/killinchu.yaml` | killinchu | `szl-killinchu` |
 
 ### Apply stand-alone Package CRs

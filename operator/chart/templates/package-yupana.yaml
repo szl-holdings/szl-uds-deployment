@@ -1,0 +1,3 @@
+{{- if .Values.apps.yupana.enabled }}
+{{ include "szl-fleet.package" (dict "name" "yupana" "app" .Values.apps.yupana "global" .Values.global "Chart" .Chart) }}
+{{- end }}

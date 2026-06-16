@@ -133,7 +133,7 @@ FLAGSHIP_ACTIONS = {
             "entry_count": 18,
         },
     ],
-    "rosie": [
+    "yupana": [
         {
             "action": "receipts.stream",
             "input": {"source": "a11oy"},
@@ -150,7 +150,7 @@ FLAGSHIP_ACTIONS = {
         },
         {
             "action": "aide.action",
-            "input": {"action_type": "briefing", "agent_id": "rosie-v11"},
+            "input": {"action_type": "briefing", "agent_id": "yupana-v11"},
             "verdict": "ALLOW",
             "reason": "signed_aide_action",
         },
@@ -260,8 +260,8 @@ def main():
     prev_hash = "0" * 64  # genesis hash
     seq       = 0
 
-    # Interleave flagships in deployment order: a11oy → sentra → amaru → rosie → killinchu
-    flagship_order = ["a11oy", "sentra", "amaru", "rosie", "killinchu"]
+    # Interleave flagships in deployment order: a11oy → sentra → amaru → yupana → killinchu
+    flagship_order = ["a11oy", "sentra", "amaru", "yupana", "killinchu"]
 
     # Build 20 receipts (4 per flagship) in round-robin order
     action_iterators = {f: iter(FLAGSHIP_ACTIONS[f]) for f in flagship_order}

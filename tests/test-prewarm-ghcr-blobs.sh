@@ -67,8 +67,8 @@ eq "parse_ref prefers digest over tag" \
 
 # digest only
 eq "parse_ref digest-only" \
-  "szl-holdings/rosie|sha256:1984a15f" \
-  "$(parse_ref 'ghcr.io/szl-holdings/rosie@sha256:1984a15f')"
+  "szl-holdings/yupana|sha256:1984a15f" \
+  "$(parse_ref 'ghcr.io/szl-holdings/yupana@sha256:1984a15f')"
 
 # tag only
 eq "parse_ref tag-only" \

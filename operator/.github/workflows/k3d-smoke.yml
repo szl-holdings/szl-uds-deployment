@@ -73,7 +73,7 @@ jobs:
             configs/packages/package-a11oy.yaml \
             configs/packages/package-sentra.yaml \
             configs/packages/package-amaru.yaml \
-            configs/packages/package-rosie.yaml \
+            configs/packages/package-yupana.yaml \
             configs/packages/package-killinchu.yaml \
             receipts/doctrine-pin.yaml; do
             if [ -f "$f" ]; then
@@ -219,7 +219,7 @@ jobs:
 
       - name: Apply Package CRs
         run: |
-          for app in a11oy sentra amaru rosie killinchu; do
+          for app in a11oy sentra amaru yupana killinchu; do
             kubectl apply -f configs/packages/package-$${app}.yaml \
               -n szl-$${app} 2>/dev/null || \
             kubectl apply -f configs/packages/package-$${app}.yaml || true
@@ -249,7 +249,7 @@ jobs:
               receipts = [json.loads(l) for l in f]
           assert len(receipts) == 20, f"Expected 20 receipts, got {len(receipts)}"
           flagships = {r["flagship"] for r in receipts}
-          assert flagships == {"a11oy","sentra","amaru","rosie","killinchu"}, \
+          assert flagships == {"a11oy","sentra","amaru","yupana","killinchu"}, \
               f"Missing flagships: {flagships}"
           # Verify chain integrity
           prev = "0"*64
@@ -268,7 +268,7 @@ jobs:
 
       - name: Validate Package CR namespaces exist
         run: |
-          for ns in szl-a11oy szl-sentra szl-amaru szl-rosie szl-killinchu; do
+          for ns in szl-a11oy szl-sentra szl-amaru szl-yupana szl-killinchu; do
             phase=$(kubectl get ns $ns -o jsonpath='{.status.phase}' 2>/dev/null || echo "Missing")
             if [ "$phase" = "Active" ]; then
               echo "  ✅  $ns Active"
@@ -283,7 +283,7 @@ jobs:
       - name: Smoke — live HF Space health checks
         run: |
           PASS=0; FAIL=0
-          for app in a11oy sentra amaru rosie killinchu; do
+          for app in a11oy sentra amaru yupana killinchu; do
             code=$(curl -sf --max-time 10 \
               https://szlholdings-$${app}.hf.space/api/health \
               -o /dev/null -w "%{http_code}" 2>/dev/null || echo "ERR")

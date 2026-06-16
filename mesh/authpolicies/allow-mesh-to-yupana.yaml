@@ -10,16 +10,16 @@
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
-  name: allow-mesh-to-rosie
-  namespace: szl-rosie
+  name: allow-mesh-to-yupana
+  namespace: szl-yupana
   labels:
-    app.kubernetes.io/name: rosie
+    app.kubernetes.io/name: yupana
     szl.io/component: mesh-authz
     szl.io/mesh-version: v0.4.0
 spec:
   selector:
     matchLabels:
-      app: rosie
+      app: yupana
   action: ALLOW
   rules:
     - from:

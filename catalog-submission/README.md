@@ -62,7 +62,7 @@ Source: https://docs.defenseunicorns.com/core/how-to-guides/packaging-applicatio
 | README / docs | ✓ DONE — OPERATOR_QUICKSTART.md + per-component docs | This PR |
 | CI passing | ✓ DONE — all repos green on main | GitHub Actions |
 | Zarf package (szl-receipts) | Partial — `zarf.yaml` exists, package not yet created | PR #4 |
-| Zarf packages (a11oy, sentra, amaru, rosie) | [STAGED] — not yet created | FA-001 needed |
+| Zarf packages (a11oy, sentra, amaru, yupana) | [STAGED] — not yet created | FA-001 needed |
 | Container images at GHCR | [STAGED] — NOT PUSHED | FA-001 needed |
 | Cosign-signed assets | [STAGED] — NOT SIGNED | FA-001 needed |
 | Formal catalog sponsor | [STAGED] — not confirmed | Requires DU catalog maintainer |
@@ -78,7 +78,7 @@ ghcr.io/szl-holdings/vessels:uds-v0.3.0   — NOT PUSHED (FA-001 blocker)
 ghcr.io/szl-holdings/a11oy:uds-v0.3.1     — NOT PUSHED (FA-001 blocker)
 ghcr.io/szl-holdings/sentra:uds-v0.3.1    — NOT PUSHED (FA-001 blocker)
 ghcr.io/szl-holdings/amaru:uds-v0.3.1     — NOT PUSHED (FA-001 blocker)
-ghcr.io/szl-holdings/rosie:uds-v0.3.1     — NOT PUSHED (FA-001 blocker)
+ghcr.io/szl-holdings/yupana:uds-v0.3.1     — NOT PUSHED (FA-001 blocker)
 ```
 
 ### 2. Cosign-signed binary assets NOT attached to GitHub releases
@@ -94,7 +94,7 @@ It does NOT constitute:
 
 ### 4. UDS Package CR incomplete for multi-component stack
 The CR in PR #4 covers `szl-receipts` only.
-Full stack Package CRs for a11oy-runtime, sentra-gates, amaru-attestation, rosie-replay
+Full stack Package CRs for a11oy-runtime, sentra-gates, amaru-attestation, yupana-replay
 require in-cluster services/selectors that don't exist yet.
 
 ---

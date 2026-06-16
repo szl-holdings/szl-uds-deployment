@@ -4,7 +4,7 @@ description: >
   DEPRECATED — retired in favour of the UDS bundle
   bundles/szl-full-stack/uds-bundle.yaml. This Helm umbrella chart was a
   Doctrine-v6 STAGED duplicate that composed non-existent organ sub-charts
-  (a11oy-runtime, sentra-gates, amaru-attestation, rosie-replay) from an OCI
+  (a11oy-runtime, sentra-gates, amaru-attestation, yupana-replay) from an OCI
   chart repo (oci://ghcr.io/szl-holdings/charts) that was never published, and
   pinned the broken uds-v0.3.1 organ images that were never built. The real,
   verified full-stack definition is the UDS bundle, whose organ members are
@@ -47,7 +47,7 @@ sources:
   - https://github.com/szl-holdings/a11oy
   - https://github.com/szl-holdings/sentra
   - https://github.com/szl-holdings/amaru
-  - https://github.com/szl-holdings/rosie
+  - https://github.com/szl-holdings/yupana
   - https://github.com/szl-holdings/vessels
   - https://github.com/szl-holdings/uds-mesh
 

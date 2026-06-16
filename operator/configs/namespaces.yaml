@@ -26,7 +26,7 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: szl-rosie
+  name: szl-yupana
   labels:
     istio.io/dataplane-mode: ambient
     szl.io/doctrine-version: "v11"

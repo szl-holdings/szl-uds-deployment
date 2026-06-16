@@ -59,7 +59,7 @@ demo-up: ## [DEMO] Spin up k3d + UDS Core + 5 flagships + szl-mesh (≈ 10-20 mi
 	@echo ""
 	@echo -e "$(GREEN)✅  demo-up COMPLETE$(NC)"
 	@echo -e "   Flagships: https://a11oy.uds.dev  https://sentra.uds.dev"
-	@echo -e "             https://amaru.uds.dev   https://rosie.uds.dev"
+	@echo -e "             https://amaru.uds.dev   https://yupana.uds.dev"
 	@echo -e "             https://killinchu.uds.dev"
 	@echo ""
 	@$(MAKE) demo-status
@@ -71,7 +71,7 @@ demo-status: ## [DEMO] Report all 5 flagships' status + receipt chain depth
 	@kubectl get nodes --no-headers 2>/dev/null || echo "  cluster not running"
 	@echo ""
 	@echo "Package CR status:"
-	@for app in a11oy sentra amaru rosie killinchu; do \
+	@for app in a11oy sentra amaru yupana killinchu; do \
 	  phase=$$(kubectl get package szl-$${app} -n szl-$${app} \
 	    -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound"); \
 	  if [ "$${phase}" = "Ready" ]; then \
@@ -82,7 +82,7 @@ demo-status: ## [DEMO] Report all 5 flagships' status + receipt chain depth
 	done
 	@echo ""
 	@echo "Live HF Space health (internet fallback):"
-	@for app in a11oy sentra amaru rosie killinchu; do \
+	@for app in a11oy sentra amaru yupana killinchu; do \
 	  status=$$(curl -sf --max-time 5 \
 	    https://szlholdings-$${app}.hf.space/api/health \
 	    -o /dev/null -w "%{http_code}" 2>/dev/null || echo "ERR"); \
@@ -212,7 +212,7 @@ flagships-deploy: ## Deploy all 5 flagship HF-based Deployments into cluster
 	  kubectl apply -f configs/packages/package-a11oy.yaml -n szl-a11oy && \
 	  kubectl apply -f configs/packages/package-sentra.yaml -n szl-sentra && \
 	  kubectl apply -f configs/packages/package-amaru.yaml -n szl-amaru && \
-	  kubectl apply -f configs/packages/package-rosie.yaml -n szl-rosie && \
+	  kubectl apply -f configs/packages/package-yupana.yaml -n szl-yupana && \
 	  kubectl apply -f configs/packages/package-killinchu.yaml -n szl-killinchu
 	@echo -e "  Applying flagship Deployments..."
 	@export KUBECONFIG=/tmp/szl-demo-kubeconfig.yaml && \
@@ -220,7 +220,7 @@ flagships-deploy: ## Deploy all 5 flagship HF-based Deployments into cluster
 	@echo -e "  $(GREEN)✅  flagship manifests applied$(NC)"
 	@echo "  Waiting for flagship pods to be ready (timeout 300s)..."
 	@export KUBECONFIG=/tmp/szl-demo-kubeconfig.yaml && \
-	  for app in a11oy sentra amaru rosie killinchu; do \
+	  for app in a11oy sentra amaru yupana killinchu; do \
 	    kubectl rollout status deployment/szl-$${app} \
 	      -n szl-$${app} --timeout=300s 2>/dev/null \
 	      && echo -e "  $(GREEN)✅  $${app} ready$(NC)" \

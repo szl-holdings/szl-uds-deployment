@@ -3,10 +3,10 @@ metadata:
   name: szl-full-stack
   description: >
     SZL Holdings full-stack UDS bundle — composes szl-receipts plus the four
-    flagship organs (a11oy, sentra, amaru, rosie) as separate Zarf packages.
+    flagship organs (a11oy, sentra, amaru, yupana) as separate Zarf packages.
     The organ members are now AVAILABLE: each is referenced by LOCAL path to its
     packages/<organ>/zarf.yaml, which wraps the LIVE, cosign-signed,
-    digest-pinned organ image on ghcr.io (amaru/sentra/rosie pin uds-v0.2.0
+    digest-pinned organ image on ghcr.io (amaru/sentra/yupana pin uds-v0.2.0
     @sha256 digests; a11oy is tag-pinned uds-v0.3.0 by design). This bundle
     therefore pulls ONLY verified images.
     DOCTRINE: the members are published, cosign-signed and INDIVIDUALLY
@@ -16,7 +16,7 @@ metadata:
   # Doctrine marker: organ members re-pinned from the broken uds-v0.3.1 image-repo
   # placeholders to the verified, digest-pinned packages/<organ> (Task #595).
   # cosign verify + cosign verify-attestation --type slsaprovenance PASS for each
-  # pinned organ image (amaru/sentra @refs/heads/main, rosie @refs/tags/uds-v0.3.1;
+  # pinned organ image (amaru/sentra @refs/heads/main, yupana @refs/tags/uds-v0.3.1;
   # issuer https://token.actions.githubusercontent.com). Do NOT revert these to
   # raw `repository: ghcr.io/szl-holdings/<organ>` + `ref: uds-v0.3.1` — that
   # coordinate is an image repo, not a published Zarf package, and no Zarf
@@ -97,19 +97,19 @@ packages:
     ref: "0.2.0"
 
   # ─────────────────────────────────────────────────────────────────
-  # Package 5: szl-rosie (rosie-replay)
-  # Status: AVAILABLE — local Zarf package packages/rosie wraps the live,
+  # Package 5: szl-yupana (yupana-replay)
+  # Status: AVAILABLE — local Zarf package packages/yupana wraps the live,
   #         cosign-signed, digest-pinned image:
-  #         ghcr.io/szl-holdings/rosie:uds-v0.2.0
+  #         ghcr.io/szl-holdings/yupana:uds-v0.2.0
   #           @sha256:1984a15f53c2e1b91c7dafaa0ed5df9148d57e3e86eb73db879c2b0443302848
   # ─────────────────────────────────────────────────────────────────
-  - name: szl-rosie
+  - name: szl-yupana
     description: >
-      rosie governed decision fabric: mandatory witnesses on every decision
-      (ROSIE-V1), receipt observability dashboard, receipt-replayable Warhacker
-      demo path. Composed from the LIVE cosign-signed, digest-pinned rosie image
+      yupana governed decision fabric: mandatory witnesses on every decision
+      (YUPANA-V1), receipt observability dashboard, receipt-replayable Warhacker
+      demo path. Composed from the LIVE cosign-signed, digest-pinned yupana image
       (uds-v0.2.0).
-    path: ../../packages/rosie
+    path: ../../packages/yupana
     ref: "0.2.0"
 
 # ─────────────────────────────────────────────────────────────────
@@ -120,7 +120,7 @@ packages:
 # This bundle is NOT UDS Catalog accepted. See catalog-submission/ for acceptance status.
 #
 # Build (members must be pre-built, same flow as bundles/szl-uds-bundle):
-#   for o in a11oy sentra amaru rosie; do \
+#   for o in a11oy sentra amaru yupana; do \
 #     zarf package create packages/$o --set VERSION=uds-v0.2.0 -a amd64 --confirm; done
 #   zarf package create packages/szl-receipts --confirm
 #   uds create bundles/szl-full-stack --confirm

@@ -49,12 +49,12 @@ metadata:
     pod-security.kubernetes.io/enforce-version: latest
     istio-injection: enabled
 {{- end }}
-{{- if index .Values "rosie-replay" "enabled" }}
+{{- if index .Values "yupana-replay" "enabled" }}
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: rosie-replay
+  name: yupana-replay
   labels:
     {{- include "szl-full-stack.labels" . | nindent 4 }}
     pod-security.kubernetes.io/enforce: restricted

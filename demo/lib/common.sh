@@ -78,7 +78,7 @@ fa001_banner() {
   ----------------------------------------------------------------------------
   FA-001 NOTICE (read this before you narrate):
     Only the VESSELS module ships a real signed Zarf package + pullable image.
-    amaru / sentra / rosie / a11oy images are NOT pushed to ghcr.io yet.
+    amaru / sentra / yupana / a11oy images are NOT pushed to ghcr.io yet.
     If you point a deploy at those four, expect ImagePullBackOff. That is
     EXPECTED and HONEST. Demo vessels + the Pepr receipts controller. Never
     claim "five modules boot together."  (see docs/WARHACKER_DEMO.md / FA-001)

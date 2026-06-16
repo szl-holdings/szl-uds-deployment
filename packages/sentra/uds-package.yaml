@@ -4,7 +4,7 @@
 # UDS Package CR — sentra (immune system; HUKLLA tripwires + SENTRA egress inspector)
 #
 # sentra is the immune system. Per the matrix it may EGRESS to ANY module
-# (rosie/a11oy/amaru/vessels) for inspection, and receives ingress from a11oy
+# (yupana/a11oy/amaru/vessels) for inspection, and receives ingress from a11oy
 # (delegated verdicts). It also owns the cluster egress-inspection role, so it is
 # the one module granted broad egress to the other namespaces.
 #
@@ -83,11 +83,11 @@ spec:
       - direction: Egress
         selector:
           app: sentra
-        remoteNamespace: szl-rosie
+        remoteNamespace: szl-yupana
         remoteSelector:
-          app: rosie
+          app: yupana
         port: 7860
-        description: "sentra inspects rosie operator surface"
+        description: "sentra inspects yupana operator surface"
       # sentra -> szl-receipts : ALLOW (egress accept/deny receipt emission)
       - direction: Egress
         selector:

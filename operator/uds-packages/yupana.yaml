@@ -1,10 +1,10 @@
 # Copyright 2026 SZL Holdings
 # SPDX-License-Identifier: Apache-2.0
 #
-# UDS Package CR for rosie — szl-fleet-overlay
+# UDS Package CR for yupana — szl-fleet-overlay
 # Doctrine v11 LOCKED 749/14/163 at kernel commit c7c0ba17
 #
-# This CR is the canonical fleet-overlay Package CR for szl-rosie.
+# This CR is the canonical fleet-overlay Package CR for szl-yupana.
 # The UDS Operator (Pepr-based, shipped in UDS Core) watches this CR and:
 #   - Manages Istio VirtualService / DestinationRule
 #   - Generates Kubernetes NetworkPolicies (replaces raw Cilium manifests)
@@ -12,7 +12,7 @@
 #   - Creates Prometheus ServiceMonitor via monitor block
 #
 # Apply order: this CR must be applied AFTER UDS Core is running.
-# The fleet overlay Zarf package applies it via the szl-rosie-package component.
+# The fleet overlay Zarf package applies it via the szl-yupana-package component.
 #
 # References:
 #   UDS Package CR spec: https://uds.defenseunicorns.com/reference/configuration/custom-resources/packages-v1alpha1-cr/
@@ -20,8 +20,8 @@
 apiVersion: uds.dev/v1alpha1
 kind: Package
 metadata:
-  name: szl-rosie
-  namespace: szl-rosie
+  name: szl-yupana
+  namespace: szl-yupana
   annotations:
     szl.io/doctrine-version: "v11"
     szl.io/doctrine-pin: "749/14/163"
@@ -31,12 +31,12 @@ metadata:
 spec:
   network:
     expose:
-      - host: rosie
-        service: szl-rosie
+      - host: yupana
+        service: szl-yupana
         port: 8080
         gateway: tenant
         selector:
-          app: szl-rosie
+          app: szl-yupana
     allow:
       - direction: Egress
         description: "Keycloak OIDC token endpoint"
@@ -63,30 +63,30 @@ spec:
         description: "IntraNamespace (Istio sidecar + health probes)"
         remoteGenerated: IntraNamespace
   sso:
-    - clientId: uds-szl-rosie
-      name: "SZL Rosie"
+    - clientId: uds-szl-yupana
+      name: "SZL Yupana"
       protocol: openid-connect
       redirectUris:
-        - "https://rosie.uds.dev/*"
+        - "https://yupana.uds.dev/*"
       webOrigins:
-        - "https://rosie.uds.dev"
+        - "https://yupana.uds.dev"
       standardFlowEnabled: true
       enableAuthserviceSelector:
-        app: szl-rosie
+        app: szl-yupana
       groups:
         anyOf:
           - /szl-operators
       secretConfig:
-        name: szl-rosie-oidc-secret
+        name: szl-yupana-oidc-secret
         template: |
           OIDC_CLIENT_ID: "{{ .clientId }}"
           OIDC_CLIENT_SECRET: "{{ .secret }}"
           OIDC_ISSUER: "https://sso.uds.dev/realms/uds"
   monitor:
-    - description: "szl-rosie Prometheus metrics"
+    - description: "szl-yupana Prometheus metrics"
       portName: http-metrics
       targetPort: 9090
       selector:
-        app: szl-rosie
+        app: szl-yupana
       path: /metrics
       kind: ServiceMonitor

@@ -1,10 +1,10 @@
-# UDS Package CR for szl-rosie
+# UDS Package CR for szl-yupana
 # Doctrine v11 LOCKED 749/14/163
 apiVersion: uds.dev/v1alpha1
 kind: Package
 metadata:
-  name: szl-rosie
-  namespace: szl-rosie
+  name: szl-yupana
+  namespace: szl-yupana
   annotations:
     szl.io/doctrine-version: "v11"
     szl.io/doctrine-pin: "749/14/163"
@@ -13,12 +13,12 @@ metadata:
 spec:
   network:
     expose:
-      - host: rosie
-        service: szl-rosie
+      - host: yupana
+        service: szl-yupana
         port: 8080
         gateway: tenant
         selector:
-          app: szl-rosie
+          app: szl-yupana
     allow:
       - direction: Egress
         description: "Keycloak OIDC token endpoint"
@@ -38,30 +38,30 @@ spec:
         description: "IntraNamespace sidecar and probes"
         remoteGenerated: IntraNamespace
   sso:
-    - clientId: uds-szl-rosie
-      name: "SZL Rosie"
+    - clientId: uds-szl-yupana
+      name: "SZL Yupana"
       protocol: openid-connect
       redirectUris:
-        - "https://rosie.uds.dev/*"
+        - "https://yupana.uds.dev/*"
       webOrigins:
-        - "https://rosie.uds.dev"
+        - "https://yupana.uds.dev"
       standardFlowEnabled: true
       enableAuthserviceSelector:
-        app: szl-rosie
+        app: szl-yupana
       groups:
         anyOf:
           - /szl-operators
       secretConfig:
-        name: szl-rosie-oidc-secret
+        name: szl-yupana-oidc-secret
         template: |
           OIDC_CLIENT_ID: "{{ .clientId }}"
           OIDC_CLIENT_SECRET: "{{ .secret }}"
           OIDC_ISSUER: "https://sso.uds.dev/realms/uds"
   monitor:
-    - description: "szl-rosie Prometheus metrics"
+    - description: "szl-yupana Prometheus metrics"
       portName: http-metrics
       targetPort: 9090
       selector:
-        app: szl-rosie
+        app: szl-yupana
       path: /metrics
       kind: ServiceMonitor

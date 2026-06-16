@@ -54,7 +54,7 @@ on:
           - killinchu
           - amaru
           - sentra
-          - rosie
+          - yupana
       bundle_tag:
         description: "Published bundle OCI tag to verify + install"
         type: string
@@ -107,7 +107,7 @@ jobs:
           K='{"organ":"killinchu"}'
           M='{"organ":"amaru"}'
           S='{"organ":"sentra"}'
-          R='{"organ":"rosie"}'
+          R='{"organ":"yupana"}'
           if [ "${ORGAN}" = "all" ]; then
             echo "matrix={\"include\":[${A},${K},${M},${S},${R}]}" >> "$GITHUB_OUTPUT"
           else

@@ -38,13 +38,13 @@ apps:
     displayName: "SZL Amaru (dev)"
     peatEnabled: false
 
-  rosie:
+  yupana:
     enabled: true
-    namespace: szl-rosie
+    namespace: szl-yupana
     servicePort: 8080
     metricsPort: 9090
-    clientId: uds-szl-rosie
-    displayName: "SZL Rosie (dev)"
+    clientId: uds-szl-yupana
+    displayName: "SZL Yupana (dev)"
     peatEnabled: false
 
   killinchu:

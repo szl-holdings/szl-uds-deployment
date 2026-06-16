@@ -34,7 +34,7 @@ Signed-off-by: Stephen P. Lutar Jr. <stephenlutar2@gmail.com>
 
 ### 1.1 Tower specs assumed
 - **Founder's tower:** desktop with an **NVIDIA RTX 4060 Ti** (16 GB VRAM). The GPU is **optional** for this deploy — the 5 organs are CPU services; the GPU only matters if you later run local model inference. k3d passes `--gpus 1` automatically when the NVIDIA container runtime is present, else falls back cleanly.
-- **A Hetzner box** (dedicated server or cloud CX/CCX): **≥ 8 vCPU, ≥ 16 GB RAM, ≥ 80 GB disk**. UDS Core + the 5 organs (rosie image alone bakes to ~3 GB) need headroom; the full bundle is **~3.6 GB**.
+- **A Hetzner box** (dedicated server or cloud CX/CCX): **≥ 8 vCPU, ≥ 16 GB RAM, ≥ 80 GB disk**. UDS Core + the 5 organs (yupana image alone bakes to ~3 GB) need headroom; the full bundle is **~3.6 GB**.
 - **OS:** Ubuntu 22.04/24.04 LTS (x86_64 / **amd64** — all bundles are `architecture: amd64`).
 
 ### 1.2 OS packages + tooling (run once, online)
@@ -113,10 +113,10 @@ export COSIGN_KEY_PATH="$HOME/.szl/cosign.pub"   # killinchu receipt-verify publ
 export SZL_ORGAN_BASE_A11OY="http://a11oy.szl-a11oy.svc.cluster.local:8080"
 export SZL_ORGAN_BASE_SENTRA="http://sentra.szl-sentra.svc.cluster.local:8080"
 export SZL_ORGAN_BASE_AMARU="http://amaru.szl-amaru.svc.cluster.local:8080"
-export SZL_ORGAN_BASE_ROSIE="http://rosie.szl-rosie.svc.cluster.local:7860"
+export SZL_ORGAN_BASE_YUPANA="http://yupana.szl-yupana.svc.cluster.local:7860"
 export SZL_ORGAN_BASE_KILLINCHU="http://killinchu.szl-killinchu.svc.cluster.local:7860"
 ```
-> **Ports are real and verified:** a11oy / sentra / amaru = **8080**; rosie / killinchu = **7860**.
+> **Ports are real and verified:** a11oy / sentra / amaru = **8080**; yupana / killinchu = **7860**.
 
 ---
 
@@ -170,8 +170,8 @@ Three published, cosign-signed bundles are available. **All verified HTTP 200 on
 
 | Bundle | OCI ref | Manifest digest | Composition | Status |
 |---|---|---|---|---|
-| **Full 5-organ mesh** (recommended for the tower demo) | `oci://ghcr.io/szl-holdings/szl-mesh:0.4.0` (= `v0.4.0` = `latest`) | `sha256:7f5fce3238ce3d255b322340bbe18cad1eb656e677065a2757637337300cac7f` | a11oy+sentra+amaru+rosie+killinchu | **PUBLISHED + signed (current fallback)** |
-| **Platform** (a11oy.uds) | `oci://ghcr.io/szl-holdings/a11oy-bundle:0.5.0` (= `latest`) | `sha256:d801f8e461dfd519b5f8593322e75b89a1e66d4da9f6d72d0937c8ff2de64b51` | a11oy + sentra/amaru/rosie backends | **PUBLISHED + signed — but STALE (see note)** |
+| **Full 5-organ mesh** (recommended for the tower demo) | `oci://ghcr.io/szl-holdings/szl-mesh:0.4.0` (= `v0.4.0` = `latest`) | `sha256:7f5fce3238ce3d255b322340bbe18cad1eb656e677065a2757637337300cac7f` | a11oy+sentra+amaru+yupana+killinchu | **PUBLISHED + signed (current fallback)** |
+| **Platform** (a11oy.uds) | `oci://ghcr.io/szl-holdings/a11oy-bundle:0.5.0` (= `latest`) | `sha256:d801f8e461dfd519b5f8593322e75b89a1e66d4da9f6d72d0937c8ff2de64b51` | a11oy + sentra/amaru/yupana backends | **PUBLISHED + signed — but STALE (see note)** |
 | **Field node** (killinchu.uds) | `oci://ghcr.io/szl-holdings/killinchu-bundle:0.5.0` (= `latest`) | `sha256:e59921332c37408fb5a62b270eeeafb1f1ab44aebb350f18662c37aa2c67426f` | killinchu + sentra/amaru backends | **PUBLISHED + signed + current** |
 
 ### Step 3.1 — deploy (online, from GHCR)
@@ -183,7 +183,7 @@ uds deploy oci://ghcr.io/szl-holdings/szl-mesh:0.4.0 --confirm
 uds deploy oci://ghcr.io/szl-holdings/a11oy-bundle:0.5.0 --confirm      # platform
 uds deploy oci://ghcr.io/szl-holdings/killinchu-bundle:0.5.0 --confirm  # field node
 ```
-Each step shows: `Deploying Zarf package … Connected to cluster … Pushing N images to the zarf registry … Component <organ> successfully deployed`, ending `✔ … deployed` for a11oy → sentra → amaru → rosie → killinchu.
+Each step shows: `Deploying Zarf package … Connected to cluster … Pushing N images to the zarf registry … Component <organ> successfully deployed`, ending `✔ … deployed` for a11oy → sentra → amaru → yupana → killinchu.
 
 > **⚠️ a11oy-bundle re-pin status (HONEST — verified 2026-06-06):** `a11oy-bundle:0.5.0` (digest `d801f8e4…`) was built against an **older a11oy organ image**. The a11oy image was rebuilt afterward — `ghcr.io/szl-holdings/a11oy:uds-v0.2.0` **now resolves to `sha256:e2ef6184b94397d279753dd7b84addb74677a5921c425eee6637d9d098a80171`**, so the published a11oy-bundle is **STALE** (it does not carry tonight's a11oy). **Two safe options:**
 > 1. **Use `szl-mesh:0.4.0`** (it composes all 5 organs and is the maintained fallback), or
@@ -201,7 +201,7 @@ uds deploy uds-bundle-szl-mesh-amd64-0.4.0.tar.zst --confirm   # pulls NOTHING f
 The Package CRs ship **inside each per-organ Zarf package** (`manifests/uds-package.yaml`), so they apply automatically during `uds deploy`. To apply / re-apply them stand-alone (e.g. when deploying a flagship independently of the full mesh), use the canonical CRs in **szl-fleet-overlay**:
 ```bash
 git clone https://github.com/szl-holdings/szl-fleet-overlay.git && cd szl-fleet-overlay
-kubectl apply -f uds-packages/                  # a11oy, sentra, amaru, rosie, killinchu
+kubectl apply -f uds-packages/                  # a11oy, sentra, amaru, yupana, killinchu
 kubectl get packages -A                         # UDS Operator reconciles each
 kubectl describe package szl-a11oy -n szl-a11oy # see expose/allow/sso/monitor reconciled
 ```
@@ -248,7 +248,7 @@ cosign verify-attestation --type slsaprovenance \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
   && echo "  -> killinchu: SLSA L2 provenance VERIFIED"
 
-# DELETED organs (amaru, sentra, rosie): their source repos have been removed, so
+# DELETED organs (amaru, sentra, yupana): their source repos have been removed, so
 # there is NO live workflow identity to pin and these attestations are no longer
 # independently re-verifiable from source. Treat them as UNVERIFIABLE / removed —
 # do NOT --certificate-identity-regexp a deleted repo (that asserts a guarantee we
@@ -259,14 +259,14 @@ cosign verify-attestation --type slsaprovenance \
 gh attestation verify oci://ghcr.io/szl-holdings/a11oy:uds-v0.2.0     --owner szl-holdings
 gh attestation verify oci://ghcr.io/szl-holdings/killinchu:uds-v0.2.0 --owner szl-holdings
 ```
-> **Honest:** L2 is on the **images**, NOT L3, NOT Iron Bank. The exact-identity pin covers the **surviving** organs (a11oy, killinchu); amaru/sentra/rosie repos are **deleted** and their attestations are **unverifiable from source** — documented as removed, not silently regexp-matched.
+> **Honest:** L2 is on the **images**, NOT L3, NOT Iron Bank. The exact-identity pin covers the **surviving** organs (a11oy, killinchu); amaru/sentra/yupana repos are **deleted** and their attestations are **unverifiable from source** — documented as removed, not silently regexp-matched.
 
 ### 4.3 — per-service health
 ```bash
-for ns in szl-a11oy szl-sentra szl-amaru szl-rosie szl-killinchu; do
+for ns in szl-a11oy szl-sentra szl-amaru szl-yupana szl-killinchu; do
   kubectl wait --for=condition=Available deploy --all -n "$ns" --timeout=180s && echo "$ns OK"
 done
-# health paths: a11oy/sentra/rosie/killinchu = /api/health ; amaru = /healthz
+# health paths: a11oy/sentra/yupana/killinchu = /api/health ; amaru = /healthz
 kubectl port-forward -n szl-a11oy     svc/a11oy     8080:8080 & sleep 2; curl -fsS http://localhost:8080/api/health
 kubectl port-forward -n szl-amaru     svc/amaru     8081:8080 & sleep 2; curl -fsS http://localhost:8081/healthz
 kubectl port-forward -n szl-killinchu svc/killinchu 7860:7860 & sleep 2; curl -fsS http://localhost:7860/api/killinchu/healthz
@@ -317,7 +317,7 @@ Clone in **this order**. Everything below is a real repo in the `szl-holdings` o
 | 1 | **szl-build-env** (private) | `git clone https://github.com/szl-holdings/szl-build-env.git` | **One-command local tower bootstrap.** `make up` = kind cluster + **Istio ambient mesh** + **OpenTelemetry Collector + Jaeger** + the **5-organ stack** with a **cosign verification gate**. `<10 min` quickstart. | First, to validate the tower can boot the stack at all (laptop/tower dev loop). |
 | 2 | **szl-uds-deployment** (private) | `git clone https://github.com/szl-holdings/szl-uds-deployment.git` | **The live reference deploy target.** `uds run start` bootstraps k3d + deploys the receipts bundle (~90 s); `uds run demo:workload`, `uds run demo:verify`, `uds run teardown`. Carries `zarf.yaml`, `uds-bundle.yaml`, `tasks.yaml`, the **Pepr governance-receipt policy**, and `docs/{INSTALL,AIRGAP,WARHACKER_DEMO,OPERATOR_QUICKSTART}.md`. **This roadmap lives in its `docs/`.** | The deploy targets + demo task runner; the air-gap runbook. |
 | 3 | **uds-bundles** (public) | `git clone https://github.com/szl-holdings/uds-bundles.git` | **The bundle source.** `bundles/szl-<organ>/` Zarf packages, `bundles/a11oy/` + `bundles/killinchu/` UDSBundle manifests, `DEPLOY.md`, and the `uds-canonical-bundles-publish.yml` workflow (re-pin/re-publish bundles). 3 K8s CRDs: LambdaGate, KhipuReceipt, DoctrineLock. Built on **UDS Core v1.5.0**, Zarf ≥ v0.77.0, uds-cli v0.32.0. | To rebuild/re-pin bundles, or build a single capability with `zarf package create bundles/szl-<organ>/`. |
-| 4 | **szl-fleet-overlay** (public) | `git clone https://github.com/szl-holdings/szl-fleet-overlay.git` | **The UDS Operator entry point + Helm chart.** Canonical stand-alone **Package CRs** (`uds-packages/{a11oy,sentra,amaru,rosie,killinchu}.yaml`), a Helm chart (`chart/` with dev/staging/prod values), and a Zarf air-gap variant. Registers the apps as first-class UDS-managed apps. | To apply Package CRs independently (§3.3) or deploy via Helm/GitOps. |
+| 4 | **szl-fleet-overlay** (public) | `git clone https://github.com/szl-holdings/szl-fleet-overlay.git` | **The UDS Operator entry point + Helm chart.** Canonical stand-alone **Package CRs** (`uds-packages/{a11oy,sentra,amaru,yupana,killinchu}.yaml`), a Helm chart (`chart/` with dev/staging/prod values), and a Zarf air-gap variant. Registers the apps as first-class UDS-managed apps. | To apply Package CRs independently (§3.3) or deploy via Helm/GitOps. |
 
 ### 5.1 — the bare-box → running path (do this today)
 ```bash
@@ -357,7 +357,7 @@ kubectl apply -f szl-fleet-overlay/uds-packages/
 |---|---|---|
 | `000` / curl hangs to a `*.hf.space` URL | **Transient egress flakiness**, NOT a crashed app | **Retry 3–6×.** Never factory-rebuild on a single `000`. (huggingface.co=200, retries succeed.) |
 | `ImagePullBackOff` on organ pods | GHCR token missing/expired, or image private | `echo "$GHCR_TOKEN" \| docker login ghcr.io …`; `kubectl describe pod -n szl-<organ>`; confirm `read:packages` scope. |
-| Istio VirtualService → 503 at the gateway, no metrics | **sidecar vs ambient** selector mismatch (historical bug, fixed on `main`) | Package CR selectors must be `app.kubernetes.io/name: <organ>` and `service: <organ>`; ports a11oy/sentra/amaru=8080, **rosie/killinchu=7860**. Re-apply from `szl-fleet-overlay/uds-packages/`. |
+| Istio VirtualService → 503 at the gateway, no metrics | **sidecar vs ambient** selector mismatch (historical bug, fixed on `main`) | Package CR selectors must be `app.kubernetes.io/name: <organ>` and `service: <organ>`; ports a11oy/sentra/amaru=8080, **yupana/killinchu=7860**. Re-apply from `szl-fleet-overlay/uds-packages/`. |
 | Package CR stuck `Pending` | Istio not ready yet | `kubectl get pods -n istio-system`; wait for ztunnel/istiod Running, then it reconciles. |
 | SSO redirect loop | Keycloak client not registered | Re-run `uds deploy` (re-syncs `sso` CRs). |
 | `zarf init` hangs / "requires a zarf-init package, not found" | init seed not fetched | `zarf tools download-init` **before** `zarf init --confirm`. |
@@ -403,7 +403,7 @@ uds deploy /media/usb/uds-bundle-szl-mesh-amd64-0.4.0.tar.zst --confirm
 #    uds pull oci://ghcr.io/szl-holdings/killinchu-bundle:0.5.0 -> uds deploy <tarball> --confirm )
 
 # 3) verify offline (no network needed for the deploy or the receipt check):
-for ns in szl-a11oy szl-sentra szl-amaru szl-rosie szl-killinchu; do
+for ns in szl-a11oy szl-sentra szl-amaru szl-yupana szl-killinchu; do
   kubectl wait --for=condition=Available deploy --all -n "$ns" --timeout=180s && echo "$ns OK"; done
 # offline receipt verify: §4.5 (cosign.pub + receipt export → openssl verify PASS / tamper FAIL)
 ```
@@ -431,7 +431,7 @@ for ns in szl-a11oy szl-sentra szl-amaru szl-rosie szl-killinchu; do
 | Organ image a11oy | `a11oy:uds-v0.2.0` | **200** | `sha256:e2ef6184b94397d279753dd7b84addb74677a5921c425eee6637d9d098a80171` (newer than the a11oy-bundle pin → re-pin needed) |
 | Organ image sentra | `sentra:uds-v0.2.0` | **200** | `sha256:60a0efc14366ba392bfe3f3cd4196863fe148bb87a17428be6a57f0a05ac3639` |
 | Organ image amaru | `amaru:uds-v0.2.0` | **200** | `sha256:53301e26adcde49e73df28d8c3b790f2496da9d495307fe8587ffa7452b289ff` |
-| Organ image rosie | `rosie:uds-v0.2.0` | **200** | `sha256:1984a15f53c2e1b91c7dafaa0ed5df9148d57e3e86eb73db879c2b0443302848` |
+| Organ image yupana | `yupana:uds-v0.2.0` | **200** | `sha256:1984a15f53c2e1b91c7dafaa0ed5df9148d57e3e86eb73db879c2b0443302848` |
 | Organ image killinchu | `killinchu:uds-v0.2.0` | **200** | `sha256:e0fb6c3aeaddadfbabc3ca7c5f29ef7b3ba31370b5ffb816e12495d5f29ca548` |
 | Organ `.sig`+`.att` (a11oy, killinchu probed) | `sha256-<digest>.{sig,att}` | **200** | SLSA L2 provenance present |
 | UDS Core | `defenseunicorns/packages/uds/core:1.5.0-upstream` | **200** | (Defense Unicorns) |

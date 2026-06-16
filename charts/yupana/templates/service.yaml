@@ -1,16 +1,16 @@
 # Copyright 2026 SZL Holdings — SPDX-License-Identifier: Apache-2.0
-# Service for rosie — Istio sidecar provides STRICT mTLS (UDS Operator managed).
+# Service for yupana — Istio sidecar provides STRICT mTLS (UDS Operator managed).
 apiVersion: v1
 kind: Service
 metadata:
-  name: szl-rosie
+  name: szl-yupana
   namespace: {{ .Values.namespace }}
   labels:
-    app: rosie
-    app.kubernetes.io/name: rosie
+    app: yupana
+    app.kubernetes.io/name: yupana
 spec:
   selector:
-    app: rosie
+    app: yupana
   ports:
     - name: http
       port: {{ .Values.service.port }}

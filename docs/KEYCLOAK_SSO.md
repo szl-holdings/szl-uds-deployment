@@ -10,7 +10,7 @@ Each app declares an `spec.sso` block in its `UDSPackage` CR
 The UDS Operator (the Pepr module inside UDS Core) reads those blocks and **generates the
 Keycloak client** for each one — you do not hand-create clients.
 
-- Human-facing apps (`rosie`, `vessels`, `szl-receipts`) use `redirectUris` +
+- Human-facing apps (`yupana`, `vessels`, `szl-receipts`) use `redirectUris` +
   `enableAuthserviceSelector`, so the Operator wires the **authservice** sidecar in front
   of the pod. Every request then carries a verified OIDC identity before it reaches the app.
 - Machine-to-machine apps (`a11oy`, `amaru`, `sentra`) use `standardFlowEnabled: false` +
@@ -27,7 +27,7 @@ Reference: the `spec.sso` field set is defined in
 1. **The realm.** UDS Core ships a default `uds` realm via
    `defenseunicorns/uds-identity-config@v0.27.0`. The demo uses that realm; we do not ship
    a custom realm for the hackathon.
-2. **The `/szl/operators` group.** `rosie` and `vessels` gate human sign-in on
+2. **The `/szl/operators` group.** `yupana` and `vessels` gate human sign-in on
    `spec.sso.groups.anyOf: ["/szl/operators"]`. That group, and the operator user's
    membership in it, must exist in Keycloak before sign-in succeeds. For the local k3d demo
    this is the `setup:keycloak-user` step from
@@ -48,6 +48,6 @@ Reference: the `spec.sso` field set is defined in
 
 ```
 # Confirm the Operator created the clients from the spec.sso blocks:
-uds zarf tools kubectl get secrets -A | grep -E 'sso|szl-(rosie|vessels|receipts)'
-# rosie/vessels human login should redirect to https://sso.<domain>/realms/uds/...
+uds zarf tools kubectl get secrets -A | grep -E 'sso|szl-(yupana|vessels|receipts)'
+# yupana/vessels human login should redirect to https://sso.<domain>/realms/uds/...
 ```

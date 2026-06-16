@@ -5,7 +5,7 @@
 The internal codenames below appear in this repo only as **signed-artifact-coupled
 identifiers** — Helm chart names, Kubernetes resource/namespace names, UDS Package CR
 names, Zarf component names, and OTEL span namespaces — each wired to a **published,
-cosign-signed** OCI image (`ghcr.io/szl-holdings/{amaru,rosie,sentra}:uds-v0.2.0`, every
+cosign-signed** OCI image (`ghcr.io/szl-holdings/{amaru,yupana,sentra}:uds-v0.2.0`, every
 one carrying a `.sig` signature and `.att` SLSA attestation in GHCR, with digests locked
 into `zarf.yaml` / `uds-bundle.yaml` / `ClusterImagePolicy`). Renaming them in place would
 desync the deployed identity from its signature/attestation — a provenance break worse
@@ -15,7 +15,7 @@ user-facing product names**.
 | Internal codename (signed-coupled) | User-facing role     | Function                                                        |
 |------------------------------------|----------------------|-----------------------------------------------------------------|
 | `amaru`                            | **Provenance Anchor**| Convergent data-sync; KL-drift-bounded replication + hash-chained proof receipts. |
-| `rosie`                            | **Operator**         | Operator / replay control surface for governed actions.         |
+| `yupana`                            | **Operator**         | Operator / replay control surface for governed actions.         |
 | `sentra`                           | **Policy**           | Policy / receipt-gate enforcement.                              |
 
 Quechua organ names (YUYAY / YAWAR / YACHAY / MUSQUY / AMARU-shell) are **not** banned.

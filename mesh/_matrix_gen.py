@@ -10,11 +10,11 @@
 #
 # It does NOT touch a cluster and performs no network I/O.
 
-MODULES = ["rosie", "a11oy", "amaru", "sentra", "killinchu", "receipts"]
+MODULES = ["yupana", "a11oy", "amaru", "sentra", "killinchu", "receipts"]
 
 # Canonical namespace + service-account + DNS for each module.
 NS = {
-    "rosie":    "szl-rosie",
+    "yupana":    "szl-yupana",
     "a11oy":    "szl-a11oy",
     "amaru":    "szl-amaru",
     "sentra":   "szl-sentra",
@@ -22,7 +22,7 @@ NS = {
     "receipts": "szl-receipts",
 }
 SA = {  # Kubernetes ServiceAccount used as the SPIFFE identity in AuthorizationPolicy
-    "rosie":    "rosie",
+    "yupana":    "yupana",
     "a11oy":    "a11oy",
     "amaru":    "amaru",
     "sentra":   "sentra",
@@ -47,16 +47,16 @@ def decision(caller, callee):
     if caller == "sentra":
         return ("ALLOW", "sentra is the immune system; may inspect all module traffic")
 
-    # rosie (operator console) commands ONLY a11oy. Direct rosie->organ is denied.
-    if caller == "rosie":
+    # yupana (operator console) commands ONLY a11oy. Direct yupana->organ is denied.
+    if caller == "yupana":
         if callee == "a11oy":
-            return ("ALLOW", "rosie commands a11oy (operator -> policy substrate)")
+            return ("ALLOW", "yupana commands a11oy (operator -> policy substrate)")
         return ("DENY", "operator commands route through a11oy, never direct to organs")
 
-    # a11oy is the orchestrator: it commands every organ + replies to rosie.
+    # a11oy is the orchestrator: it commands every organ + replies to yupana.
     if caller == "a11oy":
-        if callee == "rosie":
-            return ("ALLOW", "a11oy emits events to rosie for human display")
+        if callee == "yupana":
+            return ("ALLOW", "a11oy emits events to yupana for human display")
         if callee in ("amaru", "sentra", "killinchu"):
             return ("ALLOW", "a11oy delegates to the organ (memory/immune/skeleton)")
 

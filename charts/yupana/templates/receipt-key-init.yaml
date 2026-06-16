@@ -7,10 +7,10 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: rosie-receipt-key-init
+  name: yupana-receipt-key-init
   namespace: {{ .Values.namespace }}
   labels:
-    app.kubernetes.io/name: rosie-receipt-key-init
+    app.kubernetes.io/name: yupana-receipt-key-init
     app.kubernetes.io/managed-by: {{ .Release.Service }}
     szl.ai/doctrine-version: "v11"
   annotations:
@@ -23,9 +23,9 @@ spec:
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: rosie-receipt-key-init
+        app.kubernetes.io/name: yupana-receipt-key-init
     spec:
-      serviceAccountName: rosie-receipt-key-init
+      serviceAccountName: yupana-receipt-key-init
       restartPolicy: OnFailure
       securityContext:
         seccompProfile:
@@ -54,7 +54,7 @@ spec:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: rosie-receipt-key-init
+  name: yupana-receipt-key-init
   namespace: {{ .Values.namespace }}
   annotations:
     "helm.sh/hook": pre-install
@@ -63,7 +63,7 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: rosie-receipt-key-init
+  name: yupana-receipt-key-init
   namespace: {{ .Values.namespace }}
   annotations:
     "helm.sh/hook": pre-install
@@ -76,7 +76,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: rosie-receipt-key-init
+  name: yupana-receipt-key-init
   namespace: {{ .Values.namespace }}
   annotations:
     "helm.sh/hook": pre-install
@@ -84,8 +84,8 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: rosie-receipt-key-init
+  name: yupana-receipt-key-init
 subjects:
   - kind: ServiceAccount
-    name: rosie-receipt-key-init
+    name: yupana-receipt-key-init
     namespace: {{ .Values.namespace }}

@@ -1,14 +1,14 @@
-# Peat Mesh Node config for szl-rosie
+# Peat Mesh Node config for szl-yupana
 # Requires defenseunicorns/peat-node sidecar injector
 apiVersion: peat.dev/v1alpha1
 kind: PeatNode
 metadata:
-  name: szl-rosie
-  namespace: szl-rosie
+  name: szl-yupana
+  namespace: szl-yupana
 spec:
   selector:
     matchLabels:
-      app: szl-rosie
+      app: szl-yupana
   mesh:
     meshRef:
       name: szl-fleet-mesh
@@ -19,12 +19,12 @@ spec:
     port: 4001
     listenAddr: "0.0.0.0"
   crdt:
-    documentNamespace: "szl.rosie"
+    documentNamespace: "szl.yupana"
     peers:
       - "szl.a11oy"
       - "szl.sentra"
       - "szl.amaru"
-      - "szl.rosie"
+      - "szl.yupana"
       - "szl.killinchu"
   resources:
     requests:

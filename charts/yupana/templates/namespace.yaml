@@ -4,7 +4,7 @@ kind: Namespace
 metadata:
   name: {{ .Values.namespace }}
   labels:
-    app.kubernetes.io/name: rosie
+    app.kubernetes.io/name: yupana
     app.kubernetes.io/part-of: szl-uds-mesh
     istio-injection: enabled
     szl.ai/doctrine-version: "v11"

@@ -38,7 +38,7 @@
 #     As of Task #892 the two SURVIVING organ images (a11oy, killinchu) ARE
 #     pinnable — their §4.2 SLSA-attestation verifies now carry an exact
 #     --certificate-identity and are enforced.
-#   * The DELETED organs (amaru/sentra/rosie) have no live repo and therefore no
+#   * The DELETED organs (amaru/sentra/yupana) have no live repo and therefore no
 #     signer identity to pin, so they are documented as unverifiable/removed and
 #     left out of scope (no token matches them). A purely templated `${organ}`
 #     placeholder verify is likewise out of scope.
@@ -74,7 +74,7 @@ PINNED_ARTIFACT_TOKENS = (
     # --- surviving organ images now exact-pinned (Task #892) ---
     # a11oy organ image -> a11oy/ghcr-build-push.yml@main. The trailing ':' keeps
     # this from matching the a11oy-bundle ('a11oy-bundle:') or the deleted-organ
-    # remnant in §4.2 (amaru/sentra/rosie, which carry no live signer identity).
+    # remnant in §4.2 (amaru/sentra/yupana, which carry no live signer identity).
     "szl-holdings/a11oy:",
     "szl-mesh:",                 # szl-mesh UDS bundle     -> uds-bundles/uds-bundle-publish.yml@main
     "a11oy-bundle:",             # a11oy canonical bundle  -> uds-bundles/uds-canonical-bundles-publish.yml@main

@@ -16,7 +16,7 @@ never matched reality:
 - Its `Chart.yaml` dependencies pointed at an OCI Helm chart repo
   (`oci://ghcr.io/szl-holdings/charts`) that was **never published**, so
   `helm dependency build` could never resolve the organ sub-charts
-  (`a11oy-runtime`, `sentra-gates`, `amaru-attestation`, `rosie-replay`).
+  (`a11oy-runtime`, `sentra-gates`, `amaru-attestation`, `yupana-replay`).
 - Its `values.yaml` pinned organ images at `uds-v0.3.1` — a tag that was
   **never built or pushed**. The published, cosign-signed organ images are
   `uds-v0.2.0` (with `a11oy` tag-pinned `uds-v0.3.0`).

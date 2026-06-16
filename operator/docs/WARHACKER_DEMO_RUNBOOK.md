@@ -153,14 +153,14 @@ Package CR status:
   ✅  szl-a11oy     phase=Ready
   ✅  szl-sentra    phase=Ready
   ✅  szl-amaru     phase=Ready
-  ✅  szl-rosie     phase=Ready
+  ✅  szl-yupana     phase=Ready
   ✅  szl-killinchu phase=Ready
 
 Live HF Space health (internet fallback):
   ✅  a11oy.hf.space    HTTP 200
   ✅  sentra.hf.space   HTTP 200
   ✅  amaru.hf.space    HTTP 200
-  ✅  rosie.hf.space    HTTP 200
+  ✅  yupana.hf.space    HTTP 200
   ✅  killinchu.hf.space HTTP 200
 
 Receipt chain:
@@ -369,7 +369,7 @@ kubectl describe pod -n szl-a11oy -l app=szl-a11oy | grep -A5 Events
 **Fix:**
 ```bash
 # Wake all 5 spaces (hit them once each):
-for app in a11oy sentra amaru rosie killinchu; do
+for app in a11oy sentra amaru yupana killinchu; do
   curl -sf https://szlholdings-$app.hf.space/api/health -o /dev/null && echo "$app awake" || echo "$app sleeping..."
 done
 # Wait 90 seconds, retry
@@ -464,7 +464,7 @@ uds zarf package pull oci://ghcr.io/defenseunicorns/packages/uds/core:0.33.0-ups
 # Copy the resulting .tar.zst to USB
 
 # Pull and save flagship images
-for app in a11oy sentra amaru rosie killinchu; do
+for app in a11oy sentra amaru yupana killinchu; do
   docker pull ghcr.io/szl-holdings/${app}:latest
   docker save ghcr.io/szl-holdings/${app}:latest > /media/usb/${app}-image.tar
 done
@@ -475,7 +475,7 @@ done
 ```bash
 # Load images from USB
 docker load < /media/usb/k3s-image.tar
-for app in a11oy sentra amaru rosie killinchu; do
+for app in a11oy sentra amaru yupana killinchu; do
   docker load < /media/usb/${app}-image.tar
 done
 
@@ -522,7 +522,7 @@ kubectl get pods -A
 kubectl get packages -A
 
 # Wake HF Spaces
-for app in a11oy sentra amaru rosie killinchu; do
+for app in a11oy sentra amaru yupana killinchu; do
   curl -sf https://szlholdings-$app.hf.space/api/health -o /dev/null && echo "$app: awake"
 done
 

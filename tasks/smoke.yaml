@@ -80,7 +80,7 @@ tasks:
       - description: "Check the 5 apps honestly (SKIPPED if image not pushed — FA-001)"
         cmd: |
           RC=0
-          for app in a11oy amaru sentra vessels rosie; do
+          for app in a11oy amaru sentra vessels yupana; do
             ns="szl-${app}"
             echo "== ${app} (${ns}) =="
             if ! kubectl get ns "${ns}" >/dev/null 2>&1; then

@@ -55,7 +55,7 @@ uds deploy k3d-core-slim-dev:0.41.0 --confirm        # slim dev; or k3d-core-dem
 ```bash
 cd a11oy/deploy           && zarf package create . --confirm
 cd ../../killinchu/deploy && zarf package create . --confirm
-#   (repeat for sentra / amaru / rosie deploy dirs)
+#   (repeat for sentra / amaru / yupana deploy dirs)
 ```
 
 ## 4. Sign + verify each Zarf package (offline-verifiable)

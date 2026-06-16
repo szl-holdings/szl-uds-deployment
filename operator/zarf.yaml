@@ -73,14 +73,14 @@ components:
         files:
           - configs/packages/package-amaru.yaml
 
-  - name: szl-rosie-package
+  - name: szl-yupana-package
     required: true
-    description: "UDS Package CR for rosie"
+    description: "UDS Package CR for yupana"
     manifests:
-      - name: szl-rosie-package
-        namespace: szl-rosie
+      - name: szl-yupana-package
+        namespace: szl-yupana
         files:
-          - configs/packages/package-rosie.yaml
+          - configs/packages/package-yupana.yaml
 
   - name: szl-killinchu-package
     required: true
@@ -101,7 +101,7 @@ components:
           - configs/peat/peat-node-a11oy.yaml
           - configs/peat/peat-node-sentra.yaml
           - configs/peat/peat-node-amaru.yaml
-          - configs/peat/peat-node-rosie.yaml
+          - configs/peat/peat-node-yupana.yaml
           - configs/peat/peat-node-killinchu.yaml
 
   - name: szl-doctrine-receipts

@@ -399,7 +399,7 @@ jobs:
           df -h /
 
       # Resolve the member package version the bundle expects. The 4 templated
-      # organs (sentra/amaru/killinchu/rosie) share one `ref:` in the bundle and
+      # organs (sentra/amaru/killinchu/yupana) share one `ref:` in the bundle and
       # are version-injected via `--set VERSION`; a11oy's zarf metadata.version is
       # hardcoded. Read szl-sentra's ref so a future bundle version bump flows
       # through automatically instead of being hardcoded here.
@@ -484,7 +484,7 @@ jobs:
           echo "${GHCR_PUBLISH_TOKEN}" | docker login "${REGISTRY}" -u "${GITHUB_REPOSITORY_OWNER}" --password-stdin
 
       # ── Pre-warm large organ image layers into the Zarf cache (resumable) ──
-      # amaru/rosie carry a fat single layer that repeatedly stalls/EOFs on the
+      # amaru/yupana carry a fat single layer that repeatedly stalls/EOFs on the
       # GHCR CDN; both zarf and docker pulls are non-resumable. Mirror the publish
       # path's resumable pre-fetch so a transient CDN hiccup doesn't fail the
       # whole create. Best-effort: a miss falls through to zarf's own pull.
@@ -497,7 +497,7 @@ jobs:
           if [ ! -x scripts/prewarm-ghcr-blobs.sh ]; then
             chmod +x scripts/prewarm-ghcr-blobs.sh 2>/dev/null || true
           fi
-          for organ in amaru rosie a11oy sentra killinchu; do
+          for organ in amaru yupana a11oy sentra killinchu; do
             ref="$(grep -oE 'ghcr\.io/szl-holdings/[a-z0-9._/-]+@sha256:[0-9a-f]{64}' "packages/${organ}/zarf.yaml" | head -1 || true)"
             if [ -z "${ref}" ]; then
               echo "packages/${organ}/zarf.yaml has no digest-pinned image; zarf will pull it by tag"
@@ -521,7 +521,7 @@ jobs:
         run: |
           set +e
           set -uo pipefail
-          for organ in killinchu rosie a11oy sentra amaru; do
+          for organ in killinchu yupana a11oy sentra amaru; do
             echo "::group::zarf package create packages/${organ}"
             RC=0
             for attempt in 1 2 3; do
@@ -562,7 +562,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=0
-          for organ in a11oy sentra amaru killinchu rosie; do
+          for organ in a11oy sentra amaru killinchu yupana; do
             tar="$(ls "packages/${organ}"/zarf-package-szl-${organ}-amd64-*.tar.zst 2>/dev/null | head -1 || true)"
             if [ -z "${tar}" ]; then
               echo "FAIL: no member Zarf package produced for ${organ} (expected packages/${organ}/zarf-package-szl-${organ}-amd64-*.tar.zst)" >&2

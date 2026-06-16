@@ -9,7 +9,7 @@ After the founder (or CI) successfully publishes:
 - ghcr.io/szl-holdings/amaru:uds-v0.3.1
 - ghcr.io/szl-holdings/sentra:uds-v0.3.1 (blocked on sentra needing a Dockerfile)
 - ghcr.io/szl-holdings/vessels:uds-v0.3.1 (currently has -vessels suffix only)
-- ghcr.io/szl-holdings/rosie:uds-v0.3.1
+- ghcr.io/szl-holdings/yupana:uds-v0.3.1
 
 AND each package's visibility is set to Public via GitHub UI.
 

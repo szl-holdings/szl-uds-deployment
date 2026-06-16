@@ -169,7 +169,7 @@ queries **live Kubernetes state**:
 | `a11oy:uds-v0.2.0` | `sha256:99e4ded1…f719cf` | **VERIFIED** (200; digest changed from roadmap → confirms rebuild) |
 | `sentra:uds-v0.2.0` | `sha256:60a0efc1…ac3639` | **VERIFIED** (200) |
 | `amaru:uds-v0.2.0` | `sha256:53301e26…b289ff` | **VERIFIED** (200) |
-| `rosie:uds-v0.2.0` | `sha256:1984a15f…302848` | **VERIFIED** (200) |
+| `yupana:uds-v0.2.0` | `sha256:1984a15f…302848` | **VERIFIED** (200) |
 | `killinchu:uds-v0.2.0` | `sha256:e0fb6c3a…29ca548` | **VERIFIED** (200) |
 | `a11oy:0.5.0(-wolfi)`, `a11oy-ledger:0.5.0`, `killinchu:0.5.0-wolfi`, `killinchu-relay:0.5.0`, `szl-pepr-governance:0.5.0`, `szl-lula-runner:latest` | — | **404 — NOT published → verify before deploy** |
 

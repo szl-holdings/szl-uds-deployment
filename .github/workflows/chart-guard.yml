@@ -17,7 +17,7 @@
 #
 # It does four things, all without a cluster:
 #   1. helm lint --strict + helm template on EVERY chart under charts/* (a11oy,
-#      amaru, killinchu, rosie, sentra, szl-full-stack, szl-key-init,
+#      amaru, killinchu, yupana, sentra, szl-full-stack, szl-key-init,
 #      szl-receipts) so any render error (missing value, bad template) fails the
 #      build — for any chart, not just the receipt ones. (szl-receipts itself was
 #      shipping a NOTES.txt that nil-pointered on a missing values key; the older

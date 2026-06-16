@@ -9,14 +9,14 @@
 
 - Repository active and maintained under Apache-2.0 license
 - **All five organ module images published & signed** — `a11oy`,
-  `killinchu`, `amaru`, `sentra` and `rosie` are in org GHCR
-  (`ghcr.io/szl-holdings/{a11oy,killinchu,amaru,sentra,rosie}:uds-v0.2.0`),
+  `killinchu`, `amaru`, `sentra` and `yupana` are in org GHCR
+  (`ghcr.io/szl-holdings/{a11oy,killinchu,amaru,sentra,yupana}:uds-v0.2.0`),
   each built single-arch (`provenance: false`, plain `manifest.v2` — no OCI
   index) and keyless cosign-signed (Fulcio/Rekor) with an SLSA provenance
   attestation. For every organ, `cosign verify` and
   `cosign verify-attestation --type slsaprovenance` pass on a clean-env pull
   (legacy `.sig`/`.att` tag scheme that the box's cosign v2.4.1 reads). The
-  Zarf packages (`packages/{a11oy,killinchu,amaru,sentra,rosie}/`) pin these
+  Zarf packages (`packages/{a11oy,killinchu,amaru,sentra,yupana}/`) pin these
   signed digests (single-arch, `image-pin-guard`-safe).
   **Honest scope:** this proves each module image is published, signed, and
   individually deployable — it does **not** claim "all five modules boot
@@ -24,9 +24,9 @@
   in-cluster mTLS is v0.5.0 roadmap.
 - **Full-mesh / multi-organ bundle uses only verified images** — the
   multi-organ UDS bundle `bundles/szl-full-stack/uds-bundle.yaml` now references
-  its organ members (`a11oy`, `sentra`, `amaru`, `rosie`) by LOCAL path to
+  its organ members (`a11oy`, `sentra`, `amaru`, `yupana`) by LOCAL path to
   `packages/<organ>/`, which pin the cosign-signed organ images above
-  (amaru/sentra/rosie at `uds-v0.2.0@sha256:…`; a11oy tag-pinned `uds-v0.3.0`
+  (amaru/sentra/yupana at `uds-v0.2.0@sha256:…`; a11oy tag-pinned `uds-v0.3.0`
   by design). The earlier broken `repository: ghcr.io/szl-holdings/<organ>` +
   `ref: uds-v0.3.1` placeholders (an image-repo coordinate, never a published
   Zarf package) are gone, so the full-mesh path pulls **only verified images**.

@@ -7,7 +7,7 @@
 #
 # Why this exists
 # ---------------
-# The amaru, sentra, and rosie GitHub source repos are DELETED (404). Their only
+# The amaru, sentra, and yupana GitHub source repos are DELETED (404). Their only
 # surviving build artifacts are the cosign-signed container images already
 # published on GHCR before deletion, pinned by @sha256 in packages/<organ>/
 # zarf.yaml. Those three images are PUBLIC and pullable today, so a failing
@@ -48,7 +48,7 @@ on:
     paths:
       - "packages/amaru/zarf.yaml"
       - "packages/sentra/zarf.yaml"
-      - "packages/rosie/zarf.yaml"
+      - "packages/yupana/zarf.yaml"
       - "scripts/probe-organ-image-present.sh"
       - ".github/workflows/organ-image-presence-guard.yml"
   schedule:

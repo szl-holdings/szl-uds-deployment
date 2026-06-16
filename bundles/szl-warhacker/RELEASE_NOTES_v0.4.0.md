@@ -19,7 +19,7 @@ deployment of what you've built"* — Option A endorsement. Target event: Warhac
 
 This release does **not** claim "all 5 modules boot together." Verification on
 2026-05-30 found that only **vessels** ships a signed Zarf package at `uds-v0.3.0`;
-**amaru, a11oy, sentra, rosie** publish SBOM JSON only — no package, no image, no
+**amaru, a11oy, sentra, yupana** publish SBOM JSON only — no package, no image, no
 `zarf.yaml`. Those four are referenced in the bundle as the target topology but are
 **commented out / STAGED** so the bundle cannot misrepresent a non-existent artifact
 as deployable. This matches the existing `bundles/szl-full-stack` convention and the
@@ -29,7 +29,7 @@ as deployable. This matches the existing `bundles/szl-full-stack` convention and
 
 - **FA-001** — module container images not yet pushed to `ghcr.io/szl-holdings/<module>`.
   Even vessels (signed package present) will `ImagePullBackOff` until its image is pushed.
-- **Zarf packages missing** for amaru/a11oy/sentra/rosie (no `zarf.yaml` in those repos).
+- **Zarf packages missing** for amaru/a11oy/sentra/yupana (no `zarf.yaml` in those repos).
 - **Bundle not cosign-signed** (Phase 2, org key U5). `cosign verify` on the bundle
   artifact will fail until the key is provisioned.
 

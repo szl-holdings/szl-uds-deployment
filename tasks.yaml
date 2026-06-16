@@ -116,7 +116,7 @@ tasks:
 
   # ── Per-organ individual-deploy proof ─────────────────────────────────────
   # `uds run prove-organs --set ORGAN=<organ>`: prove ONE organ (a11oy |
-  # killinchu | amaru | sentra | rosie) deploys individually from its UDS bundle
+  # killinchu | amaru | sentra | yupana) deploys individually from its UDS bundle
   # package onto a THROWAWAY k3d cluster and reaches Available — one organ at a
   # time (doctrine: individually deployable, NOT all five boot together).
   # Implemented in tasks/prove-organs.yaml; aliased here. The dispatch-only CI

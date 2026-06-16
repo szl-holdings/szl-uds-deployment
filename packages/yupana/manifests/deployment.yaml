@@ -4,22 +4,22 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: rosie
-  namespace: szl-rosie
+  name: yupana
+  namespace: szl-yupana
   labels:
-    app: rosie
-    app.kubernetes.io/name: rosie
+    app: yupana
+    app.kubernetes.io/name: yupana
     szl.io/component: uds-workload
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: rosie
+      app: yupana
   template:
     metadata:
       labels:
-        app: rosie
-        app.kubernetes.io/name: rosie
+        app: yupana
+        app.kubernetes.io/name: yupana
     spec:
       automountServiceAccountToken: false
       securityContext:
@@ -30,10 +30,10 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       containers:
-        - name: rosie
+        - name: yupana
           # Live, cosign-signed image. Zarf rewrites this to the in-cluster
           # registry reference at deploy time.
-          image: ghcr.io/szl-holdings/rosie:uds-v0.2.1@sha256:f59dc4818950a7b30effc297714dd3dbd13a983094aee1125ab41678e9f504e7
+          image: ghcr.io/szl-holdings/yupana:uds-v0.2.1@sha256:f59dc4818950a7b30effc297714dd3dbd13a983094aee1125ab41678e9f504e7
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -61,14 +61,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: rosie
-  namespace: szl-rosie
+  name: yupana
+  namespace: szl-yupana
   labels:
-    app: rosie
-    app.kubernetes.io/name: rosie
+    app: yupana
+    app.kubernetes.io/name: yupana
 spec:
   selector:
-    app: rosie
+    app: yupana
   ports:
     - name: http
       port: 7860

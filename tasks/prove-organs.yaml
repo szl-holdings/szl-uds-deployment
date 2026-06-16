@@ -31,7 +31,7 @@
 
 variables:
   - name: ORGAN
-    description: "Which organ to prove: a11oy | killinchu | amaru | sentra | rosie (required)"
+    description: "Which organ to prove: a11oy | killinchu | amaru | sentra | yupana (required)"
     default: ""
   - name: VERSION
     description: "Organ Zarf package version / image tag (a11oy=0.3.0, others=0.2.0)"
@@ -50,16 +50,16 @@ tasks:
       - description: "Validate ORGAN is exactly one of the five organs"
         cmd: |
           case "${ORGAN}" in
-            a11oy|killinchu|amaru|sentra|rosie)
+            a11oy|killinchu|amaru|sentra|yupana)
               echo "Proving organ: ${ORGAN} (version ${VERSION})"
               ;;
             "")
               echo "ERROR: ORGAN is required."
-              echo "       uds run prove-organs --set ORGAN=a11oy|killinchu|amaru|sentra|rosie"
+              echo "       uds run prove-organs --set ORGAN=a11oy|killinchu|amaru|sentra|yupana"
               exit 1
               ;;
             *)
-              echo "ERROR: unknown ORGAN='${ORGAN}' (expected a11oy|killinchu|amaru|sentra|rosie)."
+              echo "ERROR: unknown ORGAN='${ORGAN}' (expected a11oy|killinchu|amaru|sentra|yupana)."
               exit 1
               ;;
           esac
@@ -111,7 +111,7 @@ tasks:
         cmd: |
           mkdir -p "${BUILD_TMPDIR}"
           # --set VERSION feeds ###ZARF_PKG_TMPL_VERSION### for the manifest-based
-          # organs (killinchu/amaru/sentra/rosie); a11oy hard-codes 0.3.0 and
+          # organs (killinchu/amaru/sentra/yupana); a11oy hard-codes 0.3.0 and
           # ignores it. Output into BUILD_TMPDIR so the glob below is unambiguous.
           # a11oy is the SOLE flavor-gated organ (its workload component is
           # only.flavor: upstream) — it MUST build with --flavor upstream or the

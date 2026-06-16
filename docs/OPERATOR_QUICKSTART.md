@@ -222,7 +222,7 @@ sha256sum -c szl-full-stack-bundle-0.3.1.tar.zst.sha256
 uds deploy szl-full-stack-bundle-0.3.1.tar.zst --confirm
 ```
 
-**Note:** Air-gap bundle packaging is contingent on `zarf package create` completing for all component packages. As of v0.3.0, only `szl-receipts` is Zarf-packaged. Full air-gap support is **[STAGED: awaiting Zarf packages for a11oy, sentra, amaru, rosie per FA-001]**.
+**Note:** Air-gap bundle packaging is contingent on `zarf package create` completing for all component packages. As of v0.3.0, only `szl-receipts` is Zarf-packaged. Full air-gap support is **[STAGED: awaiting Zarf packages for a11oy, sentra, amaru, yupana per FA-001]**.
 
 ---
 

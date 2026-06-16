@@ -76,12 +76,12 @@ PY
 istioctl proxy-status
 ```
 
-**Pass:** `istioctl proxy-status` lists a proxy (one row per pod) for a workload in **all six** namespaces — `szl-rosie`, `szl-a11oy`, `szl-amaru`, `szl-sentra`, `szl-killinchu`, `szl-receipts` — each with `SYNCED` status across CDS/LDS/EDS/RDS. This proves the `istio-injection=enabled` label ([Istio sidecar injection](https://istio.io/latest/docs/setup/additional-setup/sidecar-injection/)) took effect and pods were restarted so the `istio-proxy` sidecar was injected. A namespace missing from the list means its pods predate the label and still need a `kubectl rollout restart`.
+**Pass:** `istioctl proxy-status` lists a proxy (one row per pod) for a workload in **all six** namespaces — `szl-yupana`, `szl-a11oy`, `szl-amaru`, `szl-sentra`, `szl-killinchu`, `szl-receipts` — each with `SYNCED` status across CDS/LDS/EDS/RDS. This proves the `istio-injection=enabled` label ([Istio sidecar injection](https://istio.io/latest/docs/setup/additional-setup/sidecar-injection/)) took effect and pods were restarted so the `istio-proxy` sidecar was injected. A namespace missing from the list means its pods predate the label and still need a `kubectl rollout restart`.
 
 Cross-check:
 
 ```bash
-for ns in szl-rosie szl-a11oy szl-amaru szl-sentra szl-killinchu szl-receipts; do
+for ns in szl-yupana szl-a11oy szl-amaru szl-sentra szl-killinchu szl-receipts; do
   echo -n "$ns: "; kubectl get ns "$ns" -o jsonpath='{.metadata.labels.istio-injection}{"\n"}'
 done   # expect "enabled" for all six
 ```

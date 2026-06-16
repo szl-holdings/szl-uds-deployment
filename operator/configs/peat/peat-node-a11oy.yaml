@@ -24,7 +24,7 @@ spec:
       - "szl.a11oy"
       - "szl.sentra"
       - "szl.amaru"
-      - "szl.rosie"
+      - "szl.yupana"
       - "szl.killinchu"
   resources:
     requests:

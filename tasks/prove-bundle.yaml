@@ -51,7 +51,7 @@
 
 variables:
   - name: ORGAN
-    description: "Which member to prove: a11oy | killinchu | amaru | sentra | rosie (required)"
+    description: "Which member to prove: a11oy | killinchu | amaru | sentra | yupana (required)"
     default: ""
   - name: BUNDLE_REF
     description: "Published bundle OCI ref WITHOUT scheme (registry/org/name:tag)"
@@ -94,17 +94,17 @@ tasks:
       - description: "Validate ORGAN is exactly one of the five organs"
         cmd: |
           case "${ORGAN}" in
-            a11oy|killinchu|amaru|sentra|rosie)
+            a11oy|killinchu|amaru|sentra|yupana)
               echo "Proving published-bundle install of member: szl-${ORGAN}"
               echo "Bundle: oci://${BUNDLE_REF}"
               ;;
             "")
               echo "ERROR: ORGAN is required."
-              echo "       uds run prove-bundle --set ORGAN=a11oy|killinchu|amaru|sentra|rosie"
+              echo "       uds run prove-bundle --set ORGAN=a11oy|killinchu|amaru|sentra|yupana"
               exit 1
               ;;
             *)
-              echo "ERROR: unknown ORGAN='${ORGAN}' (expected a11oy|killinchu|amaru|sentra|rosie)."
+              echo "ERROR: unknown ORGAN='${ORGAN}' (expected a11oy|killinchu|amaru|sentra|yupana)."
               exit 1
               ;;
           esac

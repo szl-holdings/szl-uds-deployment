@@ -6,7 +6,7 @@ test_organ_package_check.py — negative-fixture self-test for the organ packagi
 guard (.github/scripts/organ_package_check.py).
 
 WHY THIS EXISTS
-The organ guard protects four deployable organs (sentra, amaru, killinchu, rosie)
+The organ guard protects four deployable organs (sentra, amaru, killinchu, yupana)
 from packaging regressions — a silent flip to chart-based, a dropped bundle
 membership, an image-ref drift, or a dropped @sha256: digest pin. But the checker
 is itself just code: if one of its checks is commented out, weakened, or made to

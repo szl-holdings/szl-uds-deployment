@@ -1,9 +1,9 @@
 # Copyright 2026 SZL Holdings
 # SPDX-License-Identifier: Apache-2.0
 #
-# UDS Package CR — rosie (operator console, human-facing TOP of stack)
+# UDS Package CR — yupana (operator console, human-facing TOP of stack)
 #
-# rosie is the only module exposed to humans through the UDS tenant gateway,
+# yupana is the only module exposed to humans through the UDS tenant gateway,
 # and the only module that takes interactive human auth (SSO via authservice +
 # Keycloak). It commands a11oy and reads back events for display; it never
 # reaches amaru/sentra/vessels directly (operator commands route through a11oy).
@@ -22,28 +22,28 @@
 apiVersion: uds.dev/v1alpha1
 kind: Package
 metadata:
-  name: rosie
-  namespace: szl-rosie
+  name: yupana
+  namespace: szl-yupana
   labels:
-    app.kubernetes.io/name: rosie
+    app.kubernetes.io/name: yupana
     szl.io/component: uds-package
     szl.io/mesh-version: v0.4.0
   annotations:
     szl.io/role: "operator console (human-facing top of stack)"
     szl.io/image-status: >-
-      PUBLISHED + cosign-signed — ghcr.io/szl-holdings/rosie:uds-v0.2.1@sha256:f59dc4818950a7b30effc297714dd3dbd13a983094aee1125ab41678e9f504e7
+      PUBLISHED + cosign-signed — ghcr.io/szl-holdings/yupana:uds-v0.2.1@sha256:f59dc4818950a7b30effc297714dd3dbd13a983094aee1125ab41678e9f504e7
       (.sig + .att SLSA attestation present in GHCR; FA-001 resolved)
 spec:
-  # ── SSO — rosie is human-facing; protect with authservice + Keycloak OIDC ──
-  # gateway: tenant exposure puts rosie behind the authservice sidecar so every
+  # ── SSO — yupana is human-facing; protect with authservice + Keycloak OIDC ──
+  # gateway: tenant exposure puts yupana behind the authservice sidecar so every
   # request carries a verified OIDC identity before reaching the Gradio app.
   sso:
-    - name: SZL Rosie Operator Console
-      clientId: szl-rosie
+    - name: SZL Yupana Operator Console
+      clientId: szl-yupana
       redirectUris:
-        - "https://rosie.uds.dev/login/callback"
+        - "https://yupana.uds.dev/login/callback"
       enableAuthserviceSelector:
-        app: rosie
+        app: yupana
       groups:
         anyOf:
           - "/szl/operators"   # only members of the operators group may sign in
@@ -59,15 +59,15 @@ spec:
     serviceMesh:
       mode: ambient
     expose:
-      # Gradio UI on 7860, fronted by the UDS tenant Istio gateway at https://rosie.<domain>
-      - service: rosie
+      # Gradio UI on 7860, fronted by the UDS tenant Istio gateway at https://yupana.<domain>
+      - service: yupana
         selector:
-          app: rosie
+          app: yupana
         gateway: tenant
-        host: rosie
+        host: yupana
         port: 7860
         targetPort: 7860
-        description: "rosie Gradio operator console — tenant gateway"
+        description: "yupana Gradio operator console — tenant gateway"
         # uptime.checks.paths enables blackbox-exporter uptime monitoring of the
         # exposed host. Gradio serves its root at /.
         # (pattern: uds-packages/reference-package/chart/templates/uds-package.yaml;
@@ -81,53 +81,53 @@ spec:
       # DNS resolution (required for every svc.cluster.local lookup)
       - direction: Egress
         selector:
-          app: rosie
+          app: yupana
         remoteGenerated: KubeAPI
         description: "Kubernetes API / DNS resolution"
-      # rosie -> a11oy : ALLOW (operator commands the policy substrate)
+      # yupana -> a11oy : ALLOW (operator commands the policy substrate)
       - direction: Egress
         selector:
-          app: rosie
+          app: yupana
         remoteNamespace: szl-a11oy
         remoteSelector:
           app: a11oy
         port: 7860
-        description: "rosie commands a11oy (operator -> policy substrate)"
-      # rosie -> szl-receipts : ALLOW (human-confirmation receipt emission)
+        description: "yupana commands a11oy (operator -> policy substrate)"
+      # yupana -> szl-receipts : ALLOW (human-confirmation receipt emission)
       - direction: Egress
         selector:
-          app: rosie
+          app: yupana
         remoteNamespace: szl-receipts
         remoteSelector:
           app: szl-receipts-server
         port: 8080
-        description: "rosie emits human-confirmation receipts to the chain authority"
-      # a11oy -> rosie : ALLOW (a11oy pushes events to rosie for display)
+        description: "yupana emits human-confirmation receipts to the chain authority"
+      # a11oy -> yupana : ALLOW (a11oy pushes events to yupana for display)
       - direction: Ingress
         selector:
-          app: rosie
+          app: yupana
         remoteNamespace: szl-a11oy
         remoteSelector:
           app: a11oy
         port: 7860
-        description: "a11oy emits events to rosie for human display"
-      # sentra -> rosie : ALLOW (immune system may inspect operator surface)
+        description: "a11oy emits events to yupana for human display"
+      # sentra -> yupana : ALLOW (immune system may inspect operator surface)
       - direction: Ingress
         selector:
-          app: rosie
+          app: yupana
         remoteNamespace: szl-sentra
         remoteSelector:
           app: sentra
         port: 7860
         description: "sentra (immune system) may inspect the operator surface"
       # Ingress from tenant gateway is generated by the expose block above; no
-      # explicit allow needed for gateway -> rosie.
+      # explicit allow needed for gateway -> yupana.
 
   monitor:
     - portName: metrics
       selector:
-        app: rosie
+        app: yupana
       targetPort: 7860
       path: /metrics
       kind: ServiceMonitor
-      description: "rosie Gradio metrics scrape"
+      description: "yupana Gradio metrics scrape"

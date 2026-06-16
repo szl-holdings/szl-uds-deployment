@@ -18,7 +18,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: szl-rosie
+  name: szl-yupana
   labels:
     istio-injection: enabled
     szl.io/mesh-version: v0.4.0

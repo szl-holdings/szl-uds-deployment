@@ -12,7 +12,7 @@
 #     ghcr.io/szl-holdings/sentra:uds-v0.2.0     (cosign .sig present)
 #     ghcr.io/szl-holdings/amaru:uds-v0.2.0      (cosign .sig present)
 #     ghcr.io/szl-holdings/killinchu:uds-v0.2.0  (cosign .sig present)
-#     ghcr.io/szl-holdings/rosie:uds-v0.2.0      (cosign .sig present)
+#     ghcr.io/szl-holdings/yupana:uds-v0.2.0      (cosign .sig present)
 #
 # Members are referenced by LOCAL path (the Zarf packages are built in the same
 # CI job by `zarf package create packages/<organ>`). A UDS bundle composes Zarf
@@ -34,7 +34,7 @@ metadata:
   description: >-
     SZL Holdings flagship stack — a11oy (policy/receipt orchestrator),
     sentra (cyber-resilience gates), amaru (convergent data-sync + attestation),
-    killinchu (receipt/transport courier), and rosie (governed decision fabric)
+    killinchu (receipt/transport courier), and yupana (governed decision fabric)
     composed into one deployable UDS bundle. All 5 member images are live and
     cosign-signed on ghcr.io.
   version: "0.3.0"
@@ -68,7 +68,7 @@ packages:
     path: ../../packages/killinchu
     ref: "0.3.0"
 
-  # ── rosie — governed decision fabric + observability dashboard ────────────
-  - name: szl-rosie
-    path: ../../packages/rosie
+  # ── yupana — governed decision fabric + observability dashboard ────────────
+  - name: szl-yupana
+    path: ../../packages/yupana
     ref: "0.3.0"

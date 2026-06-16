@@ -7,7 +7,7 @@
 # The full-organ UDS bundle bundles/szl-uds-bundle/uds-bundle.yaml ships five
 # organs. a11oy was upgraded to a CHART-based Zarf package (packages/a11oy ->
 # charts/a11oy, tag-only uds-v0.3.0) and is protected by a11oy-package-guard.yml.
-# The other four — sentra, amaru, killinchu, rosie — are still MANIFESTS-based and
+# The other four — sentra, amaru, killinchu, yupana — are still MANIFESTS-based and
 # @sha256: digest-pinned at uds-v0.2.0 (packages/<organ>/zarf.yaml -> manifests/
 # *.yaml). NOTHING guards their packaging shape:
 #   * image-pin-guard.yml only scans the root zarf.yaml + packages/szl-receipts.
@@ -50,7 +50,7 @@ on:
       - "packages/sentra/**"
       - "packages/amaru/**"
       - "packages/killinchu/**"
-      - "packages/rosie/**"
+      - "packages/yupana/**"
       - "bundles/szl-uds-bundle/uds-bundle.yaml"
       - ".github/scripts/organ_package_check.py"
       - ".github/scripts/test_organ_package_check.py"
@@ -62,7 +62,7 @@ on:
       - "packages/sentra/**"
       - "packages/amaru/**"
       - "packages/killinchu/**"
-      - "packages/rosie/**"
+      - "packages/yupana/**"
       - "bundles/szl-uds-bundle/uds-bundle.yaml"
       - ".github/scripts/organ_package_check.py"
       - ".github/scripts/test_organ_package_check.py"
@@ -90,7 +90,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        organ: [sentra, amaru, killinchu, rosie]
+        organ: [sentra, amaru, killinchu, yupana]
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6

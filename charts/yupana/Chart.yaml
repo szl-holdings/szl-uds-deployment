@@ -1,22 +1,22 @@
 # Copyright 2026 SZL Holdings
 # SPDX-License-Identifier: Apache-2.0
 #
-# rosie per-flagship Helm chart — UDS Core / Big Bang compatible.
-# References the LIVE, cosign-signed image ghcr.io/szl-holdings/rosie:uds-v0.2.1.
+# yupana per-flagship Helm chart — UDS Core / Big Bang compatible.
+# References the LIVE, cosign-signed image ghcr.io/szl-holdings/yupana:uds-v0.2.1.
 # Includes a receipt-key init pre-install hook (charts/szl-key-init pattern) and
 # mounts the receipt-signing secret + doctrine configmap.
 #
 # Doctrine v11 LOCKED 749/14/163 at kernel commit c7c0ba17. SLSA L1 (honest).
 apiVersion: v2
-name: rosie
-description: "SZL rosie — Governed decision fabric — mandatory witnesses on every decision (ROSIE-V1)"
+name: yupana
+description: "SZL yupana — Governed decision fabric — mandatory witnesses on every decision (YUPANA-V1)"
 type: application
 version: 0.2.0
 appVersion: "uds-v0.2.1"
-home: https://github.com/szl-holdings/rosie
+home: https://github.com/szl-holdings/yupana
 sources:
-  - https://github.com/szl-holdings/rosie
-keywords: [uds, big-bang, szl, rosie]
+  - https://github.com/szl-holdings/yupana
+keywords: [uds, big-bang, szl, yupana]
 maintainers:
   - name: Yachay
     email: yachay@szlholdings.ai
@@ -24,5 +24,5 @@ annotations:
   szl.ai/doctrine-version: "v11"
   szl.ai/slsa-level: "L1"
   helm.sh/images: |
-    - name: rosie
-      image: ghcr.io/szl-holdings/rosie:uds-v0.2.1
+    - name: yupana
+      image: ghcr.io/szl-holdings/yupana:uds-v0.2.1

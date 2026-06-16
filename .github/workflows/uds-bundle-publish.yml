@@ -4,7 +4,7 @@
 # uds-bundle-publish.yml
 #
 # Builds the customer hand-off deliverable: a single UDS bundle that wraps the
-# 5 flagship SZL organs (a11oy, sentra, amaru, killinchu, rosie) — each already
+# 5 flagship SZL organs (a11oy, sentra, amaru, killinchu, yupana) — each already
 # live and cosign-signed on ghcr.io — into one OCI artifact:
 #
 #     oci://ghcr.io/szl-holdings/szl-uds-bundle:uds-v0.2.0   (+ :latest)
@@ -198,7 +198,7 @@ jobs:
           password: ${{ secrets.GHCR_PUBLISH_TOKEN }}
 
       # ── Pre-warm large organ image layers into the Zarf cache (resumable) ──
-      # amaru (and to a lesser extent rosie) carry a fat single layer (~363MB)
+      # amaru (and to a lesser extent yupana) carry a fat single layer (~363MB)
       # that repeatedly stalls/EOFs on the GHCR CDN. Both `zarf` and `docker`
       # image pulls are NON-resumable (a stall restarts from byte 0), so one CDN
       # hiccup would fail `zarf package create` for the whole organ. We pre-fetch
@@ -213,7 +213,7 @@ jobs:
         run: |
           set -uo pipefail
           chmod +x scripts/prewarm-ghcr-blobs.sh
-          for organ in amaru rosie a11oy sentra killinchu; do
+          for organ in amaru yupana a11oy sentra killinchu; do
             ref="$(grep -oE 'ghcr\.io/szl-holdings/[a-z0-9._/-]+@sha256:[0-9a-f]{64}' "packages/${organ}/zarf.yaml" | head -1 || true)"
             if [ -z "${ref}" ]; then
               echo "packages/${organ}/zarf.yaml has no digest-pinned image; zarf will pull it by tag"
@@ -254,7 +254,7 @@ jobs:
           # components (only.flavor: upstream|unicorn) — its sole workload
           # component is gated, so a11oy MUST be built with `--flavor upstream` or
           # that component is silently dropped (empty package). The other four
-          # organs (killinchu/rosie/sentra/amaru) have NO flavor gating and MUST be
+          # organs (killinchu/yupana/sentra/amaru) have NO flavor gating and MUST be
           # built WITHOUT `--flavor` (a stray --flavor would conversely empty them).
           # bundle-build-guard enforces this symmetry by reading each literal
           # `zarf package create` line, so a11oy is built on its own line below with
@@ -315,9 +315,9 @@ jobs:
             exit 1
           fi
           # The remaining four organs have NO flavor gating — build WITHOUT --flavor.
-          # killinchu + rosie first (the ones that failed last run) so their error
+          # killinchu + yupana first (the ones that failed last run) so their error
           # annotation lands inside GitHub's 10-annotation cap.
-          for organ in killinchu rosie sentra amaru; do
+          for organ in killinchu yupana sentra amaru; do
             echo "::group::zarf package create packages/${organ}"
             RC=0
             for attempt in 1 2 3; do

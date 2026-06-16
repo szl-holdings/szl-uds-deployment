@@ -4,7 +4,7 @@
 
 ## 1. Purpose
 
-`szl-fleet-overlay` is a UDS-managed package that **registers each SZL flagship application** (a11oy, sentra, amaru, rosie, killinchu) as a first-class UDS-managed application. It provides:
+`szl-fleet-overlay` is a UDS-managed package that **registers each SZL flagship application** (a11oy, sentra, amaru, yupana, killinchu) as a first-class UDS-managed application. It provides:
 
 1. `Package` CRs for each flagship → Istio routing, NetworkPolicy, SSO, portal tiles
 2. Doctrine-pinned receipts (`checksums.txt` + cosign signatures) for SLSA L1 attestation
@@ -27,7 +27,7 @@ All variants share the same `Package` CR definitions but differ in _how_ the app
 | a11oy | `szl-a11oy` | 8080 | `uds-szl-a11oy` | `/szl-operators` | Yes |
 | sentra | `szl-sentra` | 8080 | `uds-szl-sentra` | `/szl-operators` | Yes |
 | amaru | `szl-amaru` | 8080 | `uds-szl-amaru` | `/szl-operators` | Yes |
-| rosie | `szl-rosie` | 8080 | `uds-szl-rosie` | `/szl-operators` | Yes |
+| yupana | `szl-yupana` | 8080 | `uds-szl-yupana` | `/szl-operators` | Yes |
 | killinchu | `szl-killinchu` | 8080 | `uds-szl-killinchu` | `/szl-operators` | Yes |
 
 All applications are served over the UDS **tenant** gateway (default). No passthrough or admin gateway exposure unless a specific app requires raw TLS.
@@ -58,8 +58,8 @@ szl-fleet-overlay/
 │       ├── package-sentra.yaml
 │       ├── namespace-amaru.yaml
 │       ├── package-amaru.yaml
-│       ├── namespace-rosie.yaml
-│       ├── package-rosie.yaml
+│       ├── namespace-yupana.yaml
+│       ├── package-yupana.yaml
 │       ├── namespace-killinchu.yaml
 │       └── package-killinchu.yaml
 │
@@ -68,13 +68,13 @@ szl-fleet-overlay/
 │   │   ├── package-a11oy.yaml
 │   │   ├── package-sentra.yaml
 │   │   ├── package-amaru.yaml
-│   │   ├── package-rosie.yaml
+│   │   ├── package-yupana.yaml
 │   │   └── package-killinchu.yaml
 │   └── peat/                          # Peat mesh node configs
 │       ├── peat-node-a11oy.yaml
 │       ├── peat-node-sentra.yaml
 │       ├── peat-node-amaru.yaml
-│       ├── peat-node-rosie.yaml
+│       ├── peat-node-yupana.yaml
 │       └── peat-node-killinchu.yaml
 │
 └── receipts/                          # Doctrine-pinned receipts
@@ -264,14 +264,14 @@ components:
         files:
           - configs/packages/package-amaru.yaml
 
-  - name: szl-rosie-package
+  - name: szl-yupana-package
     required: true
-    description: "UDS Package CR for rosie"
+    description: "UDS Package CR for yupana"
     manifests:
-      - name: szl-rosie-package
-        namespace: szl-rosie
+      - name: szl-yupana-package
+        namespace: szl-yupana
         files:
-          - configs/packages/package-rosie.yaml
+          - configs/packages/package-yupana.yaml
 
   - name: szl-killinchu-package
     required: true
@@ -293,7 +293,7 @@ components:
           - configs/peat/peat-node-a11oy.yaml
           - configs/peat/peat-node-sentra.yaml
           - configs/peat/peat-node-amaru.yaml
-          - configs/peat/peat-node-rosie.yaml
+          - configs/peat/peat-node-yupana.yaml
           - configs/peat/peat-node-killinchu.yaml
 
   # ── Phase 4: Receipts ─────────────────────────────────────────────────────
@@ -384,13 +384,13 @@ apps:
     displayName: "SZL Amaru"
     peatEnabled: true
 
-  rosie:
+  yupana:
     enabled: true
-    namespace: szl-rosie
+    namespace: szl-yupana
     servicePort: 8080
     metricsPort: 9090
-    clientId: uds-szl-rosie
-    displayName: "SZL Rosie"
+    clientId: uds-szl-yupana
+    displayName: "SZL Yupana"
     peatEnabled: true
 
   killinchu:
@@ -490,7 +490,7 @@ spec:
 {{- end }}
 ```
 
-*(Identical pattern for sentra, amaru, rosie, killinchu.)*
+*(Identical pattern for sentra, amaru, yupana, killinchu.)*
 
 ---
 
@@ -548,7 +548,7 @@ spec:
     peers:
       - "szl.sentra"
       - "szl.amaru"
-      - "szl.rosie"
+      - "szl.yupana"
       - "szl.killinchu"
   resources:
     requests:
@@ -695,7 +695,7 @@ tasks:
     description: "Validate all Package CRs reached Ready phase"
     actions:
       - cmd: |
-          for app in a11oy sentra amaru rosie killinchu; do
+          for app in a11oy sentra amaru yupana killinchu; do
             phase=$(kubectl get package szl-${app} -n szl-${app} -o jsonpath='{.status.phase}' 2>/dev/null)
             if [ "${phase}" != "Ready" ]; then
               echo "FAIL: szl-${app} phase=${phase}"

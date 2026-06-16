@@ -27,9 +27,9 @@ Governance capabilities live in szl-uds-deployment/capabilities/szl-governance (
 {a11oy,killinchu}-receipt-gate.ts) — Λ-signed receipt admission gates.
 
 ## OPEN DOCTRINE ITEM (flagged to DEV-A this round)
-UDS repos still carry banned codenames as package/bundle/manifest names (amaru/rosie/sentra) — 225 paths
+UDS repos still carry banned codenames as package/bundle/manifest names (amaru/yupana/sentra) — 225 paths
 across uds-bundles/szl-uds-deployment/szl-fleet-overlay/uds-mesh. Must be renamed to honest roles
-(amaru→provenance-anchor, rosie→operator, sentra→policy) WITH full cross-reference integrity, or flagged
+(amaru→provenance-anchor, yupana→operator, sentra→policy) WITH full cross-reference integrity, or flagged
 for a focused pass. Tracked.
 
 ## Local UDS environment — how to stand it up (k3d-core-dev-slim)

@@ -3,7 +3,7 @@
 #
 # Prove Organs — szl-uds-deployment
 # =============================================================================
-# Proof that each organ (a11oy, killinchu, amaru, sentra, rosie) ACTUALLY
+# Proof that each organ (a11oy, killinchu, amaru, sentra, yupana) ACTUALLY
 # deploys individually from its UDS bundle package onto a THROWAWAY k3d cluster
 # and that its Deployment reaches Available. One organ per matrix leg, one fresh
 # cluster per leg — doctrine: "individually deployable, NOT all five boot
@@ -41,7 +41,7 @@ on:
           - killinchu
           - amaru
           - sentra
-          - rosie
+          - yupana
   push:
     tags:
       - "v*"
@@ -76,7 +76,7 @@ jobs:
           K='{"organ":"killinchu","version":"0.2.0"}'
           M='{"organ":"amaru","version":"0.2.0"}'
           S='{"organ":"sentra","version":"0.2.0"}'
-          R='{"organ":"rosie","version":"0.2.0"}'
+          R='{"organ":"yupana","version":"0.2.0"}'
           if [ "${ORGAN}" = "all" ]; then
             echo "matrix={\"include\":[${A},${K},${M},${S},${R}]}" >> "$GITHUB_OUTPUT"
           else

@@ -29,7 +29,7 @@ Mode D — custom OIDC issuer + client ID.
   --pepr-deploy NAME      (default: pepr-szl-vessels-governance)
   --dry-run
 ENV that changes (verified): SZL_COSIGN_OIDC_ISSUER on the vessels Pepr deploy;
-  spec.sso[].clientId in packages/{rosie,vessels}/uds-package.yaml + charts/szl-receipts.
+  spec.sso[].clientId in packages/{yupana,vessels}/uds-package.yaml + charts/szl-receipts.
 USAGE
 }
 
@@ -63,7 +63,7 @@ run kubectl -n "${PEPR_NS}" rollout status "deploy/${PEPR_DEPLOY}" --timeout=90s
 cat <<NEXT
   ----------------------------------------------------------------------------
   GATEWAY / HUMAN-LOGIN (edit Package CRs, then re-apply via UDS):
-    packages/rosie/uds-package.yaml      -> spec.sso[0].clientId: ${CLIENT}
+    packages/yupana/uds-package.yaml      -> spec.sso[0].clientId: ${CLIENT}
     packages/vessels/uds-package.yaml    -> spec.sso[0].clientId (operator view)
     charts/szl-receipts/templates/uds-package.yaml -> spec.sso[0].clientId
     Issuer realm comes from DU UDS Core's Keycloak; redirectUris must include
