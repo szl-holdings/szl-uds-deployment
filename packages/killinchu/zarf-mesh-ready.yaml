@@ -58,7 +58,7 @@ components:
           - manifests/deployment.yaml
     images:
       # VERIFIED-LIVE on GHCR (HTTP 200). Digest pinned for supply-chain integrity.
-      - ghcr.io/szl-holdings/killinchu:uds-v0.2.0@sha256:6f185dda4e81aa2a347a5210a2f2bdfd19fe1af898e0c14a0a914261b1858f16
+      - ghcr.io/szl-holdings/killinchu:uds-v0.2.0@sha256:43a0100a2d53fbc16628ff5efa5adb086a81859e13443f17267498da44e39673
     actions:
       onDeploy:
         after:
