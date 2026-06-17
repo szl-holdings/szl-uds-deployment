@@ -36,7 +36,7 @@ KIL_NS="szl-killinchu"
 UDS="${UDS:-uds}"
 ORGAN_TAG="uds-v0.2.0"
 # Verified-current organ digest (re-resolve before a real air-gap freeze).
-ORGAN_DIGEST="${ORGAN_DIGEST:-sha256:dafe4a4d1f881d95ee3890f51fc3a5c13b7f3ad422b511de1b17b4171b690a9b}"
+ORGAN_DIGEST="${ORGAN_DIGEST:-sha256:b07eeddbf4749d075f75ef42f474d1aa05e6fa8b01db9e7dd51f27370b7db4e5}"
 
 c_g(){ printf '\033[32m%s\033[0m\n' "$*"; }
 c_y(){ printf '\033[33m%s\033[0m\n' "$*"; }

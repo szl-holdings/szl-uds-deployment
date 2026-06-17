@@ -126,7 +126,7 @@ packages:
   # UN-STAGED 2026-06-15. Local Zarf package (packages/a11oy) wrapping the LIVE,
   # cosign-signed, digest-pinned organ image (verified HTTP 200, 2026-06-15):
   #   ghcr.io/szl-holdings/a11oy:uds-v0.3.0
-  #     @sha256:715e0af70307115cfa3238da1a8f02e4cd872318b5f83582b7af1daca0a90e10
+  #     @sha256:62ac84a4f48a58db8d5549dde696de706be67df4e8bacc1a50ee5cbbb99787b1
   # a11oy is the ONE flavor-gated organ (only.flavor: upstream|unicorn), so its
   # member is pre-built `--flavor upstream` (see tasks.yaml `start`); zarf names the
   # tarball ...-0.4.0-upstream.tar.zst, so the ref carries the -upstream suffix

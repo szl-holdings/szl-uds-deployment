@@ -36,7 +36,7 @@ A11OY_NS="szl-a11oy"
 UDS="${UDS:-uds}"
 ORGAN_TAG="uds-v0.3.0"
 # Verified-current organ digest (re-resolve before a real air-gap freeze).
-ORGAN_DIGEST="${ORGAN_DIGEST:-sha256:715e0af70307115cfa3238da1a8f02e4cd872318b5f83582b7af1daca0a90e10}"
+ORGAN_DIGEST="${ORGAN_DIGEST:-sha256:62ac84a4f48a58db8d5549dde696de706be67df4e8bacc1a50ee5cbbb99787b1}"
 
 c_g(){ printf '\033[32m%s\033[0m\n' "$*"; }
 c_y(){ printf '\033[33m%s\033[0m\n' "$*"; }

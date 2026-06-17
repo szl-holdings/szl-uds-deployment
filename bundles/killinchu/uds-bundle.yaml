@@ -19,7 +19,7 @@
 # digest stable across 3 samples / 40s):
 #   - killinchu ORGAN image is FRESH + DIGEST-PINNED across all source files:
 #     ghcr.io/szl-holdings/killinchu:uds-v0.2.0
-#     digest sha256:dafe4a4d1f881d95ee3890f51fc3a5c13b7f3ad422b511de1b17b4171b690a9b
+#     digest sha256:b07eeddbf4749d075f75ef42f474d1aa05e6fa8b01db9e7dd51f27370b7db4e5
 #     (single-arch v2 manifest — create-safe, not an OCI index). The uds-v0.2.0
 #     tag is MUTABLE and CI rebuilds it frequently: this digest superseded
 #     209f9f09... (18:50Z), which superseded 946f1fc9... (14:52Z), which

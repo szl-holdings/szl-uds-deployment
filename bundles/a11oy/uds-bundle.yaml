@@ -20,7 +20,7 @@
 # digest stable across 3 samples / 40s):
 #   - a11oy ORGAN image is FRESH + DIGEST-PINNED across all source files:
 #     ghcr.io/szl-holdings/a11oy:uds-v0.3.0
-#     digest sha256:715e0af70307115cfa3238da1a8f02e4cd872318b5f83582b7af1daca0a90e10
+#     digest sha256:62ac84a4f48a58db8d5549dde696de706be67df4e8bacc1a50ee5cbbb99787b1
 #     (single-arch v2 manifest — create-safe, not an OCI index). The uds-v0.3.0
 #     tag is MUTABLE and CI rebuilds it frequently: this digest superseded
 #     0ba52b5a... (18:50Z), which superseded 088f8da1... (16:38Z), which

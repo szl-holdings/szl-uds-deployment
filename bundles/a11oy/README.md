@@ -10,7 +10,7 @@ required backends (sentra, amaru) into a single air-gapped UDS bundle that
 - **Doctrine v11:** locked-8 @ `c7c0ba17`, Λ = Conjecture 1, SLSA L1 honest / L2 attested / L3 ROADMAP, tamper-EVIDENT (SHA3-256 hash-chain), NEVER commit a key, honest BLOCKED beats fake green.
 
 ## Air-gap posture (CONFIRMED)
-- Organ image is **digest-pinned** in every source file: `ghcr.io/szl-holdings/a11oy:uds-v0.3.0@sha256:715e0af70307115cfa3238da1a8f02e4cd872318b5f83582b7af1daca0a90e10` (single-arch v2 manifest — create-safe, not an OCI index).
+- Organ image is **digest-pinned** in every source file: `ghcr.io/szl-holdings/a11oy:uds-v0.3.0@sha256:62ac84a4f48a58db8d5549dde696de706be67df4e8bacc1a50ee5cbbb99787b1` (single-arch v2 manifest — create-safe, not an OCI index).
 - `uds zarf package create` **bakes** every image into the package tarball; at deploy the Zarf agent rewrites image refs to the **in-cluster** registry. **No runtime CDN, no internet pull at deploy.**
 - Pin is re-asserted against the live GHCR digest by `prove-it.sh` step `[1] VALIDATE` — re-resolve before an air-gap freeze in case CI rebuilds the organ.
 
