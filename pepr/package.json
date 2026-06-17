@@ -108,6 +108,7 @@
     "@felipecrs/decompress-tarxz": "5.0.6",
     "@xhmikosr/decompress-unzip": "8.2.0",
     "@xhmikosr/decompress-tar": "9.0.1",
-    "esbuild": "0.28.1"
+    "esbuild": "0.28.1",
+    "js-yaml@<4.2.0": "4.2.0"
   }
 }
