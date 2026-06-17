@@ -20,7 +20,7 @@
 # cosign keyless-signed, this package is build-valid but its live deploy / bundle
 # membership stays gated (FA-001 style — see uds-package.yaml image-status).
 
-FROM python:3.12-slim AS base
+FROM python:3.12-slim@sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e4d27e78f1b0e9 AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

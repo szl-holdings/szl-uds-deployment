@@ -6,7 +6,7 @@
 # mismatched user -> EACCES): runs as uid 65532 (matches deployment runAsUser),
 # app at /app/serve.py (world-readable), serves on 7860 (matches the Deployment
 # containerPort, Service targetPort, and the UDS mesh allow/expose rules).
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e4d27e78f1b0e9
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PORT=7860
 WORKDIR /app
 RUN pip install --no-cache-dir "fastapi==0.111.0" "uvicorn==0.30.1"
