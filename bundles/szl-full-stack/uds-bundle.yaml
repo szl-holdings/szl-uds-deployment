@@ -2,22 +2,25 @@ kind: UDSBundle
 metadata:
   name: szl-full-stack
   description: >
-    SZL Holdings full-stack UDS bundle — composes szl-receipts plus the four
-    flagship organs (a11oy, sentra, amaru, yupana) as separate Zarf packages.
-    The organ members are now AVAILABLE: each is referenced by LOCAL path to its
-    packages/<organ>/zarf.yaml, which wraps the LIVE, cosign-signed,
-    digest-pinned organ image on ghcr.io (amaru/sentra/yupana pin uds-v0.2.0
-    @sha256 digests; a11oy is tag-pinned uds-v0.3.0 by design). This bundle
-    therefore pulls ONLY verified images.
+    SZL Holdings full-stack UDS bundle — composes szl-receipts plus the two
+    standalone flagship organs (a11oy, yupana) as separate Zarf packages.
+    (amaru and sentra are no longer standalone organs: they were consolidated
+    into a11oy as internal organs — a11oy Memory (amaru) and a11oy's immune/
+    safety gates (sentra) — so they ship INSIDE the a11oy image, not as separate
+    members.) The organ members are AVAILABLE: each is referenced by LOCAL path
+    to its packages/<organ>/zarf.yaml, which wraps the LIVE, cosign-signed,
+    digest-pinned organ image on ghcr.io (yupana pins uds-v0.2.0 @sha256 digest;
+    a11oy is tag-pinned uds-v0.3.0 by design). This bundle therefore pulls ONLY
+    verified images.
     DOCTRINE: the members are published, cosign-signed and INDIVIDUALLY
-    deployable; this bundle does NOT claim all five boot together on any single
+    deployable; this bundle does NOT claim all three boot together on any single
     cluster.
   version: 0.3.1
   # Doctrine marker: organ members re-pinned from the broken uds-v0.3.1 image-repo
   # placeholders to the verified, digest-pinned packages/<organ> (Task #595).
   # cosign verify + cosign verify-attestation --type slsaprovenance PASS for each
-  # pinned organ image (amaru/sentra @refs/heads/main, yupana @refs/tags/uds-v0.3.1;
-  # issuer https://token.actions.githubusercontent.com). Do NOT revert these to
+  # pinned organ image (yupana @refs/tags/uds-v0.3.1; issuer
+  # https://token.actions.githubusercontent.com). Do NOT revert these to
   # raw `repository: ghcr.io/szl-holdings/<organ>` + `ref: uds-v0.3.1` — that
   # coordinate is an image repo, not a published Zarf package, and no Zarf
   # package was ever published at uds-v0.3.1.
@@ -65,39 +68,7 @@ packages:
     ref: "0.2.0"
 
   # ─────────────────────────────────────────────────────────────────
-  # Package 3: szl-sentra (sentra-gates)
-  # Status: AVAILABLE — local Zarf package packages/sentra wraps the live,
-  #         cosign-signed, digest-pinned image:
-  #         ghcr.io/szl-holdings/sentra:uds-v0.2.0
-  #           @sha256:60a0efc14366ba392bfe3f3cd4196863fe148bb87a17428be6a57f0a05ac3639
-  # ─────────────────────────────────────────────────────────────────
-  - name: szl-sentra
-    description: >
-      sentra cyber-resilience runtime: fail-closed asset-scoped Safety Gate
-      (Sentra-V1, NIST CSF 2.0 + D3FEND), L7 forecast engine consuming
-      a11oy-gate-emitted UDS receipts. Composed from the LIVE cosign-signed,
-      digest-pinned sentra image (uds-v0.2.0).
-    path: ../../packages/sentra
-    ref: "0.2.0"
-
-  # ─────────────────────────────────────────────────────────────────
-  # Package 4: szl-amaru (amaru-attestation)
-  # Status: AVAILABLE — local Zarf package packages/amaru wraps the live,
-  #         cosign-signed, digest-pinned image:
-  #         ghcr.io/szl-holdings/amaru:uds-v0.2.0
-  #           @sha256:53301e26adcde49e73df28d8c3b790f2496da9d495307fe8587ffa7452b289ff
-  # ─────────────────────────────────────────────────────────────────
-  - name: szl-amaru
-    description: >
-      amaru convergent data-sync runtime: KL drift + hash-chained proof receipts,
-      brain organ wiring for anatomy-alive Phase 1 Track 1 (emits formula_witness),
-      adversarial regression detection runtime. Composed from the LIVE
-      cosign-signed, digest-pinned amaru image (uds-v0.2.0).
-    path: ../../packages/amaru
-    ref: "0.2.0"
-
-  # ─────────────────────────────────────────────────────────────────
-  # Package 5: szl-yupana (yupana-replay)
+  # Package 3: szl-yupana (yupana-replay)
   # Status: AVAILABLE — local Zarf package packages/yupana wraps the live,
   #         cosign-signed, digest-pinned image:
   #         ghcr.io/szl-holdings/yupana:uds-v0.2.0
@@ -120,13 +91,13 @@ packages:
 # This bundle is NOT UDS Catalog accepted. See catalog-submission/ for acceptance status.
 #
 # Build (members must be pre-built, same flow as bundles/szl-uds-bundle):
-#   for o in a11oy sentra amaru yupana; do \
+#   for o in a11oy yupana; do \
 #     zarf package create packages/$o --set VERSION=uds-v0.2.0 -a amd64 --confirm; done
 #   zarf package create packages/szl-receipts --confirm
 #   uds create bundles/szl-full-stack --confirm
 #
-# Verify a pinned organ image (example, amaru):
-#   cosign verify ghcr.io/szl-holdings/amaru@sha256:53301e26adcde49e73df28d8c3b790f2496da9d495307fe8587ffa7452b289ff \
-#     --certificate-identity https://github.com/szl-holdings/amaru/.github/workflows/ghcr-build-push.yml@refs/heads/main \
+# Verify a pinned organ image (example, yupana):
+#   cosign verify ghcr.io/szl-holdings/yupana@sha256:1984a15f53c2e1b91c7dafaa0ed5df9148d57e3e86eb73db879c2b0443302848 \
+#     --certificate-identity https://github.com/szl-holdings/yupana/.github/workflows/ghcr-build-push.yml@refs/heads/main \
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
 # ─────────────────────────────────────────────────────────────────

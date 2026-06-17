@@ -4,8 +4,8 @@
 # NO Iron Bank / FedRAMP / CMMC / SWFT / Mission Owner
 #
 # Usage:
-#   make demo-up         spin up k3d cluster + uds-core + 5 flagships + szl-mesh
-#   make demo-status     report all 5 flagships' status + receipt chain
+#   make demo-up         spin up k3d cluster + uds-core + 3 flagships + szl-mesh
+#   make demo-status     report all 3 flagships' status + receipt chain
 #   make demo-receipts   show the latest 10 receipts across the chain
 #   make demo-tear-down  nuke the cluster cleanly
 #
@@ -47,7 +47,7 @@ help: ## Print this help
 
 ##@ Demo Lifecycle
 
-demo-up: ## [DEMO] Spin up k3d + UDS Core + 5 flagships + szl-mesh (≈ 10-20 min)
+demo-up: ## [DEMO] Spin up k3d + UDS Core + 3 flagships + szl-mesh (≈ 10-20 min)
 	@echo -e "$(YELLOW)=== SZL Demo Cluster — demo-up ===$(NC)"
 	@$(MAKE) preflight
 	@$(MAKE) cluster-create
@@ -58,20 +58,19 @@ demo-up: ## [DEMO] Spin up k3d + UDS Core + 5 flagships + szl-mesh (≈ 10-20 mi
 	@$(MAKE) seed-receipts
 	@echo ""
 	@echo -e "$(GREEN)✅  demo-up COMPLETE$(NC)"
-	@echo -e "   Flagships: https://a11oy.uds.dev  https://sentra.uds.dev"
-	@echo -e "             https://amaru.uds.dev   https://yupana.uds.dev"
+	@echo -e "   Flagships: https://a11oy.uds.dev  https://yupana.uds.dev"
 	@echo -e "             https://killinchu.uds.dev"
 	@echo ""
 	@$(MAKE) demo-status
 
-demo-status: ## [DEMO] Report all 5 flagships' status + receipt chain depth
+demo-status: ## [DEMO] Report all 3 flagships' status + receipt chain depth
 	@echo -e "$(YELLOW)=== SZL Demo — Flagship Status ===$(NC)"
 	@echo ""
 	@echo "Cluster nodes:"
 	@kubectl get nodes --no-headers 2>/dev/null || echo "  cluster not running"
 	@echo ""
 	@echo "Package CR status:"
-	@for app in a11oy sentra amaru yupana killinchu; do \
+	@for app in a11oy yupana killinchu; do \
 	  phase=$$(kubectl get package szl-$${app} -n szl-$${app} \
 	    -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound"); \
 	  if [ "$${phase}" = "Ready" ]; then \
@@ -82,7 +81,7 @@ demo-status: ## [DEMO] Report all 5 flagships' status + receipt chain depth
 	done
 	@echo ""
 	@echo "Live HF Space health (internet fallback):"
-	@for app in a11oy sentra amaru yupana killinchu; do \
+	@for app in a11oy yupana killinchu; do \
 	  status=$$(curl -sf --max-time 5 \
 	    https://szlholdings-$${app}.hf.space/api/health \
 	    -o /dev/null -w "%{http_code}" 2>/dev/null || echo "ERR"); \
@@ -123,9 +122,12 @@ demo-receipts: ## [DEMO] Show the latest 10 receipts across the chain
 	  echo "  No local receipt file. Run: make seed-receipts"; \
 	fi
 	@echo ""
-	@echo "--- Live sentra audit log (top 10) ---"
+	@echo "  NOTE: the former sentra + amaru governance organs are consolidated"
+	@echo "        into a11oy; their audit trail is served via the a11oy ledger."
+	@echo ""
+	@echo "--- Live a11oy audit log (top 10) ---"
 	@curl -sf --max-time 8 \
-	  https://szlholdings-sentra.hf.space/api/sentra/v1/audit-log 2>/dev/null \
+	  https://szlholdings-a11oy.hf.space/api/a11oy/v1/audit-log 2>/dev/null \
 	  | python3 -c \
 	    "import json,sys; \
 	     data=json.load(sys.stdin); \
@@ -133,18 +135,7 @@ demo-receipts: ## [DEMO] Show the latest 10 receipts across the chain
 	     [print(f\"  {e.get('timestamp','?')}  verdict={e.get('verdict','?')}  \
 	             action={str(e.get('action','?'))[:40]}\") \
 	      for e in entries[-10:]]" 2>/dev/null \
-	  || echo "  sentra not reachable"
-	@echo ""
-	@echo "--- Live amaru audit log (top 10) ---"
-	@curl -sf --max-time 8 \
-	  https://szlholdings-amaru.hf.space/api/amaru/v1/audit-log 2>/dev/null \
-	  | python3 -c \
-	    "import json,sys; \
-	     data=json.load(sys.stdin); \
-	     entries=data if isinstance(data,list) else data.get('entries',[]); \
-	     [print(f\"  {e.get('timestamp','?')}  digest={str(e.get('digest','?'))[:16]}...\") \
-	      for e in entries[-10:]]" 2>/dev/null \
-	  || echo "  amaru not reachable"
+	  || echo "  a11oy not reachable"
 
 demo-tear-down: ## [DEMO] Nuke the k3d cluster cleanly
 	@echo -e "$(YELLOW)=== SZL Demo — tear-down ===$(NC)"
@@ -205,13 +196,11 @@ uds-core-deploy: ## Deploy UDS Core (Istio, Keycloak, MetalLB, monitoring)
 	    --confirm --log-level warn
 	@echo -e "  $(GREEN)✅  UDS Core ready$(NC)"
 
-flagships-deploy: ## Deploy all 5 flagship HF-based Deployments into cluster
-	@echo -e "$(YELLOW)--- flagship deploy (5 apps) ---$(NC)"
+flagships-deploy: ## Deploy all 3 flagship HF-based Deployments into cluster
+	@echo -e "$(YELLOW)--- flagship deploy (3 apps) ---$(NC)"
 	@export KUBECONFIG=/tmp/szl-demo-kubeconfig.yaml && \
 	  kubectl apply -f configs/namespaces.yaml && \
 	  kubectl apply -f configs/packages/package-a11oy.yaml -n szl-a11oy && \
-	  kubectl apply -f configs/packages/package-sentra.yaml -n szl-sentra && \
-	  kubectl apply -f configs/packages/package-amaru.yaml -n szl-amaru && \
 	  kubectl apply -f configs/packages/package-yupana.yaml -n szl-yupana && \
 	  kubectl apply -f configs/packages/package-killinchu.yaml -n szl-killinchu
 	@echo -e "  Applying flagship Deployments..."
@@ -220,7 +209,7 @@ flagships-deploy: ## Deploy all 5 flagship HF-based Deployments into cluster
 	@echo -e "  $(GREEN)✅  flagship manifests applied$(NC)"
 	@echo "  Waiting for flagship pods to be ready (timeout 300s)..."
 	@export KUBECONFIG=/tmp/szl-demo-kubeconfig.yaml && \
-	  for app in a11oy sentra amaru yupana killinchu; do \
+	  for app in a11oy yupana killinchu; do \
 	    kubectl rollout status deployment/szl-$${app} \
 	      -n szl-$${app} --timeout=300s 2>/dev/null \
 	      && echo -e "  $(GREEN)✅  $${app} ready$(NC)" \
@@ -233,7 +222,7 @@ szl-mesh-deploy: ## Deploy peat mesh node configs
 	  kubectl apply -f configs/peat/
 	@echo -e "  $(GREEN)✅  peat mesh nodes applied$(NC)"
 
-seed-receipts: ## Generate 20 demo receipts across 5 flagships
+seed-receipts: ## Generate demo receipts across 3 flagships
 	@echo -e "$(YELLOW)--- seed-receipts ---$(NC)"
 	@python3 scripts/seed-receipts.py
 	@echo -e "  $(GREEN)✅  receipts seeded$(NC)"

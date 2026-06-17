@@ -10,22 +10,6 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: szl-sentra
-  labels:
-    istio.io/dataplane-mode: ambient
-    szl.io/doctrine-version: "v11"
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: szl-amaru
-  labels:
-    istio.io/dataplane-mode: ambient
-    szl.io/doctrine-version: "v11"
----
-apiVersion: v1
-kind: Namespace
-metadata:
   name: szl-yupana
   labels:
     istio.io/dataplane-mode: ambient

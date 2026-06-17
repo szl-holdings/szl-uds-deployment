@@ -1,12 +1,15 @@
 <!-- Copyright 2026 SZL Holdings · SPDX-License-Identifier: Apache-2.0 -->
 # a11oy.uds — deploy + prove-it
 
-`a11oy.uds` composes the **governed-AI decision substrate** (a11oy) plus its
-required backends (sentra, amaru) into a single air-gapped UDS bundle that
-`uds create` + `uds deploy`s on a single tower with **one command**.
+`a11oy.uds` composes the **governed-AI decision substrate** (a11oy) into a single
+air-gapped UDS bundle that `uds create` + `uds deploy`s on a single tower with
+**one command**. The former `sentra` (immune/safety gates) and `amaru` (memory)
+backends are no longer separate members — they were consolidated INTO a11oy as
+internal organs and ship inside the a11oy image; a11oy boots standalone against
+`szl-receipts`.
 
 - **Kind:** `UDSBundle` (uds-cli, AGPL-3.0, defenseunicorns/uds-cli). Original SZL work; we use the binary, not its source.
-- **Members:** `szl-sentra` (0.2.0) → `szl-amaru` (0.2.0) → `szl-a11oy` (0.5.0-uds.0, built from `packages/a11oy/zarf-mesh-ready.yaml`, flavor `upstream`).
+- **Members:** `szl-a11oy` (0.5.0-uds.0, built from `packages/a11oy/zarf-mesh-ready.yaml`, flavor `upstream`).
 - **Doctrine v11:** locked-8 @ `c7c0ba17`, Λ = Conjecture 1, SLSA L1 honest / L2 attested / L3 ROADMAP, tamper-EVIDENT (SHA3-256 hash-chain), NEVER commit a key, honest BLOCKED beats fake green.
 
 ## Air-gap posture (CONFIRMED)
@@ -29,9 +32,7 @@ fabricates a green result.
 
 ## Exact create/deploy commands (founder tower)
 ```bash
-# 1. build the member packages (organ images baked in, digest-pinned)
-uds zarf package create packages/sentra --set VERSION=0.2.0 -a amd64 --confirm
-uds zarf package create packages/amaru  --set VERSION=0.2.0 -a amd64 --confirm
+# 1. build the member package (organ image baked in, digest-pinned)
 cp packages/a11oy/zarf-mesh-ready.yaml packages/a11oy/zarf.yaml
 uds zarf package create packages/a11oy --set DOMAIN=uds.dev -a amd64 --flavor upstream --confirm
 # 2. compose the bundle (air-gap tarball)

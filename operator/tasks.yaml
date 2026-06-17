@@ -1,6 +1,6 @@
 # SZL Fleet Overlay — Maru Task Runner
 # Doctrine v11 LOCKED 749/14/163 at kernel commit c7c0ba17
-# One-command inner-loop: `uds run dev` spins k3d + deploys all 5 flagships
+# One-command inner-loop: `uds run dev` spins k3d + deploys all 3 flagships
 
 includes:
   - actions: https://raw.githubusercontent.com/defenseunicorns/uds-common/refs/tags/v1.24.9/tasks/actions.yaml
@@ -18,7 +18,7 @@ variables:
     default: "uds.dev"
   # Flagships to deploy (space-separated, ordered by dependency)
   - name: FLAGSHIP_ORDER
-    default: "a11oy sentra amaru yupana killinchu"
+    default: "a11oy yupana killinchu"
 
 ###############################################################################
 # DEFAULT — full build + local dev deploy                                     #
@@ -31,7 +31,7 @@ tasks:
       - task: dev
 
 ###############################################################################
-# INNER LOOP — one command, all 5 flagships in k3d                            #
+# INNER LOOP — one command, all 3 flagships in k3d                            #
 ###############################################################################
   - name: dev
     description: |
@@ -41,8 +41,8 @@ tasks:
         1. Ensures a k3d cluster named ${CLUSTER_NAME} exists
         2. Installs UDS Core (lightweight) if not present
         3. Creates SZL namespaces
-        4. Deploys the fleet overlay package (all 5 flagships)
-        5. Validates all 5 Package CRs reach Ready phase
+        4. Deploys the fleet overlay package (all 3 flagships)
+        5. Validates all 3 Package CRs reach Ready phase
         6. Prints the service URLs for local smoke-testing
     actions:
       - task: cluster-up
@@ -192,22 +192,22 @@ tasks:
 
   - name: deploy-all
     description: |
-      One-command deploy of all 5 flagships.
+      One-command deploy of all 3 flagships.
       Assumes cluster is up and UDS Core is installed.
-      Deploys the fleet overlay which registers all 5 SZL flagships as
-      UDS-managed Package CRs (a11oy → sentra → amaru → yupana → killinchu).
+      Deploys the fleet overlay which registers all 3 SZL flagships as
+      UDS-managed Package CRs (a11oy → yupana → killinchu).
     actions:
       - cmd: |
-          echo "▶ SZL Fleet Deploy — all 5 flagships"
+          echo "▶ SZL Fleet Deploy — all 3 flagships"
           echo "  Cluster: ${CLUSTER_NAME}"
           echo "  Domain:  ${DOMAIN}"
           echo "  Registry: ${REGISTRY}"
           echo ""
-          # Deploy the fleet overlay (registers all 5 Package CRs in order)
+          # Deploy the fleet overlay (registers all 3 Package CRs in order)
           uds zarf package deploy zarf-package-szl-fleet-overlay-${ARCH}-*.tar.zst --confirm
           echo ""
           echo "▶ Validating Package CRs …"
-        description: "Deploy all 5 SZL flagships via fleet overlay"
+        description: "Deploy all 3 SZL flagships via fleet overlay"
       - task: validate
       - task: urls
 
@@ -215,12 +215,12 @@ tasks:
 # VALIDATE                                                                    #
 ###############################################################################
   - name: validate
-    description: "Validate all 5 Package CRs reached Ready phase"
+    description: "Validate all 3 Package CRs reached Ready phase"
     actions:
       - cmd: |
           echo "▶ Waiting for Package CRs to reach Ready …"
           FAIL=0
-          for app in a11oy sentra amaru yupana killinchu; do
+          for app in a11oy yupana killinchu; do
             # Poll up to 5 minutes (30s × 10)
             for i in $(seq 1 10); do
               phase=$(kubectl get package szl-${app} -n szl-${app} -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
@@ -243,7 +243,7 @@ tasks:
             exit 1
           fi
           echo ""
-          echo "✓ All 5 flagship Package CRs are Ready"
+          echo "✓ All 3 flagship Package CRs are Ready"
         description: "Poll Package CRs for Ready status"
 
   - name: validate-doctrine
@@ -277,14 +277,14 @@ tasks:
 # UTILITY                                                                     #
 ###############################################################################
   - name: urls
-    description: "Print local service URLs for all 5 flagships"
+    description: "Print local service URLs for all 3 flagships"
     actions:
       - cmd: |
           echo ""
           echo "▶ SZL Flagship Service URLs (local k3d)"
           echo "  Domain: ${DOMAIN}"
           echo ""
-          for app in a11oy sentra amaru yupana killinchu; do
+          for app in a11oy yupana killinchu; do
             svc=$(kubectl get svc -n szl-${app} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "(not found)")
             echo "  szl-${app}:"
             echo "    k8s service: ${svc}.szl-${app}.svc.cluster.local"
@@ -294,10 +294,10 @@ tasks:
           echo "  Tip: add '127.0.0.1  *.${DOMAIN}' to /etc/hosts for local DNS"
 
   - name: logs
-    description: "Stream logs from all 5 flagships simultaneously"
+    description: "Stream logs from all 3 flagships simultaneously"
     actions:
       - cmd: |
-          for app in a11oy sentra amaru yupana killinchu; do
+          for app in a11oy yupana killinchu; do
             pod=$(kubectl get pod -n szl-${app} -l app=szl-${app} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
             if [ -n "${pod}" ]; then
               kubectl logs -n szl-${app} "${pod}" -f --tail=50 &
@@ -311,12 +311,12 @@ tasks:
           wait
 
   - name: status
-    description: "Print status of all cluster resources across all 5 flagships"
+    description: "Print status of all cluster resources across all 3 flagships"
     actions:
       - cmd: |
           echo "▶ SZL Fleet Status"
           echo ""
-          for app in a11oy sentra amaru yupana killinchu; do
+          for app in a11oy yupana killinchu; do
             echo "─── szl-${app} ───"
             kubectl get all -n szl-${app} 2>/dev/null || echo "  (namespace not found)"
             phase=$(kubectl get package szl-${app} -n szl-${app} -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
@@ -328,7 +328,7 @@ tasks:
     description: "Remove deployed SZL resources from cluster (keeps cluster running)"
     actions:
       - cmd: |
-          for app in a11oy sentra amaru yupana killinchu; do
+          for app in a11oy yupana killinchu; do
             kubectl delete package szl-${app} -n szl-${app} --ignore-not-found=true
             kubectl delete namespace szl-${app} --ignore-not-found=true
             echo "✓ Removed szl-${app}"
@@ -346,7 +346,7 @@ tasks:
           echo ""
           echo "QUICK START:"
           echo "  uds run dev          # full inner loop: cluster + uds-core + build + deploy + validate"
-          echo "  uds run deploy-all   # deploy all 5 flagships (cluster must be up)"
+          echo "  uds run deploy-all   # deploy all 3 flagships (cluster must be up)"
           echo ""
           echo "TASKS:"
           echo "  dev              Full inner-loop (cluster + core + build + deploy + validate)"
@@ -361,7 +361,7 @@ tasks:
           echo "  verify-receipts  Verify receipt signature"
           echo "  publish          Publish to GHCR"
           echo "  deploy-local     Deploy package to local cluster"
-          echo "  deploy-all       Deploy all 5 flagships (one command)"
+          echo "  deploy-all       Deploy all 3 flagships (one command)"
           echo "  validate         Wait for all Package CRs to reach Ready"
           echo "  validate-doctrine Check doctrine pin in deployed receipts"
           echo "  urls             Print local service URLs"

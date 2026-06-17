@@ -22,8 +22,6 @@ spec:
     documentNamespace: "szl.yupana"
     peers:
       - "szl.a11oy"
-      - "szl.sentra"
-      - "szl.amaru"
       - "szl.yupana"
       - "szl.killinchu"
   resources:

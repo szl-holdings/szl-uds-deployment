@@ -61,16 +61,9 @@ metadata:
   url: "https://github.com/szl-holdings/szl-uds-deployment"
 
 packages:
-  # Core backend dependencies (sentra + amaru precede a11oy frontend).
-  # VERIFIED-LIVE organ images: sentra/amaru uds-v0.2.0 (HTTP 200).
-  - name: szl-sentra
-    path: ../../packages/sentra
-    ref: "0.2.0"
-
-  - name: szl-amaru
-    path: ../../packages/amaru
-    ref: "0.2.0"
-
+  # The former sentra (immune/safety gates) and amaru (memory) backends are no
+  # longer separate members: they were consolidated INTO a11oy as internal organs
+  # and ship inside the a11oy image. a11oy boots standalone against szl-receipts.
   # Primary a11oy mesh-ready platform package.
   - name: szl-a11oy
     path: ../../packages/a11oy

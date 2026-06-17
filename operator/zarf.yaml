@@ -55,24 +55,6 @@ components:
         files:
           - configs/packages/package-a11oy.yaml
 
-  - name: szl-sentra-package
-    required: true
-    description: "UDS Package CR for sentra"
-    manifests:
-      - name: szl-sentra-package
-        namespace: szl-sentra
-        files:
-          - configs/packages/package-sentra.yaml
-
-  - name: szl-amaru-package
-    required: true
-    description: "UDS Package CR for amaru"
-    manifests:
-      - name: szl-amaru-package
-        namespace: szl-amaru
-        files:
-          - configs/packages/package-amaru.yaml
-
   - name: szl-yupana-package
     required: true
     description: "UDS Package CR for yupana"
@@ -99,8 +81,6 @@ components:
       - name: szl-peat-nodes
         files:
           - configs/peat/peat-node-a11oy.yaml
-          - configs/peat/peat-node-sentra.yaml
-          - configs/peat/peat-node-amaru.yaml
           - configs/peat/peat-node-yupana.yaml
           - configs/peat/peat-node-killinchu.yaml
 

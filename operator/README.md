@@ -2,7 +2,7 @@
 
 **Doctrine v11 LOCKED 749/14/163** · Λ = Conjecture 1 · SLSA L1 honest · Kernel `c7c0ba17`
 
-UDS Operator package + Helm chart + Zarf bundle + peat-mesh nodes for the 5 SZL flagships.
+UDS Operator package + Helm chart + Zarf bundle + peat-mesh nodes for the 3 SZL flagships.
 Layers doctrine-pinned DSSE receipts on top of UDS Fleet.
 
 ## Prerequisites
@@ -15,7 +15,7 @@ Layers doctrine-pinned DSSE receipts on top of UDS Fleet.
 ## Quickstart — Deploy the Full Fleet Overlay
 
 ```bash
-# Pull and deploy the overlay (bundles all 5 SZL flagships)
+# Pull and deploy the overlay (bundles all 3 SZL flagships)
 zarf package pull oci://ghcr.io/szl-holdings/szl-fleet-overlay:0.1.0
 
 # Verify before deploying
@@ -30,10 +30,9 @@ uds deploy oci://ghcr.io/szl-holdings/szl-fleet-overlay:0.1.0
 
 ## Runtime demonstration
 
-Each flagship runs live on Hugging Face — same payload, different runtime:
+Each flagship runs live on Hugging Face — same payload, different runtime
+(the former sentra + amaru organs are consolidated into a11oy):
 - **a11oy:** [szlholdings-a11oy.hf.space](https://szlholdings-a11oy.hf.space)
-- **sentra:** [szlholdings-sentra.hf.space](https://szlholdings-sentra.hf.space)
-- **amaru:** [szlholdings-amaru.hf.space](https://szlholdings-amaru.hf.space)
 - **yupana:** [szlholdings-yupana.hf.space](https://szlholdings-yupana.hf.space)
 - **killinchu:** [szlholdings-killinchu.hf.space](https://szlholdings-killinchu.hf.space)
 
@@ -53,7 +52,7 @@ Each flagship runs live on Hugging Face — same payload, different runtime:
 
 
 
-`szl-fleet-overlay` registers each SZL flagship application — **a11oy, sentra, amaru, yupana, killinchu** — as a first-class UDS-managed application running on top of [UDS Core](https://github.com/defenseunicorns/uds-core).
+`szl-fleet-overlay` registers each SZL flagship application — **a11oy, yupana, killinchu** — as a first-class UDS-managed application running on top of [UDS Core](https://github.com/defenseunicorns/uds-core). (The former sentra + amaru organs are consolidated into a11oy as internal organs.)
 
 It provides:
 

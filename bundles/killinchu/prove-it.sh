@@ -64,18 +64,16 @@ step_validate(){
   "$UDS" zarf tools yq e '.metadata.name' "$HERE/uds-bundle.yaml" >/dev/null 2>&1 \
     && c_g "  ok  uds-bundle.yaml parses (name=$($UDS zarf tools yq e '.metadata.name' "$HERE/uds-bundle.yaml"))" \
     || { c_r "  FAIL uds-bundle.yaml parse"; return 1; }
-  # lint each member zarf package against the Zarf schema.
-  # killinchu ships only zarf-mesh-ready.yaml (manifest-based); sentra/amaru use zarf.yaml.
-  for m in sentra amaru killinchu; do
+  # lint the killinchu member zarf package against the Zarf schema.
+  # killinchu ships only zarf-mesh-ready.yaml (manifest-based). sentra + amaru are
+  # no longer standalone members — consolidated into a11oy.
+  for m in killinchu; do
     local dir="$REPO_ROOT/packages/$m"
-    local f="zarf.yaml"; [ "$m" = killinchu ] && f="zarf-mesh-ready.yaml"
+    local f="zarf-mesh-ready.yaml"
     [ -f "$dir/$f" ] || { c_y "  WARN packages/$m/$f missing — skipping"; continue; }
-    ( cd "$dir" && [ "$f" != zarf.yaml ] && cp "$f" zarf.yaml
-      if [ "$m" = killinchu ]; then
-        "$UDS" zarf dev lint . --set DOMAIN="$DOMAIN" -a "$ARCH" -f upstream --no-color >/dev/null 2>&1
-      else
-        "$UDS" zarf dev lint . --set DOMAIN="$DOMAIN" --set VERSION=0.2.0 -a "$ARCH" --no-color >/dev/null 2>&1
-      fi ) && c_g "  ok  lint packages/$m ($f) — schema valid, images pinned" \
+    ( cd "$dir" && cp "$f" zarf.yaml
+      "$UDS" zarf dev lint . --set DOMAIN="$DOMAIN" -a "$ARCH" -f upstream --no-color >/dev/null 2>&1
+    ) && c_g "  ok  lint packages/$m ($f) — schema valid, images pinned" \
          || c_r "  FAIL lint packages/$m"
   done
   # assert the killinchu organ image digest pin is current on GHCR (air-gap integrity)
@@ -98,17 +96,11 @@ step_build(){
     BLOCKED "no docker daemon — zarf bakes organ images into the package tarball at create time; needs a container runtime + GHCR pull. On the founder tower this step runs clean."
     c_y "  PROOF PATH (run on a host with docker + ghcr login):"
     cat <<EOF
-    cd $REPO_ROOT/packages/sentra    && $UDS zarf package create . --set VERSION=0.2.0 -a $ARCH --confirm
-    cd $REPO_ROOT/packages/amaru     && $UDS zarf package create . --set VERSION=0.2.0 -a $ARCH --confirm
     cd $REPO_ROOT/packages/killinchu && cp zarf-mesh-ready.yaml zarf.yaml && $UDS zarf package create . --set DOMAIN=$DOMAIN -a $ARCH --flavor upstream --confirm
     cd $HERE && $UDS create . --confirm -a $ARCH
 EOF
     return 2
   fi
-  for m in sentra amaru; do
-    ( cd "$REPO_ROOT/packages/$m" && "$UDS" zarf package create . --set VERSION=0.2.0 -a "$ARCH" --confirm --no-color ) \
-      && c_g "  ok  built packages/$m" || { c_r "  FAIL build packages/$m"; return 1; }
-  done
   ( cd "$REPO_ROOT/packages/killinchu" && cp zarf-mesh-ready.yaml zarf.yaml \
     && "$UDS" zarf package create . --set DOMAIN="$DOMAIN" -a "$ARCH" --flavor upstream --confirm --no-color ) \
     && c_g "  ok  built packages/killinchu" || { c_r "  FAIL build packages/killinchu"; return 1; }

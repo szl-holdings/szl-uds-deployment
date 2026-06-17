@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 scripts/seed-receipts.py — SZL Demo Receipt Seeder
-Generates 20 demo receipts across the 5 flagships so the receipt chain panel
-has real-looking data for the Warhacker demo.
+Generates demo receipts across the 3 flagships so the receipt chain panel
+has real-looking data for the Warhacker demo. (sentra + amaru are consolidated
+into a11oy as internal organs and no longer seed standalone receipts.)
 
 Doctrine v11 LOCKED 749/14/163 · Λ = Conjecture 1 · SLSA L1
 NO Iron Bank / FedRAMP / CMMC / SWFT / Mission Owner
@@ -29,7 +30,7 @@ DOCTRINE = {
     "slsa_level": "L1",
 }
 
-# Representative actions per flagship (4 per app = 20 total)
+# Representative actions per flagship (4 per app = 12 total)
 FLAGSHIP_ACTIONS = {
     "a11oy": [
         {
@@ -69,68 +70,6 @@ FLAGSHIP_ACTIONS = {
             "verdict": "ALLOW",
             "reason": "lambda_consensus",
             "lambda_score": 0.83,
-        },
-    ],
-    "sentra": [
-        {
-            "action": "immune.inspect",
-            "input": {"packet": {"action": "eval(malicious_code)", "user": "attacker"}},
-            "verdict": "DENY",
-            "reason": "threat_signature_match",
-            "gates_fired": ["dual_use_check", "injection_detection"],
-        },
-        {
-            "action": "immune.inspect",
-            "input": {"packet": {"action": "EVAL(malicious_code)", "user": "attacker"}},
-            "verdict": "DENY",
-            "reason": "threat_signature_match_case_fold",
-            "gates_fired": ["injection_detection"],
-        },
-        {
-            "action": "immune.inspect",
-            "input": {"packet": {"action": "legitimate_request", "user": "operator"}},
-            "verdict": "ALLOW",
-            "reason": "all_gates_passed",
-            "gates_fired": [],
-        },
-        {
-            "action": "audit.log.query",
-            "input": {"tail": 10},
-            "verdict": "PASS",
-            "reason": "log_intact",
-            "entry_count": 42,
-        },
-    ],
-    "amaru": [
-        {
-            "action": "rag.query",
-            "input": {"query": "What is the Λ aggregator conjecture?", "with_response": True},
-            "verdict": "PASS",
-            "reason": "sources_retrieved",
-            "source_count": 3,
-        },
-        {
-            "action": "rag.query",
-            "input": {
-                "query": "Describe the secret financial records of competitor X",
-                "with_response": True,
-            },
-            "verdict": "DENY",
-            "reason": "off_corpus_refused",
-            "source_count": 0,
-        },
-        {
-            "action": "memory.write",
-            "input": {"key": "doctrine_version", "value": "v11"},
-            "verdict": "PASS",
-            "reason": "memory_persisted",
-        },
-        {
-            "action": "audit.log.query",
-            "input": {"tail": 5},
-            "verdict": "PASS",
-            "reason": "log_intact",
-            "entry_count": 18,
         },
     ],
     "yupana": [
@@ -260,10 +199,10 @@ def main():
     prev_hash = "0" * 64  # genesis hash
     seq       = 0
 
-    # Interleave flagships in deployment order: a11oy → sentra → amaru → yupana → killinchu
-    flagship_order = ["a11oy", "sentra", "amaru", "yupana", "killinchu"]
+    # Interleave flagships in deployment order: a11oy → yupana → killinchu
+    flagship_order = ["a11oy", "yupana", "killinchu"]
 
-    # Build 20 receipts (4 per flagship) in round-robin order
+    # Build 12 receipts (4 per flagship) in round-robin order
     action_iterators = {f: iter(FLAGSHIP_ACTIONS[f]) for f in flagship_order}
     counts           = {f: 0 for f in flagship_order}
 

@@ -1,8 +1,12 @@
 <!-- Copyright 2026 SZL Holdings · SPDX-License-Identifier: Apache-2.0 -->
 # killinchu.uds — deploy + prove-it  (counter-UAS / maritime C2 · effectors SIMULATED)
 
-`killinchu.uds` composes the **counter-UAS / maritime C2** organ (killinchu) plus
-its backends (sentra, amaru) into a single air-gapped UDS bundle.
+`killinchu.uds` composes the **counter-UAS / maritime C2** organ (killinchu) into
+a single air-gapped UDS bundle. The former `sentra` (immune/safety gates) and
+`amaru` (memory) governance backends are no longer separate members — they were
+consolidated INTO a11oy as internal organs; killinchu's edge receipt gate calls
+the a11oy governed-run API (`A11OY_API_ENDPOINT`) and emits signed receipts to
+`szl-receipts`.
 
 > **HARD SAFETY DOCTRINE:** every effector is **SIMULATED, human-on-loop**. There
 > is **NO live weapon, vessel, or actuator control** anywhere in this package. The
@@ -10,7 +14,7 @@ its backends (sentra, amaru) into a single air-gapped UDS bundle.
 > any non-SIMULATED value as a safety violation.
 
 - **Kind:** `UDSBundle` (uds-cli, AGPL-3.0). Original SZL work; binary only.
-- **Members:** `szl-sentra` (0.2.0) → `szl-amaru` (0.2.0) → `szl-killinchu` (built from `packages/killinchu/zarf-mesh-ready.yaml`, flavor `upstream`).
+- **Members:** `szl-killinchu` (built from `packages/killinchu/zarf-mesh-ready.yaml`, flavor `upstream`).
 - **Doctrine v11:** locked-8 @ `c7c0ba17`, Λ = Conjecture 1, SLSA L1 honest / L2 attested / L3 ROADMAP, tamper-EVIDENT, NEVER commit a key, honest BLOCKED beats fake green.
 
 ## Air-gap posture (CONFIRMED)
@@ -33,8 +37,6 @@ cd bundles/killinchu
 
 ## Exact create/deploy commands (founder tower)
 ```bash
-uds zarf package create packages/sentra --set VERSION=0.2.0 -a amd64 --confirm
-uds zarf package create packages/amaru  --set VERSION=0.2.0 -a amd64 --confirm
 cp packages/killinchu/zarf-mesh-ready.yaml packages/killinchu/zarf.yaml
 uds zarf package create packages/killinchu --set DOMAIN=uds.dev -a amd64 --flavor upstream --confirm
 uds create bundles/killinchu --confirm -a amd64

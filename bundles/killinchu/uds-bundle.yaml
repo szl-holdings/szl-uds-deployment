@@ -57,15 +57,10 @@ metadata:
   url: "https://github.com/szl-holdings/szl-uds-deployment"
 
 packages:
-  # Governance backends (required for the edge receipt gate).
-  - name: szl-sentra
-    path: ../../packages/sentra
-    ref: "0.2.0"
-
-  - name: szl-amaru
-    path: ../../packages/amaru
-    ref: "0.2.0"
-
+  # The governance brain (former sentra immune gates + amaru memory) is no longer
+  # a set of separate backend members: those organs were consolidated INTO a11oy
+  # as internal organs. killinchu's edge receipt gate calls the a11oy governed-run
+  # API (A11OY_API_ENDPOINT below) and emits signed receipts to szl-receipts.
   # killinchu mesh-ready field package.
   - name: szl-killinchu
     path: ../../packages/killinchu

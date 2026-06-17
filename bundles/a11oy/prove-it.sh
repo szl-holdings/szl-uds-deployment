@@ -52,16 +52,14 @@ step_validate(){
   "$UDS" zarf tools yq e '.metadata.name' "$HERE/uds-bundle.yaml" >/dev/null 2>&1 \
     && c_g "  ok  uds-bundle.yaml parses (name=$($UDS zarf tools yq e '.metadata.name' "$HERE/uds-bundle.yaml"))" \
     || { c_r "  FAIL uds-bundle.yaml parse"; return 1; }
-  # 1b. lint each member zarf package against the Zarf schema
-  for m in sentra amaru a11oy; do
+  # 1b. lint the a11oy member zarf package against the Zarf schema
+  # (sentra + amaru are no longer standalone members — consolidated into a11oy.)
+  for m in a11oy; do
     local dir="$REPO_ROOT/packages/$m"
-    local f="zarf.yaml"; [ "$m" = a11oy ] && f="zarf-mesh-ready.yaml"
+    local f="zarf-mesh-ready.yaml"
     ( cd "$dir" && cp "$f" .zarf-lint.yaml && mv .zarf-lint.yaml zarf.yaml 2>/dev/null
-      if [ "$m" = a11oy ]; then
-        "$UDS" zarf dev lint . --set DOMAIN="$DOMAIN" -a "$ARCH" -f upstream --no-color >/dev/null 2>&1
-      else
-        "$UDS" zarf dev lint . --set DOMAIN="$DOMAIN" --set VERSION=0.2.0 -a "$ARCH" --no-color >/dev/null 2>&1
-      fi ) && c_g "  ok  lint packages/$m ($f) — schema valid, images pinned" \
+      "$UDS" zarf dev lint . --set DOMAIN="$DOMAIN" -a "$ARCH" -f upstream --no-color >/dev/null 2>&1
+    ) && c_g "  ok  lint packages/$m ($f) — schema valid, images pinned" \
          || c_r "  FAIL lint packages/$m"
   done
   # 1c. assert the a11oy organ image digest pin is current on GHCR (air-gap integrity)
@@ -97,9 +95,7 @@ step_build(){
     BLOCKED "no docker daemon — zarf bakes organ images into the package tarball at create time; needs a container runtime + GHCR pull. On the founder tower this step runs clean."
     c_y "  PROOF PATH (run on a host with docker + ghcr login):"
     cat <<EOF
-    # member packages (organ images baked in, digest-pinned):
-    cd $REPO_ROOT/packages/sentra && cp zarf.yaml zarf.yaml && $UDS zarf package create . --set VERSION=0.2.0 -a $ARCH --confirm
-    cd $REPO_ROOT/packages/amaru  && $UDS zarf package create . --set VERSION=0.2.0 -a $ARCH --confirm
+    # member package (organ image baked in, digest-pinned):
     cd $REPO_ROOT/packages/a11oy  && cp zarf-mesh-ready.yaml zarf.yaml && $UDS zarf package create . --set DOMAIN=$DOMAIN -a $ARCH --flavor upstream --confirm
     # compose the bundle:
     cd $HERE && $UDS create . --confirm -a $ARCH
@@ -107,10 +103,6 @@ step_build(){
 EOF
     return 2
   fi
-  for m in sentra amaru; do
-    ( cd "$REPO_ROOT/packages/$m" && "$UDS" zarf package create . --set VERSION=0.2.0 -a "$ARCH" --confirm --no-color ) \
-      && c_g "  ok  built packages/$m" || { c_r "  FAIL build packages/$m"; return 1; }
-  done
   ( cd "$REPO_ROOT/packages/a11oy" && cp zarf-mesh-ready.yaml zarf.yaml \
     && "$UDS" zarf package create . --set DOMAIN="$DOMAIN" -a "$ARCH" --flavor upstream --confirm --no-color ) \
     && c_g "  ok  built packages/a11oy" || { c_r "  FAIL build packages/a11oy"; return 1; }

@@ -20,24 +20,6 @@ apps:
     displayName: "SZL A11oy"
     peatEnabled: true
 
-  sentra:
-    enabled: true
-    namespace: szl-sentra
-    servicePort: 8080
-    metricsPort: 9090
-    clientId: uds-szl-sentra
-    displayName: "SZL Sentra"
-    peatEnabled: true
-
-  amaru:
-    enabled: true
-    namespace: szl-amaru
-    servicePort: 8080
-    metricsPort: 9090
-    clientId: uds-szl-amaru
-    displayName: "SZL Amaru"
-    peatEnabled: true
-
   yupana:
     enabled: true
     namespace: szl-yupana

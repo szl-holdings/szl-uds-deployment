@@ -175,8 +175,7 @@ echo ""
 echo "9. Network reachability"
 for url in \
   "https://ghcr.io" \
-  "https://szlholdings-amaru.hf.space/api/health" \
-  "https://szlholdings-sentra.hf.space/api/health"; do
+  "https://szlholdings-a11oy.hf.space/api/health"; do
   code=$(curl -sf --max-time 5 -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "ERR")
   if [ "$code" = "200" ] || [ "$code" = "301" ] || [ "$code" = "302" ]; then
     pass "Reachable: $url ($code)"
