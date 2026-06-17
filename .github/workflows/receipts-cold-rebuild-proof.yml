@@ -114,7 +114,7 @@ jobs:
       # RequireNonRootUser Exemption the operator enforces.
       - name: Create cold cluster + UDS Core (k3d-core-slim-dev)
         run: |
-          uds deploy oci://ghcr.io/defenseunicorns/bundles/k3d-core-slim-dev:1.5.0 \
+          uds deploy oci://ghcr.io/defenseunicorns/packages/uds/bundles/k3d-core-slim-dev:1.5.0 \
             --confirm --no-progress
 
       # ── Build + deploy the canonical Zarf package FROM COMMITTED SOURCE ───────────
