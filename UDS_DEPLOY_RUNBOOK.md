@@ -195,7 +195,8 @@ uds run prove-coboot --set BUNDLE_REF=ghcr.io/szl-holdings/szl-uds-bundle:uds-v0
 - **SLSA** — bundle carries keyless SBOM + SLSA-provenance attestations (cosign
   `--type slsaprovenance`, Fulcio/Rekor OIDC; no GitHub attestations:write needed);
   prove-bundle/prove-coboot hard-gate on `cosign verify-attestation` for both.
-  L1+L2 earned at the bundle level; L3 roadmap.
+  SLSA L1 honest; L2 build-attested on the a11oy/killinchu organ images only; the bundle-level
+  L2 attestation is NOT yet earned (post-publish provenance only); L3 roadmap.
 - **Airgap-installable (field)** — prove-bundle/prove-coboot AIRGAP AUDIT asserts every
   workload image (incl. init + Istio sidecars) resolves to the in-cluster Zarf registry
   (no external pull) + is digest-pinned. Scope: the FIELD install is airgapped; the
