@@ -28,7 +28,7 @@
 #     wraps the live, cosign-signed, digest-pinned organ image (verified HTTP
 #     200, 2026-06-15):
 #       ghcr.io/szl-holdings/a11oy:uds-v0.3.0
-#         @sha256:62ac84a4f48a58db8d5549dde696de706be67df4e8bacc1a50ee5cbbb99787b1
+#         @sha256:bafd3f37b0f12b781fa57fe263739d0ff8cc1f9547e78c2df5f8b059fa6478b4
 #     The uds-v0.3.0 tag is MUTABLE (CI rebuilds it); re-resolve the digest
 #     immediately before an air-gap freeze — do not trust this literal if CI has
 #     rebuilt since. a11oy is the ONE flavor-gated organ (only.flavor:

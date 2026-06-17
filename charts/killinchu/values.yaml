@@ -21,7 +21,7 @@ image:
   # cached layer under imagePullPolicy: IfNotPresent. MUST byte-match the digest
   # baked in packages/killinchu/zarf.yaml images: (chart-zarf-digest-match guard)
   # or the Zarf agent image rewrite breaks. Empty = tag-only.
-  digest: "sha256:b07eeddbf4749d075f75ef42f474d1aa05e6fa8b01db9e7dd51f27370b7db4e5"
+  digest: "sha256:6f185dda4e81aa2a347a5210a2f2bdfd19fe1af898e0c14a0a914261b1858f16"
   pullPolicy: IfNotPresent
 
 service:

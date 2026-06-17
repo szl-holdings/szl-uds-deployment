@@ -14,7 +14,7 @@ its backends (sentra, amaru) into a single air-gapped UDS bundle.
 - **Doctrine v11:** locked-8 @ `c7c0ba17`, Λ = Conjecture 1, SLSA L1 honest / L2 attested / L3 ROADMAP, tamper-EVIDENT, NEVER commit a key, honest BLOCKED beats fake green.
 
 ## Air-gap posture (CONFIRMED)
-- Organ image digest-pinned in every source file: `ghcr.io/szl-holdings/killinchu:uds-v0.2.0@sha256:b07eeddbf4749d075f75ef42f474d1aa05e6fa8b01db9e7dd51f27370b7db4e5` (single-arch v2 manifest — create-safe).
+- Organ image digest-pinned in every source file: `ghcr.io/szl-holdings/killinchu:uds-v0.2.0@sha256:6f185dda4e81aa2a347a5210a2f2bdfd19fe1af898e0c14a0a914261b1858f16` (single-arch v2 manifest — create-safe).
 - `uds create` bakes images into the tarball; deploy rewrites to the in-cluster registry. **No runtime CDN, no internet pull at deploy.** Pin re-asserted live by `prove-it.sh` step `[1]`.
 
 ## Prove it
