@@ -25,11 +25,28 @@ _Internal / private repository — no public demo surface. See [docs.szlholdings
 
 ## ⚡ Quick start (30 seconds)
 
+No cluster needed for the fastest path — `rehearse.sh` does real cryptographic work
+(Ed25519 sign + hash-chain + offline tamper test) and runs anywhere with `bash` and
+`openssl`:
+
 ```bash
 git clone https://github.com/szl-holdings/szl-uds-deployment.git
 cd szl-uds-deployment
-make quickstart   # or: see docs.szlholdings.com/quickstart
+./rehearse.sh          # sign + verify a receipt chain offline; exit 0 = PASS
 ```
+
+For the full live demo on a k3d cluster (needs Docker, k3d, uds CLI, zarf CLI, and a
+free Defense Unicorns registry login — see `docs/INSTALL.md`):
+
+```bash
+uds run start          # bootstrap k3d + deploy the bundle (~90 s)
+uds run demo:workload  # apply a sample workload -> a receipt appears in the feed
+uds run demo:verify    # verify the receipt chain from the cluster
+```
+
+Full walkthrough: [`docs/OPERATOR_QUICKSTART.md`](docs/OPERATOR_QUICKSTART.md) and the
+[public quickstart](https://szl-holdings.github.io/docs-site/quickstart). (See the
+**Quick Start** section below for the authoritative `uds run` task list.)
 
 ## 🔍 How it works
 
