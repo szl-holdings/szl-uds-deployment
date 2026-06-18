@@ -91,10 +91,10 @@ components:
     required: false
     description: "Deploy the SZL Pepr policy that annotates Deployments/Jobs with receipt IDs"
     import:
-      # Pepr build emits a Zarf component named pepr-<uuid>; with the Pepr
-      # uuid "szl-receipt-policy" (see pepr/package.json) the built component
-      # is "pepr-szl-receipt-policy", so the import name must match that.
-      name: pepr-szl-receipt-policy
+      # Pepr build emits a Zarf component named pepr-<uuid>; the Pepr uuid is
+      # "szl" (see pepr/package.json -> .pepr.uuid), so the built component is
+      # "pepr-szl" and the import name must match that exactly.
+      name: pepr-szl
       path: dist/pepr
     actions:
       onDeploy:
@@ -102,7 +102,7 @@ components:
           - description: "Verify Pepr policy is loaded"
             cmd: |
               ./zarf tools kubectl get mutatingwebhookconfigurations.admissionregistration.k8s.io \
-                -l pepr.dev/controller=szl-receipts 2>/dev/null || \
+                -l pepr.dev/uuid=szl 2>/dev/null || \
                 echo "WARN: Pepr webhook not yet visible — may take up to 30s"
 
   - name: kyverno-verify-attestations

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Root `zarf.yaml` Pepr component import name corrected to `pepr-szl` to match the
+  actual built component. Pepr emits `pepr-<uuid>` and `pepr/package.json` sets
+  `.pepr.uuid: szl`, so the prior `pepr-szl-receipt-policy` import (the Pepr *name*,
+  not the *uuid*) made `zarf package create .` fail with "no compatible component".
+  Also fixed the onDeploy webhook-verify selector to `pepr.dev/uuid=szl`. AGENTS.md
+  updated to document the uuid-vs-name distinction. (CI builds
+  `packages/szl-receipts/zarf.yaml`, which omits the optional Pepr component, so this
+  latent break did not surface in CI.)
+
 ---
 
 ## [1.0.0] — 2026-06-09
