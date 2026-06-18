@@ -65,7 +65,7 @@ SZL_RECEIPTS_URL=http://localhost:8443 bash scripts/verify_receipts.sh
 
 ### Zarf package create
 
-Requires `dist/pepr` from Pepr build (`cd pepr && npm run build`). Pepr emits a Zarf component named `pepr-<uuid>`; with the Pepr `uuid` set to `szl-receipt-policy` (see `pepr/package.json`) the built component is `pepr-szl-receipt-policy`, and `zarf.yaml` now imports that exact name. (Previously the import used the bare `szl-receipt-policy`, which made `zarf package create` fail with "no compatible component named szl-receipt-policy".)
+Requires `dist/pepr` from Pepr build (`cd pepr && npm run build`). Pepr emits a Zarf component named `pepr-<uuid>`; with the Pepr `uuid` set to `szl` (see `pepr/package.json` -> `.pepr.uuid`) the built component is `pepr-szl`, and the root `zarf.yaml` imports that exact name. (An earlier pass mistakenly imported `pepr-szl-receipt-policy` — the Pepr *name* field, not the *uuid* — which made `zarf package create .` fail with "no compatible component named pepr-szl-receipt-policy".) Note the CI-built package is `packages/szl-receipts/zarf.yaml`, which omits the optional Pepr component entirely; the root `zarf.yaml` is the demo/full package that includes it.
 
 ```bash
 zarf package create . -f upstream --set DOMAIN=uds.dev --confirm
