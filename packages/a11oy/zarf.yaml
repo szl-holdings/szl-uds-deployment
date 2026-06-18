@@ -81,7 +81,7 @@ components:
       # enforce both the match and that it is a single-platform manifest, not an
       # OCI index). Baked into the tarball at build time and rewritten to the
       # in-cluster registry by the Zarf agent at deploy time.
-      - ghcr.io/szl-holdings/a11oy:uds-v0.3.0@sha256:b8ef292d1a41d7c23804c548e1e0b0843af20c4309f0c77a768b8fad0e6e7242
+      - ghcr.io/szl-holdings/a11oy:uds-v0.3.0@sha256:1c8d3e346a9e6aa9af2ba7f80c610bf8bf72d5275c5b43bf3a31c24d5e9c5692
     actions:
       onDeploy:
         after:
