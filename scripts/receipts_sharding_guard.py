@@ -318,11 +318,29 @@ def _stream_out(src, dst, chunk=1 << 16):
 def _extract_cold_bucket(tar_path, bucket):
     """Extract a cold tarball into a fresh temp dir and return (records sorted by
     chain_index, temp_dir). The server tars the bucket as `tar.add(bdir,
-    arcname=bucket)`, so receipts live under `<bucket>/*.json` inside the tarball."""
+    arcname=bucket)`, so receipts live under `<bucket>/*.json` inside the tarball.
+
+    Members are validated BEFORE extraction (absolute path / parent traversal /
+    out-of-bucket / non-regular rejected) so a malicious cold tarball cannot write
+    outside the temp dir — the same hardening server.py's _safe_extract_bucket
+    applies to operator-supplied cold tarballs (CWE-22)."""
     import tarfile
     tmp = tempfile.mkdtemp(prefix="szl-cold-extract-")
     with tarfile.open(tar_path, "r:gz") as tar:
-        tar.extractall(tmp)
+        members = tar.getmembers()
+        for m in members:
+            name = m.name
+            norm = os.path.normpath(name)
+            if (os.path.isabs(name) or norm.startswith("..")
+                    or (norm != bucket and not norm.startswith(bucket + os.sep))):
+                raise ValueError(
+                    f"cold tarball {os.path.basename(tar_path)} contains an "
+                    f"unexpected member {name!r} (not under {bucket}/)")
+            if not (m.isfile() or m.isdir()):
+                raise ValueError(
+                    f"cold tarball {os.path.basename(tar_path)} contains a "
+                    f"non-regular member {name!r} (only files/dirs allowed)")
+        tar.extractall(tmp, members=members)
     bdir = os.path.join(tmp, bucket)
     recs = [_read_json(e.path) for e in os.scandir(bdir)
             if e.is_file() and e.name.endswith(".json")]
