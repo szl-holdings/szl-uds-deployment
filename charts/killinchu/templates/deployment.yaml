@@ -21,9 +21,16 @@ spec:
       labels:
         app: killinchu
     spec:
+      # killinchu serves HTTP only; it makes no in-cluster Kubernetes API calls,
+      # so its SA token is never needed in the pod. Dropping the automount keeps
+      # a stolen-token blast radius at zero and matches the hardened raw-manifest
+      # path (packages/killinchu/manifests/deployment.yaml).
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
         runAsUser: {{ .Values.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.securityContext.runAsGroup }}
+        fsGroup: {{ .Values.securityContext.fsGroup }}
         seccompProfile:
           type: {{ .Values.securityContext.seccompProfile.type }}
       containers:
@@ -37,6 +44,10 @@ spec:
             - configMapRef:
                 name: killinchu-doctrine
           volumeMounts:
+            # readOnlyRootFilesystem is true, so give the app a writable scratch
+            # dir at /tmp (parity with the raw-manifest deploy path).
+            - name: tmp
+              mountPath: /tmp
             - name: receipt-key
               mountPath: /etc/szl/receipt-key
               readOnly: true
@@ -53,6 +64,8 @@ spec:
             periodSeconds: 10
           resources: {{ .Values.resources | toYaml | nindent 12 }}
       volumes:
+        - name: tmp
+          emptyDir: {}
         - name: receipt-key
           secret:
             secretName: {{ .Values.receiptKeySecret }}
