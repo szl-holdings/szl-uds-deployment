@@ -27,7 +27,7 @@ jobs:
     name: Lint
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install cryptography (for Ed25519 scheme test)
         run: pip install cryptography
@@ -236,7 +236,7 @@ jobs:
     # because the key path/secret is wrong, or verify_receipts.sh drifting — passes
     # the unit test but fails loudly here, so broken "provable receipts" never ship.
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install cryptography (server signer + offline verifier)
         run: pip install cryptography
@@ -398,7 +398,7 @@ jobs:
     # chain_index==300k assertion deterministically catches a regression back to a
     # scan, which could only ever derive the small on-disk file count.
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install cryptography (server signer — used by the append path)
         run: pip install cryptography
@@ -448,7 +448,7 @@ jobs:
     # boundary hashes, the legacy-root read path, or the verify gate passes the
     # unit test but fails loudly here.
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install cryptography (server signer + offline audit)
         run: pip install cryptography
@@ -484,7 +484,7 @@ jobs:
     runs-on: ubuntu-24.04
     if: github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
@@ -561,7 +561,7 @@ jobs:
             workload: recentrs-deploy
             window: "10"
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Install UDS CLI
         uses: defenseunicorns/setup-uds@ab842abcad1f7a3305c2538e3dd1950d0daacfa5 # v1 (v1.0.1)
