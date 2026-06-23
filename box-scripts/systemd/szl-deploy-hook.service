@@ -1,0 +1,29 @@
+[Unit]
+Description=szl-deploy-hook — token-gated remote a11oy.net rebuild webhook (box 167.233.50.75)
+Documentation=https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/szl-deploy-hook.README.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# DEPLOY_TOKEN + (optional) overrides live here; PRIVATE, not in git. Optional
+# (leading "-") so a fresh box still starts the unit — it refuses requests with
+# 503 until the token is set, mirroring the szl-alert-relay pattern.
+EnvironmentFile=-/etc/szl-deploy-hook.env
+ExecStart=/usr/local/sbin/szl-deploy-hook
+Restart=on-failure
+RestartSec=3
+# This unit runs `a11oy-rebuild`, which drives docker (build/recreate the a11oy
+# container) and writes build logs under /root/a11oy-build-backups, so it must
+# run as root and CANNOT use the relay's ProtectSystem=full / ProtectHome. We
+# still apply the hardening that does NOT break docker or those writes:
+#   - NoNewPrivileges stays OFF: a11oy-rebuild may re-exec via sudo/docker.
+#   - PrivateTmp on (its own /tmp; docker socket is /run, unaffected).
+#   - Restrict to the dirs it legitimately writes.
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/szl-deploy-hook /root/a11oy-build-backups /opt/szl
+
+[Install]
+WantedBy=multi-user.target

@@ -79,6 +79,7 @@ install -m 0755 "$here/sbin/eval-arena-trend-validate" /usr/local/sbin/eval-aren
 install -m 0755 "$here/sbin/box-scripts-drift-check"     /usr/local/sbin/box-scripts-drift-check
 install -m 0755 "$here/sbin/szl-alert-relay"           /usr/local/sbin/szl-alert-relay
 install -m 0755 "$here/sbin/szl-alert-relay-watch"     /usr/local/sbin/szl-alert-relay-watch
+install -m 0755 "$here/sbin/szl-deploy-hook"          /usr/local/sbin/szl-deploy-hook
 install -m 0755 "$here/sbin/szl-signing-health-check"  /usr/local/sbin/szl-signing-health-check
 install -m 0755 "$here/sbin/a11oy-signing-key-watch"   /usr/local/sbin/a11oy-signing-key-watch
 install -m 0755 "$here/sbin/a11oy-contracting-tool-watch" /usr/local/sbin/a11oy-contracting-tool-watch
@@ -140,6 +141,7 @@ install -m 0644 "$here/systemd/box-scripts-drift-check.timer"   /etc/systemd/sys
 install -m 0644 "$here/systemd/szl-alert-relay.service"      /etc/systemd/system/szl-alert-relay.service
 install -m 0644 "$here/systemd/szl-alert-relay-watch.service"     /etc/systemd/system/szl-alert-relay-watch.service
 install -m 0644 "$here/systemd/szl-alert-relay-watch.timer"       /etc/systemd/system/szl-alert-relay-watch.timer
+install -m 0644 "$here/systemd/szl-deploy-hook.service"     /etc/systemd/system/szl-deploy-hook.service
 install -m 0644 "$here/systemd/szl-signing-health-check.service"  /etc/systemd/system/szl-signing-health-check.service
 install -m 0644 "$here/systemd/szl-signing-health-check.timer"    /etc/systemd/system/szl-signing-health-check.timer
 install -m 0644 "$here/systemd/a11oy-signing-key-watch.service"   /etc/systemd/system/a11oy-signing-key-watch.service
@@ -209,6 +211,30 @@ NTFY_PRIORITY=high
 EOF
   chmod 600 /etc/szl-alert-relay.env
   echo "[install] seeded /etc/szl-alert-relay.env with a fresh RELAY_TOKEN"
+fi
+
+# szl-deploy-hook config (DEPLOY_TOKEN). PRIVATE — not in git. Seed a stub with a
+# freshly generated token if absent (never clobber a hand-filled one). The hook
+# refuses requests with 503 until DEPLOY_TOKEN is non-empty. The token gates the
+# public webhook URL https://a11oy.net/deploy/rebuild/<DEPLOY_TOKEN> that triggers
+# `a11oy-rebuild`. See box-scripts/szl-deploy-hook.README.md.
+if [ ! -e /etc/szl-deploy-hook.env ]; then
+  gen_dtok="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' 2>/dev/null || true)"
+  cat > /etc/szl-deploy-hook.env <<EOF
+# szl-deploy-hook config (PRIVATE — keep out of git).
+# Public webhook: https://a11oy.net/deploy/rebuild/<DEPLOY_TOKEN> (POST) triggers
+# a11oy-rebuild; https://a11oy.net/deploy/status/<DEPLOY_TOKEN> (GET) polls it.
+# Register this token in the HTTPS-credential vault for host a11oy.net so the
+# agent can call it without a plaintext key. See szl-deploy-hook.README.md.
+DEPLOY_TOKEN=${gen_dtok}
+DEPLOY_PORT=9110
+DEPLOY_CMD=/usr/local/sbin/a11oy-rebuild
+VERSION_URL=https://a11oy.net/api/a11oy/v1/version
+STATE_DIR=/var/lib/szl-deploy-hook
+LOG_DIR=/root/a11oy-build-backups
+EOF
+  chmod 600 /etc/szl-deploy-hook.env
+  echo "[install] seeded /etc/szl-deploy-hook.env with a fresh DEPLOY_TOKEN"
 fi
 
 # The szl-receipt-checkpoint job writes a TAMPER-EVIDENT checkpoint of the live
@@ -307,6 +333,7 @@ fi
 # nginx (it didn't). See memory: nginx-sites-enabled-loads-everything.
 install -d -m 0755 /etc/nginx/snippets
 install -m 0644 "$here/szl-alert-relay-nginx.snippet.conf" /etc/nginx/snippets/szl-alert-relay.conf
+install -m 0644 "$here/szl-deploy-hook-nginx.snippet.conf" /etc/nginx/snippets/szl-deploy-hook.conf
 vhost=/etc/nginx/sites-available/a11oy
 if [ -f "$vhost" ]; then
   if ! grep -q 'snippets/szl-alert-relay.conf' "$vhost"; then
@@ -320,6 +347,18 @@ if [ -f "$vhost" ]; then
       { print }
     ' "$vhost" > "${vhost}.relaywire.$$" && mv "${vhost}.relaywire.$$" "$vhost"
     echo "[install] wired szl-alert-relay include into $vhost"
+  fi
+  if ! grep -q 'snippets/szl-deploy-hook.conf' "$vhost"; then
+    # Insert the deploy-hook include before the FIRST `location / {` too.
+    awk '
+      !done && /^[[:space:]]*location[[:space:]]*\/[[:space:]]*\{/ {
+        print "    include /etc/nginx/snippets/szl-deploy-hook.conf;";
+        print "";
+        done=1
+      }
+      { print }
+    ' "$vhost" > "${vhost}.deploywire.$$" && mv "${vhost}.deploywire.$$" "$vhost"
+    echo "[install] wired szl-deploy-hook include into $vhost"
   fi
   # Relocate stray non-config files out of sites-enabled before testing.
   for f in /etc/nginx/sites-enabled/*.bak* /etc/nginx/sites-enabled/*.orig \
@@ -491,6 +530,7 @@ systemctl enable --now vault-keystore-offbox-backup.timer
 systemctl enable --now authelia-rotate-demo.timer
 systemctl enable --now szl-alert-relay.service
 systemctl enable --now szl-alert-relay-watch.timer
+systemctl enable --now szl-deploy-hook.service
 systemctl enable --now szl-signing-health-check.timer
 systemctl enable --now a11oy-signing-key-watch.timer
 systemctl enable --now a11oy-contracting-tool-watch.timer

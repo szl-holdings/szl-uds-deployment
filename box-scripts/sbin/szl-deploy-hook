@@ -1,0 +1,401 @@
+#!/usr/bin/env python3
+"""
+szl-deploy-hook — token-gated remote-deploy webhook for a11oy.net (box 167.233.50.75).
+
+WHY: a11oy.net is a self-hosted Docker container on this box; the only way to
+publish a new build is to run `sudo a11oy-rebuild` ON the box (it pulls
+szl-holdings/a11oy main, rebuilds the image, recreates the container, and
+self-verifies byte-for-byte vs origin/main). There is no remote trigger, so a
+publish always required a human at an SSH prompt. This webhook closes that gap:
+it lets an AUTHORISED caller (an unguessable token in the URL path) trigger that
+SAME `a11oy-rebuild` over the existing public HTTPS front door, and poll its
+status — WITHOUT a plaintext key on the wire (the token gates the path; nginx
+terminates TLS) and WITHOUT widening what can run (the hook execs exactly ONE
+hardcoded absolute path, no shell, no user-supplied arguments, ever).
+
+It is a deliberate sibling of szl-alert-relay: same loopback-behind-nginx shape,
+same path-token contract, same "503 until the token is set / 404 on a wrong
+token / never echo the token" rules. The ONLY differences are (a) it runs the
+rebuild instead of a notifier, and (b) the rebuild is multi-minute, so a trigger
+returns 202 immediately with a run_id and the caller polls a status endpoint.
+
+CONTRACT (token is a single unguessable path segment; a wrong/absent one is 404):
+  POST /deploy/rebuild/<DEPLOY_TOKEN>     -> 202 {"status":"started","run_id":...}
+        starts `a11oy-rebuild` detached, logging to
+        /root/a11oy-build-backups/rebuild-<run_id>.log . Single-flight: if a
+        rebuild is already running it returns 409 with the in-flight run_id
+        (never two concurrent rebuilds fighting over the same docker name).
+        Optional JSON body {"verify_only": true} runs `a11oy-rebuild
+        --verify-only` (read-only check of the running image vs origin/main).
+  GET  /deploy/status/<DEPLOY_TOKEN>      -> 200 {"state":...,"run_id":...,
+        "git_sha":...,"exit_code":...,"started_at":...,"finished_at":...,
+        "log_tail":[...]} for the most recent run (state: running|ok|failed|none).
+  GET  /deploy/status/<DEPLOY_TOKEN>/<run_id> -> 200 same shape for a specific run.
+  GET  /deploy/health                     -> 200 "ok" (NO token; for nginx/smoke).
+
+DESIGN / SAFETY (no bandaids):
+  * The token is compared with hmac.compare_digest (constant-time) and is NEVER
+    written to a response, a log line, or the run metadata.
+  * The hook execs a FIXED absolute binary (DEPLOY_CMD, default
+    /usr/local/sbin/a11oy-rebuild) with shell=False and a fixed argv. The request
+    body cannot inject a command, a path, or an arbitrary flag — the ONLY
+    request-controlled choice is the boolean verify_only, which maps to the one
+    documented read-only flag.
+  * Single-flight via an O_CREAT|O_EXCL lock file holding the live run_id, so a
+    duplicate trigger can never start a second concurrent rebuild.
+  * The git_sha reported in status is read from the live container AFTER the run
+    (curl https://a11oy.net/api/a11oy/v1/version), so the caller can confirm the
+    intended HEAD actually went live — not merely that the script exited 0.
+  * Run metadata + the lock live under STATE_DIR (default
+    /var/lib/szl-deploy-hook), the build log under the documented
+    /root/a11oy-build-backups so it sits beside manual `a11oy-rebuild` logs.
+
+CONFIG (env file, default /etc/szl-deploy-hook.env; real env wins):
+  DEPLOY_TOKEN=<unguessable>     # REQUIRED; must match the path segment
+  DEPLOY_PORT=9110               # listen port on 127.0.0.1 (default 9110)
+  DEPLOY_CMD=/usr/local/sbin/a11oy-rebuild   # fixed binary; no shell, fixed argv
+  VERSION_URL=https://a11oy.net/api/a11oy/v1/version  # for post-run git_sha
+  STATE_DIR=/var/lib/szl-deploy-hook
+  LOG_DIR=/root/a11oy-build-backups
+"""
+import hmac
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+ENV_FILE = os.environ.get("SZL_DEPLOY_HOOK_ENV", "/etc/szl-deploy-hook.env")
+
+
+def load_env(path):
+    """Load KEY=VALUE lines without clobbering the real environment."""
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip()
+                if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+                    val = val[1:-1]
+                if key and key not in os.environ:
+                    os.environ[key] = val
+    except OSError:
+        pass
+
+
+load_env(ENV_FILE)
+
+DEPLOY_TOKEN = os.environ.get("DEPLOY_TOKEN", "").strip()
+DEPLOY_PORT = int(os.environ.get("DEPLOY_PORT", "9110"))
+DEPLOY_CMD = os.environ.get("DEPLOY_CMD", "/usr/local/sbin/a11oy-rebuild")
+VERSION_URL = os.environ.get(
+    "VERSION_URL", "https://a11oy.net/api/a11oy/v1/version")
+STATE_DIR = os.environ.get("STATE_DIR", "/var/lib/szl-deploy-hook")
+LOG_DIR = os.environ.get("LOG_DIR", "/root/a11oy-build-backups")
+
+LOCK_PATH = os.path.join(STATE_DIR, "rebuild.lock")
+LATEST_PATH = os.path.join(STATE_DIR, "latest.json")
+
+
+def _ensure_dirs():
+    for d in (STATE_DIR, LOG_DIR):
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError as exc:
+            sys.stderr.write("[deploy-hook] cannot create %s: %s\n" % (d, exc))
+
+
+def _run_meta_path(run_id):
+    return os.path.join(STATE_DIR, "run-%s.json" % run_id)
+
+
+def _write_json(path, obj):
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(obj, fh)
+    os.replace(tmp, path)
+
+
+def _read_json(path):
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def _live_git_sha():
+    """Read the deployed git_sha from the live container (best-effort)."""
+    try:
+        out = subprocess.run(
+            ["curl", "-fsS", "--max-time", "10", VERSION_URL],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15,
+        )
+        if out.returncode != 0 or not out.stdout:
+            return None
+        data = json.loads(out.stdout.decode("utf-8", "replace"))
+        if isinstance(data, dict):
+            return data.get("git_sha") or data.get("git_commit")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return None
+
+
+def _acquire_lock(run_id):
+    """O_EXCL single-flight lock. Returns (True, run_id) or (False, holder)."""
+    try:
+        fd = os.open(LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        holder = None
+        try:
+            with open(LOCK_PATH, "r", encoding="utf-8") as fh:
+                holder = fh.read().strip() or None
+        except OSError:
+            pass
+        # Stale-lock heal: if the recorded holder's run is finished, reclaim it.
+        if holder:
+            meta = _read_json(_run_meta_path(holder))
+            if meta and meta.get("state") in ("ok", "failed"):
+                try:
+                    os.unlink(LOCK_PATH)
+                except OSError:
+                    pass
+                return _acquire_lock(run_id)
+        return False, holder
+    try:
+        os.write(fd, run_id.encode("utf-8"))
+    finally:
+        os.close(fd)
+    return True, run_id
+
+
+def _release_lock():
+    try:
+        os.unlink(LOCK_PATH)
+    except OSError:
+        pass
+
+
+def _spawn_rebuild(verify_only):
+    """Start a11oy-rebuild detached. Returns run_id or raises on lock contention."""
+    run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+    ok, holder = _acquire_lock(run_id)
+    if not ok:
+        raise RuntimeError(holder or "unknown")
+
+    log_path = os.path.join(LOG_DIR, "rebuild-%s.log" % run_id)
+    # FIXED argv: the ONLY request-controlled choice is the boolean verify_only,
+    # which selects the single documented read-only flag. No shell, no
+    # user-supplied path or free-form argument can reach the command line.
+    argv = [DEPLOY_CMD]
+    if verify_only:
+        argv.append("--verify-only")
+
+    meta = {
+        "run_id": run_id,
+        "state": "running",
+        "verify_only": bool(verify_only),
+        "argv": argv,
+        "log": log_path,
+        "started_at": int(time.time()),
+        "finished_at": None,
+        "exit_code": None,
+        "git_sha": None,
+    }
+    _write_json(_run_meta_path(run_id), meta)
+    _write_json(LATEST_PATH, {"run_id": run_id})
+
+    def _runner():
+        rc = None
+        try:
+            with open(log_path, "ab", buffering=0) as logf:
+                logf.write(("[deploy-hook] %s starting: %s\n"
+                            % (run_id, " ".join(shlex.quote(a) for a in argv))
+                            ).encode("utf-8"))
+                proc = subprocess.Popen(
+                    argv, stdout=logf, stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL, close_fds=True,
+                )
+                rc = proc.wait()
+        except OSError as exc:
+            try:
+                with open(log_path, "ab", buffering=0) as logf:
+                    logf.write(("[deploy-hook] exec failed: %s\n"
+                                % exc).encode("utf-8"))
+            except OSError:
+                pass
+            rc = 127
+        finally:
+            git_sha = _live_git_sha() if rc == 0 and not verify_only else _live_git_sha()
+            meta.update({
+                "state": "ok" if rc == 0 else "failed",
+                "finished_at": int(time.time()),
+                "exit_code": rc,
+                "git_sha": git_sha,
+            })
+            try:
+                _write_json(_run_meta_path(run_id), meta)
+            except OSError:
+                pass
+            _release_lock()
+
+    # Detach the runner in its own thread so the HTTP handler returns at once.
+    import threading
+    threading.Thread(target=_runner, daemon=True).start()
+    return run_id
+
+
+def _status_payload(run_id=None):
+    if run_id is None:
+        latest = _read_json(LATEST_PATH)
+        if not latest or not latest.get("run_id"):
+            return {"state": "none", "run_id": None}
+        run_id = latest["run_id"]
+    meta = _read_json(_run_meta_path(run_id))
+    if not meta:
+        return {"state": "none", "run_id": run_id}
+    log_tail = []
+    log_path = meta.get("log")
+    if log_path and os.path.isfile(log_path):
+        try:
+            with open(log_path, "rb") as fh:
+                try:
+                    fh.seek(-8192, os.SEEK_END)
+                except OSError:
+                    fh.seek(0)
+                tail = fh.read().decode("utf-8", "replace")
+            log_tail = tail.splitlines()[-40:]
+        except OSError:
+            pass
+    return {
+        "state": meta.get("state"),
+        "run_id": meta.get("run_id"),
+        "verify_only": meta.get("verify_only"),
+        "git_sha": meta.get("git_sha"),
+        "exit_code": meta.get("exit_code"),
+        "started_at": meta.get("started_at"),
+        "finished_at": meta.get("finished_at"),
+        "log_tail": log_tail,
+    }
+
+
+def _token_ok(segment):
+    if not DEPLOY_TOKEN:
+        return False
+    return hmac.compare_digest(segment, DEPLOY_TOKEN)
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "szl-deploy-hook/1.0"
+
+    def _send(self, code, obj):
+        if isinstance(obj, str):
+            payload = obj.encode("utf-8")
+            ctype = "text/plain; charset=utf-8"
+        else:
+            payload = json.dumps(obj).encode("utf-8")
+            ctype = "application/json"
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        try:
+            self.wfile.write(payload)
+        except BrokenPipeError:
+            pass
+
+    def log_message(self, fmt, *args):  # quieter; the token is REDACTED from logs
+        line = fmt % args
+        # The token rides in the request path (…/rebuild/<tok>, …/status/<tok>).
+        # BaseHTTPRequestHandler's default access line would write it to
+        # stderr/journald, so collapse any token-bearing path segment to <token>
+        # before logging. No request line ever carries the real token to a log.
+        line = re.sub(r"(/deploy/(?:rebuild|status))/[^/ ]+",
+                      r"\1/<token>", line)
+        sys.stderr.write("[deploy-hook] %s - %s\n"
+                         % (self.address_string(), line))
+
+    def do_GET(self):
+        parts = [p for p in self.path.split("/") if p]
+        # /deploy/health
+        if self.path == "/deploy/health":
+            self._send(200, "ok")
+            return
+        # /deploy/status/<token>[/<run_id>]
+        if len(parts) >= 3 and parts[0] == "deploy" and parts[1] == "status":
+            if not DEPLOY_TOKEN:
+                self._send(503, {"error": "deploy hook not configured"})
+                return
+            if not _token_ok(parts[2]):
+                self._send(404, "not found")
+                return
+            run_id = parts[3] if len(parts) >= 4 else None
+            self._send(200, _status_payload(run_id))
+            return
+        self._send(404, "not found")
+
+    def do_POST(self):
+        parts = [p for p in self.path.split("/") if p]
+        # /deploy/rebuild/<token>
+        if not (len(parts) == 3 and parts[0] == "deploy" and parts[1] == "rebuild"):
+            self._send(404, "not found")
+            return
+        if not DEPLOY_TOKEN:
+            sys.stderr.write("[deploy-hook] DEPLOY_TOKEN not configured; refusing\n")
+            self._send(503, {"error": "deploy hook not configured"})
+            return
+        if not _token_ok(parts[2]):
+            self._send(404, "not found")
+            return
+        # Optional JSON body: {"verify_only": true}
+        verify_only = False
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if 0 < length <= 100_000:
+            raw = self.rfile.read(length)
+            try:
+                body = json.loads(raw.decode("utf-8"))
+                if isinstance(body, dict):
+                    verify_only = bool(body.get("verify_only", False))
+            except (ValueError, AttributeError):
+                self._send(400, {"error": "bad json body"})
+                return
+        try:
+            run_id = _spawn_rebuild(verify_only)
+        except RuntimeError as holder:
+            self._send(409, {"error": "rebuild already in progress",
+                             "run_id": str(holder)})
+            return
+        self._send(202, {"status": "started", "run_id": run_id,
+                         "verify_only": verify_only})
+
+
+def main():
+    _ensure_dirs()
+    if not DEPLOY_TOKEN:
+        sys.stderr.write(
+            "[deploy-hook] WARNING: DEPLOY_TOKEN is empty (set it in %s); all "
+            "requests will be refused with 503 until it is set.\n" % ENV_FILE)
+    httpd = ThreadingHTTPServer(("127.0.0.1", DEPLOY_PORT), Handler)
+    sys.stderr.write("[deploy-hook] listening on 127.0.0.1:%d -> %s\n"
+                     % (DEPLOY_PORT, DEPLOY_CMD))
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()
