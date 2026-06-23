@@ -19,8 +19,11 @@ token / never echo the token" rules. The ONLY differences are (a) it runs the
 rebuild instead of a notifier, and (b) the rebuild is multi-minute, so a trigger
 returns 202 immediately with a run_id and the caller polls a status endpoint.
 
-CONTRACT (token is a single unguessable path segment; a wrong/absent one is 404):
-  POST /deploy/rebuild/<DEPLOY_TOKEN>     -> 202 {"status":"started","run_id":...}
+CONTRACT (token via the X-Deploy-Token header OR a path segment; header wins;
+a wrong/absent token is 404. The header form lets the HTTPS-credential vault
+inject the token so the path stays clean and the token never hits a log/URL):
+  POST /deploy/rebuild  (X-Deploy-Token header)  OR  /deploy/rebuild/<TOKEN>
+                                          -> 202 {"status":"started","run_id":...}
         starts `a11oy-rebuild` detached, logging to
         /root/a11oy-build-backups/rebuild-<run_id>.log . Single-flight: if a
         rebuild is already running it returns 409 with the in-flight run_id
@@ -325,36 +328,59 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("[deploy-hook] %s - %s\n"
                          % (self.address_string(), line))
 
+    def _present_token(self, parts, route_len):
+        """Return the caller-supplied token from EITHER the X-Deploy-Token header
+        (so the HTTPS-credential proxy can inject it and the path stays clean)
+        OR the optional path segment after the route (for manual curl). The
+        header takes precedence. Returns "" if neither is present."""
+        hdr = (self.headers.get("X-Deploy-Token") or "").strip()
+        if hdr:
+            return hdr, None
+        # path form: /deploy/<route>/<token>[/<run_id>]
+        tok = parts[route_len] if len(parts) > route_len else ""
+        extra = parts[route_len + 1] if len(parts) > route_len + 1 else None
+        return tok, extra
+
     def do_GET(self):
         parts = [p for p in self.path.split("/") if p]
         # /deploy/health
         if self.path == "/deploy/health":
             self._send(200, "ok")
             return
-        # /deploy/status/<token>[/<run_id>]
-        if len(parts) >= 3 and parts[0] == "deploy" and parts[1] == "status":
+        # /deploy/status  (token via X-Deploy-Token header; optional /<run_id>)
+        # /deploy/status/<token>[/<run_id>]  (token in path)
+        if len(parts) >= 2 and parts[0] == "deploy" and parts[1] == "status":
             if not DEPLOY_TOKEN:
                 self._send(503, {"error": "deploy hook not configured"})
                 return
-            if not _token_ok(parts[2]):
+            tok, path_extra = self._present_token(parts, 2)
+            if not _token_ok(tok):
                 self._send(404, "not found")
                 return
-            run_id = parts[3] if len(parts) >= 4 else None
+            # run_id may be a header-mode trailing segment (/deploy/status/<run_id>)
+            # or a path-mode segment after the token.
+            hdr = (self.headers.get("X-Deploy-Token") or "").strip()
+            if hdr:
+                run_id = parts[2] if len(parts) >= 3 else None
+            else:
+                run_id = path_extra
             self._send(200, _status_payload(run_id))
             return
         self._send(404, "not found")
 
     def do_POST(self):
         parts = [p for p in self.path.split("/") if p]
-        # /deploy/rebuild/<token>
-        if not (len(parts) == 3 and parts[0] == "deploy" and parts[1] == "rebuild"):
+        # /deploy/rebuild  (token via X-Deploy-Token header)
+        # /deploy/rebuild/<token>  (token in path)
+        if not (len(parts) >= 2 and parts[0] == "deploy" and parts[1] == "rebuild"):
             self._send(404, "not found")
             return
         if not DEPLOY_TOKEN:
             sys.stderr.write("[deploy-hook] DEPLOY_TOKEN not configured; refusing\n")
             self._send(503, {"error": "deploy hook not configured"})
             return
-        if not _token_ok(parts[2]):
+        tok, _ = self._present_token(parts, 2)
+        if not _token_ok(tok):
             self._send(404, "not found")
             return
         # Optional JSON body: {"verify_only": true}

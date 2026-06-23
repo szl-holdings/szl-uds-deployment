@@ -24,11 +24,15 @@ session. This hook makes the publish step remotely triggerable by a holder of
 one unguessable token, while keeping the rebuild itself unchanged and on-box.
 
 ## Endpoint contract
-The token is a single unguessable path segment, compared in constant time
-(`hmac.compare_digest`) and **never** written to a response, a log, or run
-metadata. A wrong/absent token is a flat `404`.
+The token may be supplied **either** as the `X-Deploy-Token` request header
+(preferred — the HTTPS-credential vault injects it and the path stays clean)
+**or** as a single unguessable path segment (handy for manual `curl`). The
+header takes precedence. It is compared in constant time (`hmac.compare_digest`)
+and **never** written to a response, a log, or run metadata. A wrong/absent
+token is a flat `404`.
 
-- `POST /deploy/rebuild/<DEPLOY_TOKEN>` → `202 {"status":"started","run_id":…}`
+- `POST /deploy/rebuild` (header token) **or** `POST /deploy/rebuild/<DEPLOY_TOKEN>`
+  → `202 {"status":"started","run_id":…}`
   Starts `a11oy-rebuild` detached, logging to
   `/root/a11oy-build-backups/rebuild-<run_id>.log` (beside manual-run logs).
   **Single-flight:** if a rebuild is already running it returns
@@ -36,8 +40,10 @@ metadata. A wrong/absent token is a flat `404`.
   concurrent rebuilds fighting over the `a11oy` container name.
   Optional JSON body `{"verify_only": true}` runs `a11oy-rebuild --verify-only`
   (read-only check of the running image vs `origin/main`).
-- `GET /deploy/status/<DEPLOY_TOKEN>` → `200` status of the most recent run.
-- `GET /deploy/status/<DEPLOY_TOKEN>/<run_id>` → `200` status of a specific run.
+- `GET /deploy/status` (header token) **or** `GET /deploy/status/<DEPLOY_TOKEN>`
+  → `200` status of the most recent run.
+- `GET /deploy/status/<run_id>` (header token) **or**
+  `GET /deploy/status/<DEPLOY_TOKEN>/<run_id>` → `200` status of a specific run.
 - `GET /deploy/health` → `200 "ok"` (no token; for nginx / smoke tests).
 
 Status payload:
@@ -131,10 +137,15 @@ curl -fsS -X POST https://a11oy.net/deploy/rebuild/<DEPLOY_TOKEN> \
 
 ## How Computer (the agent) calls it without a plaintext key
 Register `DEPLOY_TOKEN` once in the secure HTTPS-credential vault for host
-`a11oy.net` (the custom-credentials proxy), then the agent calls the endpoints
-with `api_credentials=['custom-cred:a11oy.net']` — the token is injected at the
-proxy and never appears in the agent's transcript or logs. The proxy handles
-HTTPS only, which is exactly this webhook's transport.
+`a11oy.net` as a **custom header** named `X-Deploy-Token`, then the agent calls
+the clean endpoints with `api_credentials=['custom-cred:a11oy.net']` — the proxy
+injects the `X-Deploy-Token` header on every request to `a11oy.net`, so the
+token never appears in the agent's transcript, the URL, or any log. The proxy
+handles HTTPS only, which is exactly this webhook's transport. Example:
+```bash
+curl -fsS -X POST https://a11oy.net/deploy/rebuild           # header injected by proxy
+curl -fsS https://a11oy.net/deploy/status | jq '{state,git_sha,exit_code}'
+```
 
 ## Drift coverage
 This script, its unit, snippet, and README are versioned here under
