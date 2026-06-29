@@ -12,7 +12,7 @@ Same application source, three surfaces, byte-identical:
 
 | Surface | Where |
 | --- | --- |
-| Live box service | `/opt/szl/energy-harvest` (systemd `szl-energy-harvest`, `:8082`), behind nginx `^~ /api/a11oy/v1/harvest/` + `^~ /energy/` on **a11oy.net** |
+| Live box service | `/opt/szl/energy-harvest` (systemd `szl-energy-harvest`, `:8082`), behind nginx `^~ /api/a11oy/v1/harvest/` + `^~ /energy/` on **a-11-oy.com** |
 | GitHub-aligned source | `szl-holdings/platform` → `apps/energy-harvest/{engine.py,server.py,index.html}` |
 | This UDS package | `app/{engine.py,server.py,index.html}` (built into the container by `./Dockerfile`) |
 

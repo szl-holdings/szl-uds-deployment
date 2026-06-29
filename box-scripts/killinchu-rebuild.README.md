@@ -1,6 +1,6 @@
-# killinchu-rebuild — drift-free rebuilds of killinchu.a11oy.net
+# killinchu-rebuild — drift-free rebuilds of killinchu.a-11-oy.com
 
-`killinchu-rebuild` rebuilds the **killinchu.a11oy.net** Docker image from the
+`killinchu-rebuild` rebuilds the **killinchu.a-11-oy.com** Docker image from the
 **published GitHub source of truth** (`szl-holdings/killinchu`, branch `main`) and
 recreates the running container. It is the killinchu twin of `a11oy-rebuild` and
 exists to stop the live image from silently drifting away from what is published.

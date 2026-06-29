@@ -35,7 +35,7 @@ as clean text.
   `404` wrong/absent token (the token is never echoed) · `503` token unset.
 - `GET  /relay/health` → `200 ok` (no token; for nginx / smoke tests).
 
-Publicly reachable at **`https://a11oy.net/relay/ntfy/<RELAY_TOKEN>`** via the
+Publicly reachable at **`https://a-11-oy.com/relay/ntfy/<RELAY_TOKEN>`** via the
 nginx snippet below. Safe to expose: a wrong token returns 404.
 
 ## Config (`/etc/szl-alert-relay.env`, PRIVATE — not in git)
@@ -55,7 +55,7 @@ pattern.
 `box-scripts/install.sh` (run as root) installs the script + systemd unit,
 copies the nginx snippet to `/etc/nginx/snippets/szl-alert-relay.conf`,
 idempotently wires `include /etc/nginx/snippets/szl-alert-relay.conf;` into the
-`a11oy.net` 443 server block just before `location /`, validates with
+`a-11-oy.com` 443 server block just before `location /`, validates with
 `nginx -t`, reloads, and `enable --now`s `szl-alert-relay.service`. It seeds a
 commented-out `/etc/szl-alert-relay.env` stub (never clobbering a real one) and
 prints a reminder to set `RELAY_TOKEN` if it is still empty.
@@ -67,7 +67,7 @@ prints a reminder to set `RELAY_TOKEN` if it is still empty.
 
 ## The other half: the GitHub secret(s)
 Point every `SLACK_WEBHOOK_URL` secret that feeds a CI alert at
-`https://a11oy.net/relay/ntfy/<RELAY_TOKEN>`. The workflows' existing POSTs then
+`https://a-11-oy.com/relay/ntfy/<RELAY_TOKEN>`. The workflows' existing POSTs then
 arrive here and page cleanly — **no workflow change is needed**. Current wiring:
 - `szl-holdings/a11oy` — one **repo-level** secret, shared by both
   `rekor-recheck.yml` and `release-receipt-verify.yml` (Actions secrets are
@@ -88,7 +88,7 @@ confirm a clean page on the topic:
 curl -sS -o /dev/null -w '%{http_code}\n' -X POST \
   -H 'Content-Type: application/json' \
   --data '{"text":":rotating_light: *Rekor receipt re-check FAILED* — [TEST-ignore] example\n*Counts:* checked=3 verified=2 failed=1"}' \
-  https://a11oy.net/relay/ntfy/<RELAY_TOKEN>
+  https://a-11-oy.com/relay/ntfy/<RELAY_TOKEN>
 ```
 Expect `200` and a clean, de-JSON'd, de-indented page (🚨, no `*`, no
 `{"text":}` wrapper) on the team's ntfy topic.
@@ -103,7 +103,7 @@ alerting family as the DNS-drift / a11oy-uptime / box-scripts watchers.
 
 Every 5 minutes (and ~4 min after boot) it checks two things:
 
-1. **HTTP** — `GET https://a11oy.net/relay/health` must return `200` (proves
+1. **HTTP** — `GET https://a-11-oy.com/relay/health` must return `200` (proves
    *both* nginx's `/relay/` location and the loopback relay are serving).
 2. **UNIT** — `systemctl is-active szl-alert-relay.service` must be `active`
    (catches a crash-looped/stopped service). If `systemctl` is unavailable the

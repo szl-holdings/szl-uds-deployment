@@ -2,7 +2,7 @@
 #
 # a11oy-mode — manage how this single box serves ports 80/443.
 #
-# This box runs BOTH the public a11oy.net site (nginx + a11oy/killinchu
+# This box runs BOTH the public a-11-oy.com site (nginx + a11oy/killinchu
 # containers) AND the UDS k3d demo cluster (uds-szl-demo, Task #103). They
 # used to be mutually exclusive on 80/443; they now COEXIST: nginx owns host
 # 80/443, and the k3d serverlb is kept off 80/443 (it still publishes the
@@ -20,7 +20,7 @@ set -uo pipefail
 
 CL=uds-szl-demo
 DECONFLICT=/usr/local/sbin/a11oy-serverlb-deconflict
-HOSTS=("a11oy.net" "killinchu.a11oy.net" "elite.a11oy.net")
+HOSTS=("a-11-oy.com" "killinchu.a-11-oy.com" "elite.a-11-oy.com")
 
 log()  { printf '\033[1;36m[a11oy-mode]\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m[ ok ]\033[0m %s\n' "$*"; }

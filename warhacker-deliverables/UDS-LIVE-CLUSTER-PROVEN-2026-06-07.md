@@ -93,6 +93,6 @@ Core defines an **admin** gateway and a **tenant** gateway, both `LoadBalancer`.
 ## Box state left behind (for cleanup)
 
 - The k3d cluster **`uds-szl-demo` is left running** so the proof is live and inspectable. Tear down with `k3d cluster delete uds-szl-demo` when done.
-- **`nginx` was stopped** to free host 80/443 for the cluster's admin gateway. The a11oy.net landing page is **parked (DNS not pointed at this box)**, so nothing externally reachable is affected. To restore: `k3d cluster stop uds-szl-demo` (or delete) then `systemctl start nginx`.
+- **`nginx` was stopped** to free host 80/443 for the cluster's admin gateway. The a-11-oy.com landing page is **parked (DNS not pointed at this box)**, so nothing externally reachable is affected. To restore: `k3d cluster stop uds-szl-demo` (or delete) then `systemctl start nginx`.
 
 *Captured live on 2026-06-07 against `szl-holdings/szl-uds-deployment` on box 167.233.50.75.*

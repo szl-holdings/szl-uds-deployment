@@ -13,7 +13,7 @@ uds deploy oci://ghcr.io/szl-holdings/tawantin-bundle:0.1.0 --confirm
 ```
 
 This is the bundle that closes the Warhacker **deployability** gap: the live
-demo (a11oy.net + killinchu) is reachable today, and TAWANTIN is the UDS Core
+demo (a-11-oy.com + killinchu) is reachable today, and TAWANTIN is the UDS Core
 package that makes that fabric *mission-ready out of the box* (Zarf-portable,
 airgap-deployable, cosign-signable).
 

@@ -1,7 +1,7 @@
-# box-scripts — a11oy.net ⇄ UDS demo cluster port coexistence (box 167.233.50.75)
+# box-scripts — a-11-oy.com ⇄ UDS demo cluster port coexistence (box 167.233.50.75)
 
 Reference copies of the host-level scripts and systemd units that keep the
-**public a11oy.net site** (nginx on host ports 80/443) and the **UDS k3d demo
+**public a-11-oy.com site** (nginx on host ports 80/443) and the **UDS k3d demo
 cluster** `uds-szl-demo` from fighting over ports 80/443 on the single box
 `167.233.50.75`.
 
@@ -13,7 +13,7 @@ cluster keep coexisting.
 ## The problem they solve
 
 The k3d serverlb container (`k3d-uds-szl-demo-serverlb`) publishes host ports
-`80` and `443` by default. nginx (which serves a11oy.net / www / killinchu /
+`80` and `443` by default. nginx (which serves a-11-oy.com / www / killinchu /
 elite) also needs `80`/`443`. They used to be mutually exclusive — only one
 could run. The fix makes them **coexist**: nginx owns host `80`/`443`, and the
 serverlb is kept off them (it still publishes the kube-API on a dynamic host
@@ -76,7 +76,7 @@ sudo systemctl enable --now a11oy-port-guard.timer
 ```bash
 a11oy-mode status                 # nginx ACTIVE, serverlb clear of 80/443
 systemctl is-enabled a11oy-coexist.service a11oy-port-guard.timer
-curl -s -o /dev/null -w '%{http_code}\n' https://a11oy.net/   # expect 200
+curl -s -o /dev/null -w '%{http_code}\n' https://a-11-oy.com/   # expect 200
 ```
 
 ## Notes / assumptions
@@ -85,7 +85,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://a11oy.net/   # expect 200
   `k3d-uds-szl-demo-serverlb` (matches Task #103's demo cluster).
 - k3d image pinned to `ghcr.io/k3d-io/k3d-proxy:5.9.0` in the deconflict helper.
 - These are host-level scripts; they assume `nginx`, `docker`, `k3d`, and
-  `curl` are installed and that nginx vhosts for a11oy.net already exist.
+  `curl` are installed and that nginx vhosts for a-11-oy.com already exist.
 - The `szl-core-rightsize` call in `a11oy-mode coexist` is best-effort
   (`[ -x ... ] && ... || true`) so its absence does not break coexistence.
 
@@ -312,10 +312,10 @@ kubectl -n szl-receipts scale deploy szl-receipts-server --replicas=1
 
 ---
 
-# box-scripts (part 4) — a11oy.net public-site alerting watchers
+# box-scripts (part 4) — a-11-oy.com public-site alerting watchers
 
 The final pair of host-level watchers on box `167.233.50.75` alert when the
-**public a11oy.net site** goes down or when its **DNS stops pointing at the
+**public a-11-oy.com site** goes down or when its **DNS stops pointing at the
 box**. Together with the shared notifier below they make sure an outage or a
 registrar/DNS change is pushed to Stephen instead of being noticed by accident.
 Like the scripts above they live ONLY at `/usr/local/sbin` +
@@ -327,9 +327,9 @@ Like the scripts above they live ONLY at `/usr/local/sbin` +
 
 ```
 sbin/
-  a11oy-uptime-check          # probe a11oy.net uptime, alert on the outage edge
+  a11oy-uptime-check          # probe a-11-oy.com uptime, alert on the outage edge
   a11oy-uptime-notify         # shared push notifier (ntfy / Telegram / webhook)
-  dns-drift-check             # alert if a11oy.net DNS drifts off the box
+  dns-drift-check             # alert if a-11-oy.com DNS drifts off the box
   eval-arena-trend-watch      # alert if the newest live eval-arena recorded run degrades
   eval-arena-trend-validate   # bridge: reuses the canonical validate_run()
 systemd/
@@ -341,7 +341,7 @@ systemd/
   eval-arena-trend-watch.timer   # ~4 min after boot, then every 15 min
 ```
 
-- **`a11oy-uptime-check`** — probes the public a11oy.net endpoints and also
+- **`a11oy-uptime-check`** — probes the public a-11-oy.com endpoints and also
   watches for port-guard interventions; alerts on the healthy→down edge and once
   on RECOVERED (edge-triggered + de-duped), never every cycle.
 - **`dns-drift-check`** — queries a PUBLIC resolver (`dig @8.8.8.8`, never the
@@ -408,7 +408,7 @@ sudo systemctl enable --now a11oy-uptime-check.timer dns-drift-check.timer
 systemctl is-enabled a11oy-uptime-check.timer dns-drift-check.timer
 # Force a DNS-drift edge (safe, reversible) and confirm the push fires:
 EXPECT_IP=10.0.0.1 ALERT_PREFIX="[TEST-ignore] " \
-  NOTIFY_CMD=/usr/local/sbin/a11oy-uptime-notify NOTIFY_TITLE="a11oy.net DNS" \
+  NOTIFY_CMD=/usr/local/sbin/a11oy-uptime-notify NOTIFY_TITLE="a-11-oy.com DNS" \
   /usr/local/sbin/dns-drift-check
 rm -f /var/lib/dns-drift/problem.sig    # clear the test edge afterwards
 ```
@@ -1181,8 +1181,8 @@ empty-file md5 outright.
 
 ## What it checks (per flagship — a11oy + killinchu)
 
-1. **HTTP envelope** — `https://a11oy.net/api/a11oy/v1/contracting` and
-   `https://killinchu.a11oy.net/api/killinchu/v1/contracting` return `200` with a
+1. **HTTP envelope** — `https://a-11-oy.com/api/a11oy/v1/contracting` and
+   `https://killinchu.a-11-oy.com/api/killinchu/v1/contracting` return `200` with a
    valid JSON envelope (top-level `areas` list + `summary` object).
 2. **Image integrity** — `md5(szl_contracting.py baked into <name>:local)` is
    **not** the empty-file md5 **and** equals `md5(origin/main:szl_contracting.py)`.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# killinchu-rebuild — rebuild the killinchu.a11oy.net Docker image from the
+# killinchu-rebuild — rebuild the killinchu.a-11-oy.com Docker image from the
 # PUBLISHED GitHub source of truth (szl-holdings/killinchu), discarding any local
 # working-tree drift, then recreate the running container. Idempotent and safe to
 # re-run. This is the killinchu twin of a11oy-rebuild.
@@ -8,7 +8,7 @@
 #   The box build tree (/opt/szl/killinchu) routinely drifts BEHIND GitHub main
 #   (a stale remote-tracking ref plus hand-patched working-tree files — it was 23
 #   commits behind during task #430). The Docker image used to be built straight
-#   from that drifting tree by hand, so the live killinchu.a11oy.net image could
+#   from that drifting tree by hand, so the live killinchu.a-11-oy.com image could
 #   silently diverge from the published source (a stale/degraded build). This
 #   wrapper guarantees every rebuild starts from a clean checkout of origin/main,
 #   so the running container always reflects what is published. DO NOT hand-patch

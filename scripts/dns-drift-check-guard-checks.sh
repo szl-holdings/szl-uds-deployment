@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # dns-drift-check-guard-checks.sh — guard the `dns-drift-check` box guard (the
-# a11oy.net public-DNS drift alarm) from silently regressing.
+# a-11-oy.com public-DNS drift alarm) from silently regressing.
 #
 # WHY THIS EXISTS
 # `dns-drift-check` (box-scripts/sbin/dns-drift-check) runs every ~15 min and
-# pages the team if a11oy.net's public DNS drifts off the box — a missing/wrong A
+# pages the team if a-11-oy.com's public DNS drifts off the box — a missing/wrong A
 # record on the apex/www/killinchu/elite hosts, a lost SPF "-all", or a lost
 # DMARC "p=reject". EasyWP silently grabbed the apex once; this alarm catches that
 # class of takeover before users notice. Its value rests on a few fragile
@@ -46,7 +46,7 @@ chk1() {
   local root="${1:-.}"
   local F="$root/$WATCH_REL"
   test -f "$F" || {
-    err "$F" "REGRESSION — dns-drift-check is MISSING. The a11oy.net DNS-drift alarm is gone."
+    err "$F" "REGRESSION — dns-drift-check is MISSING. The a-11-oy.com DNS-drift alarm is gone."
     return 1
   }
   local out
@@ -197,7 +197,7 @@ chk7() {
     err "$F" "REGRESSION — README.md lost the 'public resolver' description of this alarm."
     return 1
   }
-  echo "OK: README.md documents the a11oy.net DNS-drift alarm"
+  echo "OK: README.md documents the a-11-oy.com DNS-drift alarm"
 }
 
 # ── Dispatch ──────────────────────────────────────────────────────────────────

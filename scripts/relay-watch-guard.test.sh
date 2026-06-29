@@ -65,7 +65,7 @@ b="$(broken_copy 's/if \[ "\$cur_sig" = "\$prev_sig" \]; then/if false; then # B
   && expect_fail "$b" "guard catches a watcher that re-pages on a persisting outage"
 
 echo "== regression: RECOVERED push dropped -> no recovery notice =="
-b="$(broken_copy '/push "a11oy.net alert-relay RECOVERED:/d')" \
+b="$(broken_copy '/push "a-11-oy.com alert-relay RECOVERED:/d')" \
   && expect_fail "$b" "guard catches a watcher that never pages RECOVERED"
 
 echo "== regression: signature never cleared on recovery -> recovery re-pages =="

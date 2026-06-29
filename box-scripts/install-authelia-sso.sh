@@ -9,7 +9,7 @@
 # exception, both scoped to ^/uds AND ^/status), seeds the stephen (admins) and demo
 # (guests) accounts idempotently, then idempotently injects the three
 # AUTHELIA-SSO-PATCH nginx location blocks (from authelia-uds-nginx.snippet.conf)
-# into the a11oy.net HTTPS server block, validates and reloads nginx. No hand-paste step.
+# into the a-11-oy.com HTTPS server block, validates and reloads nginx. No hand-paste step.
 #
 # Security posture reproduced (matches the live box exactly):
 #   - default_policy: deny  -> anonymous is denied everywhere
@@ -82,7 +82,7 @@ server:
 log:
   level: info
 totp:
-  issuer: a11oy.net
+  issuer: a-11-oy.com
 authentication_backend:
   password_reset:
     disable: true
@@ -93,13 +93,13 @@ authentication_backend:
 access_control:
   default_policy: deny
   rules:
-    - domain: 'a11oy.net'
+    - domain: 'a-11-oy.com'
       subject: 'group:guests'
       resources:
         - '^/uds(/.*)?$'
         - '^/status(/.*)?$'
       policy: one_factor
-    - domain: 'a11oy.net'
+    - domain: 'a-11-oy.com'
       resources:
         - '^/uds(/.*)?$'
         - '^/status(/.*)?$'
@@ -107,8 +107,8 @@ access_control:
 session:
   cookies:
     - name: authelia_session
-      domain: 'a11oy.net'
-      authelia_url: 'https://a11oy.net/authelia'
+      domain: 'a-11-oy.com'
+      authelia_url: 'https://a-11-oy.com/authelia'
       expiration: '12 hours'
       inactivity: '1 hour'
 regulation:
@@ -142,7 +142,7 @@ curl -fsS http://127.0.0.1:9091/authelia/api/health && echo " authelia healthy"
 inject_nginx() {
   if [ ! -f "$NGINX_VHOST" ]; then
     echo "WARN: nginx vhost $NGINX_VHOST not found — skipping nginx injection."
-    echo "      (Run the a11oy.net site installer to create the vhost first, then re-run this script.)"
+    echo "      (Run the a-11-oy.com site installer to create the vhost first, then re-run this script.)"
     return 0
   fi
   if grep -q 'AUTHELIA-SSO-PATCH' "$NGINX_VHOST"; then
@@ -209,4 +209,4 @@ PYEOF
 }
 inject_nginx
 
-echo "DONE: Authelia SSO is up. /uds/ + /status/ are gated (admin 2FA, guest one-factor, anon denied). Visit https://a11oy.net/uds/"
+echo "DONE: Authelia SSO is up. /uds/ + /status/ are gated (admin 2FA, guest one-factor, anon denied). Visit https://a-11-oy.com/uds/"

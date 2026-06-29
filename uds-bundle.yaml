@@ -119,7 +119,7 @@ packages:
               value: 1
             # ── istiod CPU-request right-size for the 2-vCPU uds-szl-demo ──────
             # The istiod chart reserves 500m CPU by default. On this single
-            # 2-vCPU node (shared with a11oy.net + the receipt mesh) that reserve
+            # 2-vCPU node (shared with a-11-oy.com + the receipt mesh) that reserve
             # saturates the scheduler's CPU-request budget, leaving < keycloak's
             # 100m request free, so the `keycloak` component can never schedule
             # its pod and `uds deploy` times out waiting for it Ready.
@@ -130,7 +130,7 @@ packages:
               value: 150m
       # ── tenant gateway: ClusterIP on the single-node uds-szl-demo ───────
       # This single-node demo box has exactly ONE LoadBalancer slot, already held
-      # by the admin gateway (172.18.0.2); nginx owns host 80/443 for a11oy.net.
+      # by the admin gateway (172.18.0.2); nginx owns host 80/443 for a-11-oy.com.
       # The tenant gateway's Deployment is 0/0 here (no tenant waypoint provisions
       # at this resource ceiling), but its Service defaults to type LoadBalancer,
       # so `helm --wait` blocks forever on an external IP that can never be

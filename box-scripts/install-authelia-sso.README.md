@@ -1,7 +1,7 @@
 # install-authelia-sso — per-user SSO for the /uds/ dashboard
 
 `install-authelia-sso.sh` stands up **Authelia per-user SSO** in front of the UDS
-dashboard at `https://a11oy.net/uds/`. It replaces the old shared nginx basic-auth
+dashboard at `https://a-11-oy.com/uds/`. It replaces the old shared nginx basic-auth
 (single `stephen` user in `/etc/nginx/.htpasswd-uds`, now retired) with a real
 per-user login portal.
 
@@ -10,7 +10,7 @@ Real UDS Core Identity (Keycloak + authservice) cannot boot on this 2-vCPU box
 (CPU requests already ~95% committed; the keycloak/authservice namespaces exist but
 run zero workloads). Authelia is a single lightweight Go service that runs
 **localhost-only** (`127.0.0.1:9091`), so it never touches 80/443 ownership and the
-a11oy.net coexistence posture is preserved.
+a-11-oy.com coexistence posture is preserved.
 
 ## Pieces
 - Container `authelia` (`authelia/authelia:4.38`), `--restart unless-stopped`,
@@ -27,7 +27,7 @@ a11oy.net coexistence posture is preserved.
 - `authelia-configuration.yml` — the Authelia config TEMPLATE (no secrets); the
   installer writes this exact content to `/opt/authelia/configuration.yml`.
 - `authelia-uds-nginx.snippet.conf` — the `AUTHELIA-SSO-PATCH` nginx location
-  blocks to paste into the a11oy.net HTTPS server block.
+  blocks to paste into the a-11-oy.com HTTPS server block.
 
 ## Rebuild from scratch (fresh box)
 ```bash

@@ -86,12 +86,12 @@ for n in $NAMES; do
   repo="$(getenv_or "C_${key}_REPO" "")"
   case "$n" in
     a11oy)
-      [ -n "$url" ]  || url="https://a11oy.net/api/a11oy/v1/contracting"
+      [ -n "$url" ]  || url="https://a-11-oy.com/api/a11oy/v1/contracting"
       [ -n "$img" ]  || img="a11oy:local"
       [ -n "$repo" ] || repo="/opt/szl/a11oy"
       ;;
     killinchu)
-      [ -n "$url" ]  || url="https://killinchu.a11oy.net/api/killinchu/v1/contracting"
+      [ -n "$url" ]  || url="https://killinchu.a-11-oy.com/api/killinchu/v1/contracting"
       [ -n "$img" ]  || img="killinchu:local"
       [ -n "$repo" ] || repo="/opt/szl/killinchu"
       ;;

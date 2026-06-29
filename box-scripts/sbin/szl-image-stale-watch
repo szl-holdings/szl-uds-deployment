@@ -4,7 +4,7 @@
 # 167.233.50.75 has fallen BEHIND its published origin/main: the running image
 # no longer matches code that has ALREADY been merged. It watches the two
 # self-hosted services that are rebuilt from a GitHub tree on this box:
-#   a11oy     (a11oy.net,  container on :7861)  via /usr/local/sbin/a11oy-rebuild
+#   a11oy     (a-11-oy.com,  container on :7861)  via /usr/local/sbin/a11oy-rebuild
 #   killinchu (killinchu,  container on :7862)  via /usr/local/sbin/killinchu-rebuild
 #
 # WHY: both <svc>-rebuild helpers can already answer "is the running image in

@@ -556,7 +556,7 @@ tasks:
   #     confirmed a genuine idle window with no sibling work in flight.
   #   * Coexistence-safe — the cluster is recreated PORT-GUARDED: host ports
   #     80/443 are published to the k3d serverlb ONLY if they are free, so a
-  #     coexisting public nginx site (e.g. a11oy.net) keeps owning them and
+  #     coexisting public nginx site (e.g. a-11-oy.com) keeps owning them and
   #     stays up. The serverlb is born clean (kube-API + 8443 only). On a normal
   #     laptop where 80/443 are free this behaves exactly like `start`'s create.
   #
@@ -609,7 +609,7 @@ tasks:
       - description: "Create the k3d cluster PORT-GUARDED (publish host 80/443 only if free) [coexist-portguard]"
         cmd: |
           # coexist-portguard: where nginx already owns host 80/443 (a public
-          # site like a11oy.net) we must NOT let the k3d serverlb grab them or
+          # site like a-11-oy.com) we must NOT let the k3d serverlb grab them or
           # the site goes offline. Publish 80/443 to the loadbalancer ONLY when
           # the host port is free; always publish 8443. On a laptop where 80/443
           # are free this is identical to the base `start` create.
@@ -755,7 +755,7 @@ tasks:
             echo "      then delete the receipts pod so it re-inits its Vault signer."
           fi
 
-      - description: "Verify: full workload set present + Ready, serverlb clean, a11oy.net reachable"
+      - description: "Verify: full workload set present + Ready, serverlb clean, a-11-oy.com reachable"
         cmd: |
           echo "Namespaces present AFTER recreate:"
           kubectl get ns -o name 2>/dev/null | sed 's#namespace/#  - #'
@@ -772,8 +772,8 @@ tasks:
           echo "serverlb published host ports (expect kube-API + 8443, NO 80/443):"
           docker ps --filter "name=${CLUSTER_NAME}-serverlb" --format '{{.Ports}}' 2>/dev/null || true
           if command -v curl >/dev/null 2>&1; then
-            code=$(curl -s -o /dev/null -w '%{http_code}' https://a11oy.net/ 2>/dev/null || echo "n/a")
-            echo "a11oy.net HTTPS status: ${code}"
+            code=$(curl -s -o /dev/null -w '%{http_code}' https://a-11-oy.com/ 2>/dev/null || echo "n/a")
+            echo "a-11-oy.com HTTPS status: ${code}"
           fi
           echo ""
           echo "recreate-full complete."

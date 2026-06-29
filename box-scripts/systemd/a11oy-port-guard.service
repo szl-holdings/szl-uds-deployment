@@ -1,5 +1,5 @@
 [Unit]
-Description=a11oy.net port guard — recover 80/443 if the k3d serverlb grabs them mid-session
+Description=a-11-oy.com port guard — recover 80/443 if the k3d serverlb grabs them mid-session
 After=docker.service network-online.target nginx.service
 Wants=network-online.target
 Requires=docker.service

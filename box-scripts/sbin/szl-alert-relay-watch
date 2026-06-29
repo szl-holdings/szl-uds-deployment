@@ -5,7 +5,7 @@
 #
 # WHY
 #   szl-alert-relay is now the single path that turns CI receipt-failure alerts
-#   (the szl-holdings/a11oy SLACK_WEBHOOK_URL -> https://a11oy.net/relay/ntfy/...
+#   (the szl-holdings/a11oy SLACK_WEBHOOK_URL -> https://a-11-oy.com/relay/ntfy/...
 #   webhook) into clean ntfy pages. If the relay service or its nginx /relay/
 #   location dies, the workflow's POST fails and the alert is silently
 #   undelivered — a "nothing watches the watcher" gap. The DNS-drift and
@@ -13,7 +13,7 @@
 #   gap for the alert relay so an outage of the relay itself still pages.
 #
 # WHAT IT CHECKS
-#   1. HTTP: GET https://a11oy.net/relay/health must return 200 (proves both
+#   1. HTTP: GET https://a-11-oy.com/relay/health must return 200 (proves both
 #      nginx's /relay/ location AND the loopback relay service are serving).
 #   2. UNIT: the szl-alert-relay.service systemd unit must be `active` (catches
 #      a crash-looped / stopped service even if nginx would still 502 cleanly).
@@ -45,7 +45,7 @@
 set -uo pipefail
 
 # ---- config (overridable via env for testing) -------------------------------
-HEALTH_URL="${HEALTH_URL:-https://a11oy.net/relay/health}"
+HEALTH_URL="${HEALTH_URL:-https://a-11-oy.com/relay/health}"
 RELAY_UNIT="${RELAY_UNIT:-szl-alert-relay.service}"
 CURL_BIN="${CURL_BIN:-curl}"
 SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
@@ -130,7 +130,7 @@ if [ "${#problems[@]}" -eq 0 ] || [ -z "${problems[0]:-}" ]; then
   if [ -n "$prev_sig" ]; then
     rec="szl-alert-relay healthy again (/relay/health=200, ${RELAY_UNIT} active) — receipt-failure pages can be delivered"
     log "RECOVERED $rec"
-    push "a11oy.net alert-relay RECOVERED: $rec"
+    push "a-11-oy.com alert-relay RECOVERED: $rec"
     rm -f "$SIG_FILE"
   fi
 else
@@ -139,7 +139,7 @@ else
   if [ "$cur_sig" = "$prev_sig" ]; then
     log "(persisting) $problem_text"
   else
-    emit_alert "a11oy.net ALERT-RELAY DOWN: ${problem_text}. CI receipt-failure pages are NOT being delivered — check: systemctl status ${RELAY_UNIT}; nginx -t; curl -sS -o /dev/null -w '%{http_code}' ${HEALTH_URL}."
+    emit_alert "a-11-oy.com ALERT-RELAY DOWN: ${problem_text}. CI receipt-failure pages are NOT being delivered — check: systemctl status ${RELAY_UNIT}; nginx -t; curl -sS -o /dev/null -w '%{http_code}' ${HEALTH_URL}."
     printf '%s' "$cur_sig" >"$SIG_FILE"
   fi
 fi

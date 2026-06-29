@@ -4,7 +4,7 @@
 *"Sovereign signal. Signed receipt. No node left dark."*
 
 **Doctrine v11 LOCKED · 749/14/163 @ kernel `c7c0ba17` · Λ = Conjecture 1 · SLSA L1 honest · 0 runtime CDN**
-Live: **a11oy.net/tawantin** (≡ `a11oy.net/fabric`) · **killinchu.a11oy.net/elite** | Verified 2026-06-15
+Live: **a-11-oy.com/tawantin** (≡ `a-11-oy.com/fabric`) · **killinchu.a-11-oy.com/elite** | Verified 2026-06-15
 
 > **The name.** The unified fabric is **TAWANTIN** — Quechua *tawantin*, **"the four united parts"** (the four regions united into one whole, Tawantinsuyu). TAWANTIN unites the sovereign nodes — relayed by **Chaski** (the messenger node/organ) and recorded by **Khipu** (the signed-receipt ledger) — into one governed system-of-systems.
 
@@ -22,11 +22,11 @@ Defense's winning fabric stories lead with the architecture, not the hardware, a
 
 **1 · TAWANTIN — Governed Distributed Compute Fabric** *(LIVE)*
 **TAWANTIN** is a live sovereign GPU mesh — laptop RTX 5050, OMEN RTX 4060 Ti, the **chaski** (messenger) tailnet node, plus Groq / NVIDIA-NIM / HF cloud failover — united under **one governed OpenAI-compatible router** with honest provenance per answer. Reachability is a **real TCP probe** every sweep (`7 total · 6 reachable · 2 sovereign GPU` at verify; the down node shows its honest reason). **No fused / combined VRAM — nodes scale horizontally; memory does not merge across the network.**
-→ `a11oy.net/tawantin` (≡ `a11oy.net/fabric`) · `GET /api/a11oy/v1/compute-pool-hardened`
+→ `a-11-oy.com/tawantin` (≡ `a-11-oy.com/fabric`) · `GET /api/a11oy/v1/compute-pool-hardened`
 
 **2 · Energy-vertical harness** *(MEASURED)*
 Joules **MEASURED** per successful goal via an on-box exporter on the sovereign node (~824,658 J across ~23,369 jobs at session start, climbing); nodes without a meter read **SAMPLE**, never imputed. Signed receipts fold into the **Khipu** ledger; the chain is **tamper-EVIDENT, not tamper-proof**, and its rolled-up energy estimate is honestly labeled SAMPLE/ESTIMATE until a hardware power meter is wired. *"Every watt and every decision, measured and cryptographically receipted across a distributed mesh."*
-→ `a11oy.net/energy` · `POST /api/a11oy/khipu/verify` (verify against published cosign key)
+→ `a-11-oy.com/energy` · `POST /api/a11oy/khipu/verify` (verify against published cosign key)
 
 **3 · A frontier result** *(PROVEN core + honest conjecture)*
 **Exactly 8** Lean-4 formulas are sorry-free, kernel-only, locked at `c7c0ba17`: **{F1, F4, F7, F11, F12, F18, F19, F22}** (deterministic replay, Khipu DAG acyclicity, Chaski FIFO, reciprocity conservation, Reed–Solomon parity, Bekenstein-additive budget, monotone emit). The locked count is *itself* a zero-axiom theorem, so it cannot silently grow. **Λ-aggregator uniqueness is Conjecture 1, NOT a closed theorem** — what *is* proven is the conditional **Theorem U** (axiom-free) plus a machine-checked counterexample (`maxAgg`) showing the unconditional claim is false as stated, with a **live open bounty** for the unconditional case.
@@ -44,12 +44,12 @@ The same governance primitives the terrestrial mesh proves on real metal — hon
 
 | Claim | Label | Verify it live |
 |---|---|---|
-| Sovereign mesh, real reachability, no fused VRAM | **LIVE** | `curl -s https://a11oy.net/api/a11oy/v1/compute-pool-hardened` |
-| Joules per goal | **MEASURED** (exporter) / **SAMPLE** (no meter) | `curl -s https://a11oy.net/api/a11oy/v1/energy/operator/status` |
-| Energy provenance chain | **tamper-EVIDENT**, SAMPLE estimate | `curl -s https://a11oy.net/api/a11oy/v1/energy/provenance` |
-| Signed Khipu verify (emits its own receipt) | **LIVE** | `curl -s -X POST https://a11oy.net/api/a11oy/khipu/verify -H 'content-type: application/json' -d '{}'` |
-| Doctrine lock 749/14/163, locked=8, Λ=Conjecture 1 | **LIVE** | `curl -s https://a11oy.net/api/a11oy/v1/honest` |
-| Counter-UAS, DSSE per interdiction, effectors SIMULATED human-on-loop | **LIVE app** | open `https://killinchu.a11oy.net/elite` → "Receipt Ledger & Verify" |
+| Sovereign mesh, real reachability, no fused VRAM | **LIVE** | `curl -s https://a-11-oy.com/api/a11oy/v1/compute-pool-hardened` |
+| Joules per goal | **MEASURED** (exporter) / **SAMPLE** (no meter) | `curl -s https://a-11-oy.com/api/a11oy/v1/energy/operator/status` |
+| Energy provenance chain | **tamper-EVIDENT**, SAMPLE estimate | `curl -s https://a-11-oy.com/api/a11oy/v1/energy/provenance` |
+| Signed Khipu verify (emits its own receipt) | **LIVE** | `curl -s -X POST https://a-11-oy.com/api/a11oy/khipu/verify -H 'content-type: application/json' -d '{}'` |
+| Doctrine lock 749/14/163, locked=8, Λ=Conjecture 1 | **LIVE** | `curl -s https://a-11-oy.com/api/a11oy/v1/honest` |
+| Counter-UAS, DSSE per interdiction, effectors SIMULATED human-on-loop | **LIVE app** | open `https://killinchu.a-11-oy.com/elite` → "Receipt Ledger & Verify" |
 | 8 formulas formally proven; Λ conditional | **PROVEN / CONJECTURE** | `lutar-lean` repo + [DOI 10.5281/zenodo.20434308](https://doi.org/10.5281/zenodo.20434308) |
 | SLSA posture | **L1 honest · L2 attested · L3 roadmap** | `gh attestation verify` / `cosign verify-attestation` (public cosign.pub) |
 

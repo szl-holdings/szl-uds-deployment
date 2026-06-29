@@ -9,7 +9,7 @@ server:
 log:
   level: info
 totp:
-  issuer: a11oy.net
+  issuer: a-11-oy.com
 authentication_backend:
   password_reset:
     disable: true
@@ -20,14 +20,14 @@ authentication_backend:
 access_control:
   default_policy: deny
   rules:
-    - domain: 'a11oy.net'
+    - domain: 'a-11-oy.com'
       resources: ['^/uds(/.*)?$']
       policy: one_factor
 session:
   cookies:
     - name: authelia_session
-      domain: 'a11oy.net'
-      authelia_url: 'https://a11oy.net/authelia'
+      domain: 'a-11-oy.com'
+      authelia_url: 'https://a-11-oy.com/authelia'
       expiration: '12 hours'
       inactivity: '1 hour'
 regulation:

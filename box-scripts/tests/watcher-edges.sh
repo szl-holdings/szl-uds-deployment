@@ -119,7 +119,7 @@ echo "== driving 9 watcher OK->ALERT edges via a capture stub (no real channel) 
 (
   s="$(mkstate dns)"
   export PATH="$ORIG_PATH"
-  export EXPECT_IP="10.255.255.254" HOSTS="a11oy.net" RESOLVER="8.8.8.8" DIG_TIMEOUT=3
+  export EXPECT_IP="10.255.255.254" HOSTS="a-11-oy.com" RESOLVER="8.8.8.8" DIG_TIMEOUT=3
   export STATE_DIR="$s" LOG_DIR="$s/log" LOG="$s/log/x.log" STATUS="$s/status.json" SIG_FILE="$s/problem.sig"
   export CAPTURE_FILE="$WORK/cap.dns" NOTIFY_CMD="$CAPTURE_STUB" ALERT_PREFIX="$PREFIX"
   assert_edge "dns-drift-check" "$SBIN/dns-drift-check"
