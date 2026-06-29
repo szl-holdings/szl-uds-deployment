@@ -38,7 +38,7 @@
 set -uo pipefail
 
 # ---- config (overridable via env for testing) -------------------------------
-HISTORY_URL="${HISTORY_URL:-https://a11oy.net/api/a11oy/v1/eval-arena/history?limit=1}"
+HISTORY_URL="${HISTORY_URL:-https://a-11-oy.com/api/a11oy/v1/eval-arena/history?limit=1}"
 HISTORY_FILE="${HISTORY_FILE:-}"   # test override: read the history JSON from a file instead of curl
 A11OY_SCRIPTS_DIR="${A11OY_SCRIPTS_DIR:-/opt/szl/a11oy/scripts}"  # where the canonical validator lives
 VALIDATE_CMD="${VALIDATE_CMD:-/usr/local/sbin/eval-arena-trend-validate}"  # reads history JSON on stdin

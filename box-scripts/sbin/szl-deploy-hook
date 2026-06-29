@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-szl-deploy-hook — token-gated remote-deploy webhook for a11oy.net (box 167.233.50.75).
+szl-deploy-hook — token-gated remote-deploy webhook for a-11-oy.com (box 167.233.50.75).
 
-WHY: a11oy.net is a self-hosted Docker container on this box; the only way to
+WHY: a-11-oy.com is a self-hosted Docker container on this box; the only way to
 publish a new build is to run `sudo a11oy-rebuild` ON the box (it pulls
 szl-holdings/a11oy main, rebuilds the image, recreates the container, and
 self-verifies byte-for-byte vs origin/main). There is no remote trigger, so a
@@ -47,7 +47,7 @@ DESIGN / SAFETY (no bandaids):
   * Single-flight via an O_CREAT|O_EXCL lock file holding the live run_id, so a
     duplicate trigger can never start a second concurrent rebuild.
   * The git_sha reported in status is read from the live container AFTER the run
-    (curl https://a11oy.net/api/a11oy/v1/version), so the caller can confirm the
+    (curl https://a-11-oy.com/api/a11oy/v1/version), so the caller can confirm the
     intended HEAD actually went live — not merely that the script exited 0.
   * Run metadata + the lock live under STATE_DIR (default
     /var/lib/szl-deploy-hook), the build log under the documented
@@ -57,7 +57,7 @@ CONFIG (env file, default /etc/szl-deploy-hook.env; real env wins):
   DEPLOY_TOKEN=<unguessable>     # REQUIRED; must match the path segment
   DEPLOY_PORT=9110               # listen port on 127.0.0.1 (default 9110)
   DEPLOY_CMD=/usr/local/sbin/a11oy-rebuild   # fixed binary; no shell, fixed argv
-  VERSION_URL=https://a11oy.net/api/a11oy/v1/version  # for post-run git_sha
+  VERSION_URL=https://a-11-oy.com/api/a11oy/v1/version  # for post-run git_sha
   STATE_DIR=/var/lib/szl-deploy-hook
   LOG_DIR=/root/a11oy-build-backups
 """
@@ -102,7 +102,7 @@ DEPLOY_TOKEN = os.environ.get("DEPLOY_TOKEN", "").strip()
 DEPLOY_PORT = int(os.environ.get("DEPLOY_PORT", "9110"))
 DEPLOY_CMD = os.environ.get("DEPLOY_CMD", "/usr/local/sbin/a11oy-rebuild")
 VERSION_URL = os.environ.get(
-    "VERSION_URL", "https://a11oy.net/api/a11oy/v1/version")
+    "VERSION_URL", "https://a-11-oy.com/api/a11oy/v1/version")
 STATE_DIR = os.environ.get("STATE_DIR", "/var/lib/szl-deploy-hook")
 LOG_DIR = os.environ.get("LOG_DIR", "/root/a11oy-build-backups")
 

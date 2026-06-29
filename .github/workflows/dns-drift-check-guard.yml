@@ -1,11 +1,11 @@
 # Copyright 2026 SZL Holdings
 # SPDX-License-Identifier: Apache-2.0
 #
-# dns-drift-check-guard.yml — Guard the `dns-drift-check` box alarm (the a11oy.net
+# dns-drift-check-guard.yml — Guard the `dns-drift-check` box alarm (the a-11-oy.com
 # public-DNS drift alarm) from silently regressing.
 #
 # dns-drift-check (box-scripts/sbin/dns-drift-check) runs every ~15 min and pages
-# the team if a11oy.net's public DNS drifts off the box — a missing/wrong A record
+# the team if a-11-oy.com's public DNS drifts off the box — a missing/wrong A record
 # on the apex/www/killinchu/elite hosts, a lost SPF "-all", or a lost DMARC
 # "p=reject". EasyWP silently grabbed the apex once; this alarm catches that class
 # of takeover before users notice. Its value rests on a few fragile invariants
@@ -18,7 +18,7 @@
 #   * it always writes a fresh status file + heartbeat STATE log (so the
 #     monitor-liveness meta-monitor can watch it) and the notifier is FAIL-SOFT;
 #   * it stays WIRED into install.sh and documented in README.md.
-# A sibling refactor could quietly drop any of these, re-opening the "a11oy.net DNS
+# A sibling refactor could quietly drop any of these, re-opening the "a-11-oy.com DNS
 # got hijacked and nobody is paged" hole this alarm closed.
 #
 # The check logic lives in scripts/dns-drift-check-guard-checks.sh (pure
@@ -59,7 +59,7 @@ jobs:
         run: bash scripts/dns-drift-check-guard-checks.test.sh
 
   guard:
-    name: Assert the a11oy.net DNS-drift alarm is intact
+    name: Assert the a-11-oy.com DNS-drift alarm is intact
     runs-on: ubuntu-latest
     needs: self-test
     steps:
@@ -87,5 +87,5 @@ jobs:
       - name: Check 7 — documented in README.md
         run: bash scripts/dns-drift-check-guard-checks.sh chk7 .
 
-      - name: a11oy.net DNS-drift alarm is intact
-        run: echo "The dns-drift-check a11oy.net DNS-drift alarm is intact."
+      - name: a-11-oy.com DNS-drift alarm is intact
+        run: echo "The dns-drift-check a-11-oy.com DNS-drift alarm is intact."

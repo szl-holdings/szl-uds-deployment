@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# a11oy-port-guard — periodic safety net for the public a11oy.net site.
+# a11oy-port-guard — periodic safety net for the public a-11-oy.com site.
 #
 # The public site (nginx) and the UDS k3d demo cluster coexist on this box:
 # nginx owns host 80/443 and the k3d serverlb is kept off them. But a raw

@@ -1,5 +1,5 @@
 [Unit]
-Description=a11oy.net uptime probe + port-guard intervention watcher
+Description=a-11-oy.com uptime probe + port-guard intervention watcher
 After=network-online.target nginx.service
 Wants=network-online.target
 

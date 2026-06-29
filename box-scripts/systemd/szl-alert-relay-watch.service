@@ -13,7 +13,7 @@ Type=oneshot
 # this box has no Gmail/nodemailer transport and outbound TCP 465 is firewalled.
 EnvironmentFile=-/etc/a11oy-uptime.env
 # Distinct ntfy title so "the alert relay went down" pages read differently.
-Environment=NOTIFY_TITLE=a11oy.net alert-relay watch
+Environment=NOTIFY_TITLE=a-11-oy.com alert-relay watch
 # Always invoke the shared notifier on every edge / RECOVERED. It is fail-soft:
 # with no channel configured it just exits and the alert is still logged.
 Environment=NOTIFY_CMD=/usr/local/sbin/a11oy-uptime-notify

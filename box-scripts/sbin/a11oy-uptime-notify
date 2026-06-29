@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # a11oy-uptime-notify — push a REAL notification (not just a log) when the
-# a11oy.net uptime monitor fires an edge alert / RECOVERED on Stephen's box
+# a-11-oy.com uptime monitor fires an edge alert / RECOVERED on Stephen's box
 # (167.233.50.75).
 #
 # CONTRACT (matches a11oy-uptime-check's NOTIFY_CMD hook):
@@ -67,7 +67,7 @@ fi
 MSG="$(cat 2>/dev/null)"
 [ -z "$MSG" ] && MSG="${1:-}"
 MSG="$(printf '%s' "$MSG" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-[ -z "$MSG" ] && MSG="a11oy.net uptime alert"
+[ -z "$MSG" ] && MSG="a-11-oy.com uptime alert"
 
 CURL_TIMEOUT="${NOTIFY_CURL_TIMEOUT:-15}"
 sent=0
@@ -88,7 +88,7 @@ json_escape() {
 if [ -n "${NTFY_URL:-}" ]; then
   configured=1
   set -- -fsS -m "$CURL_TIMEOUT" \
-    -H "Title: ${NOTIFY_TITLE:-a11oy.net uptime}" \
+    -H "Title: ${NOTIFY_TITLE:-a-11-oy.com uptime}" \
     -H "Priority: ${NTFY_PRIORITY:-high}" \
     -H "Tags: warning,satellite"
   [ -n "${NTFY_TOKEN:-}" ] && set -- "$@" -H "Authorization: Bearer ${NTFY_TOKEN}"

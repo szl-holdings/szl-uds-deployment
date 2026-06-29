@@ -1,5 +1,5 @@
 [Unit]
-Description=Periodically check a11oy.net DNS for drift (A records + SPF + DMARC)
+Description=Periodically check a-11-oy.com DNS for drift (A records + SPF + DMARC)
 
 [Timer]
 # First check shortly after boot, then every 15 minutes thereafter.

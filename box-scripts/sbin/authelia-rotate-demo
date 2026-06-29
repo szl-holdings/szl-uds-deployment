@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # authelia-rotate-demo — rotate the PUBLIC read-only `demo` login password for
-# the a11oy.net Authelia SSO (box 167.233.50.75).
+# the a-11-oy.com Authelia SSO (box 167.233.50.75).
 #
 # WHY: the `demo` / group:guests account is meant to be shared publicly (e.g. in
 # a LinkedIn post) so anyone can try the live read-only UDS dashboard. A publicly
@@ -32,7 +32,7 @@ VERIFY_URL="${VERIFY_URL:-http://127.0.0.1:9091/authelia/api/firstfactor}"
 # Authelia matches the session-cookie domain against the request URL, so the
 # localhost verify call must present the public host via forwarded headers
 # (otherwise 1FA fails with "no configured session cookie domain matches ...").
-VERIFY_DOMAIN="${VERIFY_DOMAIN:-a11oy.net}"
+VERIFY_DOMAIN="${VERIFY_DOMAIN:-a-11-oy.com}"
 DEMO_USER="demo"
 
 log() { echo "[authelia-rotate-demo] $*"; }
@@ -132,7 +132,7 @@ json_str() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sy
 auth_check() {
   # echoes the firstfactor HTTP status for username demo / given password.
   # Forwarded headers present the public host so Authelia's session-cookie
-  # domain (a11oy.net) matches the request URL.
+  # domain (a-11-oy.com) matches the request URL.
   curl -s -o /dev/null -w '%{http_code}' -X POST "$VERIFY_URL" \
     -H "Host: $VERIFY_DOMAIN" -H "X-Forwarded-Proto: https" -H "X-Forwarded-Host: $VERIFY_DOMAIN" \
     -H 'Content-Type: application/json' \
@@ -169,6 +169,6 @@ echo "=================================================================="
 echo "  a11oy demo (read-only) login rotated"
 echo "    username: $DEMO_USER"
 echo "    password: $NEWPW"
-echo "    login at: https://a11oy.net/uds/   (or /status/)"
+echo "    login at: https://a-11-oy.com/uds/   (or /status/)"
 echo "  Saved to $PW_FILE  —  retrieve later with: authelia-rotate-demo --print"
 echo "=================================================================="

@@ -1,5 +1,5 @@
 [Unit]
-Description=szl-deploy-hook — token-gated remote a11oy.net rebuild webhook (box 167.233.50.75)
+Description=szl-deploy-hook — token-gated remote a-11-oy.com rebuild webhook (box 167.233.50.75)
 Documentation=https://github.com/szl-holdings/szl-uds-deployment/blob/main/box-scripts/szl-deploy-hook.README.md
 After=network-online.target docker.service
 Wants=network-online.target

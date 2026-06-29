@@ -2,7 +2,7 @@
 #
 # install.sh — reinstall the box 167.233.50.75 host-level helper scripts and
 # systemd units that are NOT otherwise under version control. Covers:
-#   1. a11oy.net <-> UDS cluster port-coexistence (Task #179)
+#   1. a-11-oy.com <-> UDS cluster port-coexistence (Task #179)
 #   2. the 2-vCPU headroom self-heal guards for the uds-szl-demo cluster:
 #        szl-core-rightsize   — pin UDS-core HA components to single-replica
 #        istiod-fit-strategy  — keep istiod rollout/HPA fitting on 2 vCPU
@@ -29,10 +29,10 @@
 #                               sha256-verifies it against its manifest, and unpacks it
 #                               into a well-formed shard; pages if the backup is not
 #                               restorable (unconfigured = safe no-op)
-#   3. the a11oy.net public-site alerting watchers:
-#        a11oy-uptime-check   — probe a11oy.net uptime, alert on the outage edge
+#   3. the a-11-oy.com public-site alerting watchers:
+#        a11oy-uptime-check   — probe a-11-oy.com uptime, alert on the outage edge
 #        a11oy-uptime-notify  — shared push notifier (ntfy/Telegram/webhook)
-#        dns-drift-check      — alert if a11oy.net DNS stops pointing at the box
+#        dns-drift-check      — alert if a-11-oy.com DNS stops pointing at the box
 #        eval-arena-trend-watch — alert if the newest LIVE eval-arena recorded run
 #                               degrades (loses its passing example or its policy-
 #                               rejected negative control) so the console trend strip
@@ -177,7 +177,7 @@ install -m 0644 "$here/systemd/bundle-digest-recut.timer"   /etc/systemd/system/
 # deploy/hetzner/a11oy-uptime/install.sh (A11OY_UPTIME_ENV_SRC=... or NTFY_URL=...).
 if [ ! -e /etc/a11oy-uptime.env ]; then
   cat > /etc/a11oy-uptime.env <<'EOF'
-# a11oy.net alert push channel (PRIVATE — keep out of git).
+# a-11-oy.com alert push channel (PRIVATE — keep out of git).
 # Restore the real channel via deploy/hetzner/a11oy-uptime/install.sh, e.g.
 #   sudo A11OY_UPTIME_ENV_SRC=/root/a11oy-uptime.env.secret bash install.sh
 # or set one of the discrete channels below. Until then alerts are log-only.
@@ -200,7 +200,7 @@ if [ ! -e /etc/szl-alert-relay.env ]; then
   gen_tok="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' 2>/dev/null || true)"
   cat > /etc/szl-alert-relay.env <<EOF
 # szl-alert-relay config (PRIVATE — keep out of git).
-# The public webhook URL is https://a11oy.net/relay/ntfy/<RELAY_TOKEN> — point
+# The public webhook URL is https://a-11-oy.com/relay/ntfy/<RELAY_TOKEN> — point
 # the szl-holdings/a11oy SLACK_WEBHOOK_URL secret at it. See
 # box-scripts/szl-alert-relay.README.md.
 RELAY_TOKEN=${gen_tok}
@@ -216,20 +216,20 @@ fi
 # szl-deploy-hook config (DEPLOY_TOKEN). PRIVATE — not in git. Seed a stub with a
 # freshly generated token if absent (never clobber a hand-filled one). The hook
 # refuses requests with 503 until DEPLOY_TOKEN is non-empty. The token gates the
-# public webhook URL https://a11oy.net/deploy/rebuild/<DEPLOY_TOKEN> that triggers
+# public webhook URL https://a-11-oy.com/deploy/rebuild/<DEPLOY_TOKEN> that triggers
 # `a11oy-rebuild`. See box-scripts/szl-deploy-hook.README.md.
 if [ ! -e /etc/szl-deploy-hook.env ]; then
   gen_dtok="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' 2>/dev/null || true)"
   cat > /etc/szl-deploy-hook.env <<EOF
 # szl-deploy-hook config (PRIVATE — keep out of git).
-# Public webhook: https://a11oy.net/deploy/rebuild/<DEPLOY_TOKEN> (POST) triggers
-# a11oy-rebuild; https://a11oy.net/deploy/status/<DEPLOY_TOKEN> (GET) polls it.
-# Register this token in the HTTPS-credential vault for host a11oy.net so the
+# Public webhook: https://a-11-oy.com/deploy/rebuild/<DEPLOY_TOKEN> (POST) triggers
+# a11oy-rebuild; https://a-11-oy.com/deploy/status/<DEPLOY_TOKEN> (GET) polls it.
+# Register this token in the HTTPS-credential vault for host a-11-oy.com so the
 # agent can call it without a plaintext key. See szl-deploy-hook.README.md.
 DEPLOY_TOKEN=${gen_dtok}
 DEPLOY_PORT=9110
 DEPLOY_CMD=/usr/local/sbin/a11oy-rebuild
-VERSION_URL=https://a11oy.net/api/a11oy/v1/version
+VERSION_URL=https://a-11-oy.com/api/a11oy/v1/version
 STATE_DIR=/var/lib/szl-deploy-hook
 LOG_DIR=/root/a11oy-build-backups
 EOF
@@ -326,7 +326,7 @@ EOF
   echo "[install] seeded commented-out /etc/szl-receipts-cold-offsite.env (offsite mirror log-only until a destination is set)"
 fi
 
-# Install the nginx location snippet and idempotently wire it into the a11oy.net
+# Install the nginx location snippet and idempotently wire it into the a-11-oy.com
 # vhost just before `location / {`. nginx loads EVERY file in sites-enabled/, so
 # relocate any stray backup out of the include glob before testing/reloading,
 # else nginx -t fails on a duplicate default_server and it looks like this broke

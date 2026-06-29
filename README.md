@@ -7,7 +7,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square)](LICENSE) [![Build](https://github.com/szl-holdings/szl-uds-deployment/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/szl-holdings/szl-uds-deployment/actions/workflows/release.yml) [![Doctrine v11](https://img.shields.io/badge/Doctrine-v11_LOCKED-3b82f6?style=flat-square)](https://github.com/szl-holdings/.github/tree/main/doctrine) [![Λ Conjecture 1](https://img.shields.io/badge/Λ-Conjecture_1_(conditional_Theorem_U)-B79BD6?style=flat-square)](https://github.com/szl-holdings/lutar-lean/blob/main/BOUNTY.md) [![SLSA](https://img.shields.io/badge/SLSA-L1_·_L2--attested(images)_·_L3_roadmap_·_bundle--L2_NOT_earned-c9b787?style=flat-square)](https://slsa.dev/spec/v1.0/levels)
 
-[Docs](https://szl-holdings.github.io/docs-site) · [Quickstart](https://szl-holdings.github.io/docs-site/quickstart) · [SZL Holdings](https://a11oy.net)
+[Docs](https://szl-holdings.github.io/docs-site) · [Quickstart](https://szl-holdings.github.io/docs-site/quickstart) · [SZL Holdings](https://a-11-oy.com)
 
 **Deployment story:** [szl-fleet-overlay](https://github.com/szl-holdings/szl-fleet-overlay) (UDS Operator packages) · [uds-bundles](https://github.com/szl-holdings/uds-bundles) (Zarf bundle manifests) · [szl-mesh](https://github.com/szl-holdings/szl-mesh) (CRDT coordination) · [uds-mesh](https://github.com/szl-holdings/uds-mesh) (observability spine). This repo is the **live reference deployment**.
 
@@ -216,7 +216,7 @@ See [LICENSE](LICENSE) for full text.
 ## Contact
 
 Stephen Paul Lutar JR — stephen@szlholdings.com  
-[SZL Holdings](https://a11oy.net)
+[SZL Holdings](https://a-11-oy.com)
 
 ## Optional Components
 
@@ -345,4 +345,4 @@ rather than an Ed25519 signature.
 
 Cite this work via [`CITATION.cff`](CITATION.cff). Math foundations: [szl-papers](https://github.com/szl-holdings/szl-papers) · [lutar-lean](https://github.com/szl-holdings/lutar-lean) (kernel `c7c0ba17`).
 
-<sub>Λ Conjecture 1 (not a theorem) · locked kernel 749/14/163 @ `c7c0ba17` (8 proven: {F1,F4,F7,F11,F12,F18,F19,F22}) · experimental main 1323 decls / 23 axioms (22 unique) CI-green (reported separately, never folded into the locked eight) · v11 LOCKED · SLSA L1 · L2-attested (images) · L3 roadmap; bundle-level L2 NOT earned · Section 889 = 5 vendors · [SZL Holdings](https://a11oy.net) · Apache-2.0 code · CC-BY-4.0 papers</sub>
+<sub>Λ Conjecture 1 (not a theorem) · locked kernel 749/14/163 @ `c7c0ba17` (8 proven: {F1,F4,F7,F11,F12,F18,F19,F22}) · experimental main 1323 decls / 23 axioms (22 unique) CI-green (reported separately, never folded into the locked eight) · v11 LOCKED · SLSA L1 · L2-attested (images) · L3 roadmap; bundle-level L2 NOT earned · Section 889 = 5 vendors · [SZL Holdings](https://a-11-oy.com) · Apache-2.0 code · CC-BY-4.0 papers</sub>

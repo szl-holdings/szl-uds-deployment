@@ -1,6 +1,6 @@
-# a11oy-rebuild — drift-free rebuilds of a11oy.net
+# a11oy-rebuild — drift-free rebuilds of a-11-oy.com
 
-`a11oy-rebuild` rebuilds the **a11oy.net** Docker image from the **published GitHub
+`a11oy-rebuild` rebuilds the **a-11-oy.com** Docker image from the **published GitHub
 source of truth** (`szl-holdings/a11oy`, branch `main`) and recreates the running
 container. It exists to stop the live image from silently drifting away from what
 is published.
@@ -8,7 +8,7 @@ is published.
 ## The problem it solves
 The box build tree `/opt/szl/a11oy` is routinely **behind** GitHub `main` (a stale
 remote-tracking ref plus hand-patched working-tree files). Historically the Docker
-image was built straight from that drifting tree, so the running a11oy.net image
+image was built straight from that drifting tree, so the running a-11-oy.com image
 could diverge from the published source — a future rebuild could re-introduce
 content already removed on `main`, or drop content already added there.
 
@@ -69,7 +69,7 @@ nohup a11oy-rebuild > /root/a11oy-build-backups/rebuild-$(date +%Y%m%d-%H%M%S).l
   Git-LFS, so `git reset --hard` materializes them correctly with no LFS smudge.
 
 ## killinchu twin
-`killinchu-rebuild` is the killinchu.a11oy.net equivalent (same clean-checkout +
+`killinchu-rebuild` is the killinchu.a-11-oy.com equivalent (same clean-checkout +
 overlay + verify pattern, container `killinchu` on `127.0.0.1:7862:7860`). It
 md5-guards a broader **GUARD_FILES** set — including the same
 `szl_evidence_research.py` liveness module — against `origin/main` and probes the

@@ -80,11 +80,11 @@ chk2() {
   local F="$root/$WATCH_REL"
   test -f "$F" || { err "$F" "missing -- required for the a11oy-contracting-tool-watch guard"; return 1; }
 
-  grep -Fq 'a11oy.net/api/a11oy/v1/contracting' "$F" || {
+  grep -Fq 'a-11-oy.com/api/a11oy/v1/contracting' "$F" || {
     err "$F" "REGRESSION -- no longer probes the a11oy contracting endpoint."
     return 1
   }
-  grep -Fq 'killinchu.a11oy.net/api/killinchu/v1/contracting' "$F" || {
+  grep -Fq 'killinchu.a-11-oy.com/api/killinchu/v1/contracting' "$F" || {
     err "$F" "REGRESSION -- no longer probes the killinchu contracting endpoint."
     return 1
   }

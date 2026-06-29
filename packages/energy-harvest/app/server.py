@@ -8,7 +8,7 @@ signal NEVER flips sovereign:true; joules stay SAMPLE until an on-box NVML meter
 Not one of the locked-8. Lambda = Conjecture 1.
 
 Serves BOTH the self-contained tab page (GET /) and the JSON API so a single box
-service + one nginx route powers the a11oy.net tab AND any HF/console caller.
+service + one nginx route powers the a-11-oy.com tab AND any HF/console caller.
 
 Endpoints:
   GET /            self-contained Energy Harvest tab (HTML)
@@ -29,7 +29,7 @@ import engine
 
 app = FastAPI(title="SZL Energy Harvest", version="1.0.0")
 
-# Public read-only grid data — allow both a11oy.net and the HF Space console to read.
+# Public read-only grid data — allow both a-11-oy.com and the HF Space console to read.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

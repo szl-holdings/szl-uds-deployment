@@ -1,9 +1,9 @@
-# szl-deploy-hook — token-gated remote-deploy webhook for a11oy.net
+# szl-deploy-hook — token-gated remote-deploy webhook for a-11-oy.com
 
-`szl-deploy-hook` lets an authorised caller publish a new a11oy.net build over
+`szl-deploy-hook` lets an authorised caller publish a new a-11-oy.com build over
 the existing public HTTPS front door — by triggering the SAME on-box
 `a11oy-rebuild` that a human would run at an SSH prompt — and then poll its
-status. It closes the "publishing a11oy.net always needs a human at the box"
+status. It closes the "publishing a-11-oy.com always needs a human at the box"
 gap **without putting a plaintext key on the wire and without widening what can
 run on the box.**
 
@@ -15,7 +15,7 @@ notifier, and — because a rebuild is multi-minute — a trigger returns `202`
 immediately with a `run_id` and the caller polls a status endpoint.
 
 ## The problem it solves
-`a11oy.net` is a self-hosted Docker container on box `167.233.50.75`. The only
+`a-11-oy.com` is a self-hosted Docker container on box `167.233.50.75`. The only
 way to publish a new build is to run `sudo a11oy-rebuild` ON the box (pull
 `szl-holdings/a11oy` `main`, rebuild the image, recreate the container,
 self-verify byte-for-byte vs `origin/main`). There was **no remote trigger and
@@ -60,13 +60,13 @@ Status payload:
 }
 ```
 `git_sha` is read from the live container (`GET
-https://a11oy.net/api/a11oy/v1/version`) **after** the run, so the caller can
+https://a-11-oy.com/api/a11oy/v1/version`) **after** the run, so the caller can
 confirm the intended HEAD actually went live — not merely that the script
 exited 0. **"the half-state — claiming more than is real — is the only
 unacceptable outcome."**
 
-Publicly reachable at **`https://a11oy.net/deploy/rebuild/<DEPLOY_TOKEN>`** and
-**`https://a11oy.net/deploy/status/<DEPLOY_TOKEN>`** via the nginx snippet below.
+Publicly reachable at **`https://a-11-oy.com/deploy/rebuild/<DEPLOY_TOKEN>`** and
+**`https://a-11-oy.com/deploy/status/<DEPLOY_TOKEN>`** via the nginx snippet below.
 
 ## Why it is safe to expose
 - **Token gate.** The token is the only authentication; it lives only in
@@ -97,7 +97,7 @@ hardening that does not break docker: `PrivateTmp`, `ProtectKernelTunables`,
 DEPLOY_TOKEN=<unguessable>     # REQUIRED; must match the URL path segment
 DEPLOY_PORT=9110               # loopback listen port (default 9110)
 DEPLOY_CMD=/usr/local/sbin/a11oy-rebuild
-VERSION_URL=https://a11oy.net/api/a11oy/v1/version
+VERSION_URL=https://a-11-oy.com/api/a11oy/v1/version
 STATE_DIR=/var/lib/szl-deploy-hook
 LOG_DIR=/root/a11oy-build-backups
 ```
@@ -111,7 +111,7 @@ token if absent and never clobbers a hand-filled one.
 `box-scripts/install.sh` (run as root) installs the script + systemd unit,
 seeds `/etc/szl-deploy-hook.env` with a fresh `DEPLOY_TOKEN` if missing, copies
 the nginx snippet to `/etc/nginx/snippets/szl-deploy-hook.conf`, idempotently
-wires `include /etc/nginx/snippets/szl-deploy-hook.conf;` into the `a11oy.net`
+wires `include /etc/nginx/snippets/szl-deploy-hook.conf;` into the `a-11-oy.com`
 443 server block just before `location /`, validates with `nginx -t`, reloads,
 and `enable --now`s `szl-deploy-hook.service`.
 
@@ -123,28 +123,28 @@ and `enable --now`s `szl-deploy-hook.service`.
 ## Usage (over HTTPS, from anywhere with the token)
 ```bash
 # Trigger a full publish (pull main, rebuild, recreate, verify):
-curl -fsS -X POST https://a11oy.net/deploy/rebuild/<DEPLOY_TOKEN>
+curl -fsS -X POST https://a-11-oy.com/deploy/rebuild/<DEPLOY_TOKEN>
 # -> {"status":"started","run_id":"20260623-161500-ab12cd","verify_only":false}
 
 # Poll until done, then confirm the intended HEAD is live:
-curl -fsS https://a11oy.net/deploy/status/<DEPLOY_TOKEN> | jq '{state,git_sha,exit_code}'
+curl -fsS https://a-11-oy.com/deploy/status/<DEPLOY_TOKEN> | jq '{state,git_sha,exit_code}'
 # -> {"state":"ok","git_sha":"7e6bd447…","exit_code":0}
 
 # Read-only drift check (no rebuild):
-curl -fsS -X POST https://a11oy.net/deploy/rebuild/<DEPLOY_TOKEN> \
+curl -fsS -X POST https://a-11-oy.com/deploy/rebuild/<DEPLOY_TOKEN> \
   -H 'Content-Type: application/json' -d '{"verify_only": true}'
 ```
 
 ## How Computer (the agent) calls it without a plaintext key
 Register `DEPLOY_TOKEN` once in the secure HTTPS-credential vault for host
-`a11oy.net` as a **custom header** named `X-Deploy-Token`, then the agent calls
-the clean endpoints with `api_credentials=['custom-cred:a11oy.net']` — the proxy
-injects the `X-Deploy-Token` header on every request to `a11oy.net`, so the
+`a-11-oy.com` as a **custom header** named `X-Deploy-Token`, then the agent calls
+the clean endpoints with `api_credentials=['custom-cred:a-11-oy.com']` — the proxy
+injects the `X-Deploy-Token` header on every request to `a-11-oy.com`, so the
 token never appears in the agent's transcript, the URL, or any log. The proxy
 handles HTTPS only, which is exactly this webhook's transport. Example:
 ```bash
-curl -fsS -X POST https://a11oy.net/deploy/rebuild           # header injected by proxy
-curl -fsS https://a11oy.net/deploy/status | jq '{state,git_sha,exit_code}'
+curl -fsS -X POST https://a-11-oy.com/deploy/rebuild           # header injected by proxy
+curl -fsS https://a-11-oy.com/deploy/status | jq '{state,git_sha,exit_code}'
 ```
 
 ## Drift coverage
@@ -162,7 +162,7 @@ printf '#!/bin/sh\necho "[stub] would rebuild"; sleep 1\n' > /tmp/fake-rebuild
 chmod +x /tmp/fake-rebuild
 DEPLOY_TOKEN=testtoken DEPLOY_PORT=9110 DEPLOY_CMD=/tmp/fake-rebuild \
   STATE_DIR=/tmp/dh-state LOG_DIR=/tmp/dh-state \
-  VERSION_URL=https://a11oy.net/api/a11oy/v1/version \
+  VERSION_URL=https://a-11-oy.com/api/a11oy/v1/version \
   /usr/local/sbin/szl-deploy-hook &
 sleep 1
 curl -s localhost:9110/deploy/health                                  # -> ok

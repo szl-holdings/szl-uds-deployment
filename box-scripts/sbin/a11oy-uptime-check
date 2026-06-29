@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
 # a11oy-uptime-check — external uptime probe + port-guard intervention watcher
-# for the public a11oy.net site on Stephen's box (167.233.50.75).
+# for the public a-11-oy.com site on Stephen's box (167.233.50.75).
 #
 # WHAT IT DOES
-#   1. Probes the public HTTPS vhosts (a11oy.net + killinchu/elite) and records
+#   1. Probes the public HTTPS vhosts (a-11-oy.com + killinchu/elite) and records
 #      an OK/DOWN state for each.
 #   2. Counts how many times /usr/local/sbin/a11oy-port-guard had to INTERVENE
 #      since the previous run (parsed from its systemd journal) so repeated port
@@ -27,7 +27,7 @@
 set -uo pipefail
 
 # ---- config (overridable via env for testing) -------------------------------
-HOSTS="${HOSTS:-a11oy.net killinchu.a11oy.net elite.a11oy.net}"
+HOSTS="${HOSTS:-a-11-oy.com killinchu.a-11-oy.com elite.a-11-oy.com}"
 GUARD_UNIT="${GUARD_UNIT:-a11oy-port-guard.service}"
 STATE_DIR="${STATE_DIR:-/var/lib/a11oy-uptime}"
 LOG_DIR="${LOG_DIR:-/var/log/a11oy-uptime}"
@@ -129,8 +129,8 @@ emit_alert() {
 if [ "${#problems[@]}" -eq 0 ] || [ -z "${problems[0]:-}" ]; then
   # healthy now
   if [ -n "$prev_sig" ]; then
-    recovered_msg="a11oy.net RECOVERED: checks healthy again (all hosts OK, no new port-guard interventions)"
-    log "RECOVERED a11oy.net checks healthy again (all hosts OK, no new port-guard interventions)"
+    recovered_msg="a-11-oy.com RECOVERED: checks healthy again (all hosts OK, no new port-guard interventions)"
+    log "RECOVERED a-11-oy.com checks healthy again (all hosts OK, no new port-guard interventions)"
     push "$recovered_msg"
     rm -f "$SIG_FILE"
   fi
@@ -141,7 +141,7 @@ else
   if [ "$cur_sig" = "$prev_sig" ]; then
     log "(persisting) ${problem_text%; }"
   else
-    emit_alert "a11oy.net monitor: ${problem_text%; }"
+    emit_alert "a-11-oy.com monitor: ${problem_text%; }"
     printf '%s' "$cur_sig" >"$SIG_FILE"
   fi
 fi

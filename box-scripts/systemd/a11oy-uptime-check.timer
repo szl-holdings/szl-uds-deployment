@@ -1,5 +1,5 @@
 [Unit]
-Description=Periodically probe a11oy.net uptime and watch port-guard interventions
+Description=Periodically probe a-11-oy.com uptime and watch port-guard interventions
 
 [Timer]
 # First check shortly after boot, then every 5 minutes thereafter.

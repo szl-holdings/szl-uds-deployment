@@ -82,7 +82,7 @@ expect_fail chk1 "$d" "chk1 fails on a syntax error (bash -n)"
 rm -rf "$d"
 
 # chk2 — drop the a11oy endpoint probe
-d="$(new_fixture)"; sed -i 's|a11oy.net/api/a11oy/v1/contracting|DISABLED/contracting|g' "$d/box-scripts/sbin/a11oy-contracting-tool-watch"
+d="$(new_fixture)"; sed -i 's|a-11-oy.com/api/a11oy/v1/contracting|DISABLED/contracting|g' "$d/box-scripts/sbin/a11oy-contracting-tool-watch"
 expect_fail chk2 "$d" "chk2 fails when a flagship endpoint is no longer probed"
 rm -rf "$d"
 

@@ -5,7 +5,7 @@
 **Last live-verified:** 2026-06-15T23:16Z (every beat curl-checked — see §5)
 **One unacceptable outcome:** the half-state — claiming more than is real. Every number on screen is labeled LIVE / MEASURED / SAMPLE / MODELED / ROADMAP.
 
-**The name.** The unified Governed Distributed Compute Fabric is **TAWANTIN** — Quechua *tawantin*, "the four united parts" (the four regions united into one whole, Tawantinsuyu). TAWANTIN is the fabric that unites the sovereign nodes — relayed by **Chaski** (the messenger node/organ) and recorded by **Khipu** (the signed-receipt ledger) — into one governed system-of-systems. Tagline: ***"Sovereign signal. Signed receipt. No node left dark."*** It is live and branded at `https://a11oy.net/tawantin` (and the equivalent `/fabric` route).
+**The name.** The unified Governed Distributed Compute Fabric is **TAWANTIN** — Quechua *tawantin*, "the four united parts" (the four regions united into one whole, Tawantinsuyu). TAWANTIN is the fabric that unites the sovereign nodes — relayed by **Chaski** (the messenger node/organ) and recorded by **Khipu** (the signed-receipt ledger) — into one governed system-of-systems. Tagline: ***"Sovereign signal. Signed receipt. No node left dark."*** It is live and branded at `https://a-11-oy.com/tawantin` (and the equivalent `/fabric` route).
 
 > This is the **60–90 second live demo** on real URLs. No cluster spin-up, no laptop dependency — it runs from any browser. The k3d/UDS local runbook (`operator/docs/WARHACKER_DEMO_RUNBOOK.md`) remains the air-gap / packaging story; this is the floor "wow."
 
@@ -15,19 +15,19 @@
 
 Open three browser tabs in this order so they are warm:
 
-1. `https://a11oy.net/tawantin` (equivalently `https://a11oy.net/fabric`) — the unified **TAWANTIN** Governed Distributed Compute Fabric view
-2. `https://killinchu.a11oy.net/elite` — the counter-UAS operator app (Receipt Ledger & Verify view ready)
+1. `https://a-11-oy.com/tawantin` (equivalently `https://a-11-oy.com/fabric`) — the unified **TAWANTIN** Governed Distributed Compute Fabric view
+2. `https://killinchu.a-11-oy.com/elite` — the counter-UAS operator app (Receipt Ledger & Verify view ready)
 3. A terminal with this one-liner staged (the signed-receipt verify):
    ```bash
-   curl -s -X POST https://a11oy.net/api/a11oy/khipu/verify \
+   curl -s -X POST https://a-11-oy.com/api/a11oy/khipu/verify \
      -H 'content-type: application/json' -d '{}' | python3 -m json.tool
    ```
 
 Sanity check (silent, off-stage):
 ```bash
-curl -s -o /dev/null -w "%{http_code}\n" https://a11oy.net/fabric            # expect 200
-curl -s -o /dev/null -w "%{http_code}\n" https://a11oy.net/api/a11oy/v1/compute-pool-hardened  # expect 200
-curl -s -o /dev/null -w "%{http_code}\n" https://killinchu.a11oy.net/elite    # expect 200
+curl -s -o /dev/null -w "%{http_code}\n" https://a-11-oy.com/fabric            # expect 200
+curl -s -o /dev/null -w "%{http_code}\n" https://a-11-oy.com/api/a11oy/v1/compute-pool-hardened  # expect 200
+curl -s -o /dev/null -w "%{http_code}\n" https://killinchu.a-11-oy.com/elite    # expect 200
 ```
 
 If the energy band shows "source unavailable, shown honestly empty," that is **correct behavior**, not a failure — the energy exporter intermittently remounts during deploy churn and the page never fabricates. Narrate it as a feature (see Beat 3).
@@ -39,7 +39,7 @@ If the energy band shows "source unavailable, shown honestly empty," that is **c
 > Total: 5 beats. Target 75s. Each beat has a **say** line (≤2 sentences) and an **honesty anchor** you point at on screen.
 
 ### Beat 1 — The thesis + the live fabric (0:00–0:18) · tab 1 `/tawantin`
-- **Click:** already on `https://a11oy.net/tawantin`. Scroll to "1 · Fabric at a glance."
+- **Click:** already on `https://a-11-oy.com/tawantin`. Scroll to "1 · Fabric at a glance."
 - **Say:** "This is **TAWANTIN** — Quechua for *the four united parts* — a sovereign GPU mesh running *right now*: a laptop RTX, an OMEN tower, the **Chaski** messenger node, plus cloud failover, all united under one governed OpenAI-compatible router. Every figure is honestly labeled, and reachability is a real TCP probe this sweep."
 - **Point at:** the KPI tiles — `nodes total 7 · reachable 6 · sovereign GPU reachable 2` (LIVE). These come from `/api/a11oy/v1/compute-pool-hardened`, a real probe.
 - **Honesty anchor:** OMEN shows **unreachable this sweep (honest: timeout)** — *"We show you the node that's down and why. We never fabricate reachability."*
@@ -64,7 +64,7 @@ If the energy band shows "source unavailable, shown honestly empty," that is **c
 - **Honesty anchor (turn the empty-payload result into a strength):** "I sent an empty payload, so it honestly returns `verified: false — missing payload`. It will never green-light something it can't check — *and the verify operation itself emits its own signed receipt* (`verify_receipt_digest`). The auditor is audited."
 
 ### Beat 5 — The frontier result + orbital-as-ROADMAP (1:05–1:20) · tab 2 `/elite`
-- **Click:** switch to `https://killinchu.a11oy.net/elite`; open **"⛉ Receipt Ledger & Verify"** view (or point at the "8 formulas formally proven" / "Trust score = conjecture" badges on the hero).
+- **Click:** switch to `https://killinchu.a-11-oy.com/elite`; open **"⛉ Receipt Ledger & Verify"** view (or point at the "8 formulas formally proven" / "Trust score = conjecture" badges on the hero).
 - **Say:** "Same governed substrate drives counter-UAS: a DSSE receipt per interdiction, a 3-of-4 Khipu quorum, effectors **simulated, human-on-loop**. Underneath it all is a frontier result — **exactly 8 Lean-proven formulas at kernel c7c0ba17**, with Λ-uniqueness held as **Conjecture 1**, not an over-claimed theorem, plus a live open bounty for the unconditional case."
 - **Close (orbital frame):** "That whole **TAWANTIN** substrate — the four united parts — is the proven terrestrial core. Orbital is the clearly-labeled **ROADMAP** it was built for — we prove on real metal what the orbital-architecture crowd only asserts. We do not run satellites."
 - **Honesty anchor:** the on-screen `Trust score = conjecture (not proven)` and `8 formulas formally proven` badges — proof and honesty in the same frame.
@@ -73,7 +73,7 @@ If the energy band shows "source unavailable, shown honestly empty," that is **c
 
 ## 2. The one-breath version (if you only get 30 seconds)
 
-"**TAWANTIN** — *the four united parts* — is a sovereign GPU mesh, live, under one governed router at `a11oy.net/tawantin`. No fused VRAM, horizontal scaling, every node's reachability a real probe. Joules MEASURED per job, every decision relayed by **Chaski** and a signed **Khipu** receipt you can verify against our public key. Eight Lean-proven formulas; Λ-uniqueness held honestly as a conjecture with an open bounty. Orbital is the labeled roadmap — we prove on real metal what others assert."
+"**TAWANTIN** — *the four united parts* — is a sovereign GPU mesh, live, under one governed router at `a-11-oy.com/tawantin`. No fused VRAM, horizontal scaling, every node's reachability a real probe. Joules MEASURED per job, every decision relayed by **Chaski** and a signed **Khipu** receipt you can verify against our public key. Eight Lean-proven formulas; Λ-uniqueness held honestly as a conjecture with an open bounty. Orbital is the labeled roadmap — we prove on real metal what others assert."
 
 ---
 
@@ -121,7 +121,7 @@ support     a11oy /api/health  &  /api/a11oy/v1/honest    HTTP 200  749/14/163 @
 
 ## 6. Deployability — the TAWANTIN Zarf/UDS bundle
 
-The live demo (`a11oy.net/tawantin` + `killinchu.a11oy.net/elite`) is reachable today; the **TAWANTIN** UDS bundle (`bundles/tawantin`, commit `4b6fbbcf`) is the package that closes the Warhacker **deployability** gap. It composes the fabric story — the a11oy sovereign GPU-mesh governed router, the energy-per-successful-goal signal, and the **Khipu** signed-receipt chain — into **one airgap-deployable, cosign-signable** OCI bundle:
+The live demo (`a-11-oy.com/tawantin` + `killinchu.a-11-oy.com/elite`) is reachable today; the **TAWANTIN** UDS bundle (`bundles/tawantin`, commit `4b6fbbcf`) is the package that closes the Warhacker **deployability** gap. It composes the fabric story — the a11oy sovereign GPU-mesh governed router, the energy-per-successful-goal signal, and the **Khipu** signed-receipt chain — into **one airgap-deployable, cosign-signable** OCI bundle:
 
 ```text
 uds deploy oci://ghcr.io/szl-holdings/tawantin-bundle:0.1.0 --confirm

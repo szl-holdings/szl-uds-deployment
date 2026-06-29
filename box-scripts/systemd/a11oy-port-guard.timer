@@ -1,5 +1,5 @@
 [Unit]
-Description=Periodically guard a11oy.net's 80/443 against the k3d serverlb
+Description=Periodically guard a-11-oy.com's 80/443 against the k3d serverlb
 
 [Timer]
 # First check shortly after boot, then every 2 minutes thereafter.

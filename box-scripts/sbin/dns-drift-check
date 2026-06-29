@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# dns-drift-check — watch a11oy.net's public DNS for drift on Stephen's box
+# dns-drift-check — watch a-11-oy.com's public DNS for drift on Stephen's box
 # (167.233.50.75). EasyWP silently grabbed the apex once (an ALIAS to
 # ingress-euterpe.easywp.com + a www CNAME + email-forwarding MX), which would
 # have quietly taken the public site offline. Now that DNS is under programmatic
@@ -8,7 +8,7 @@
 # and warns before users notice.
 #
 # WHAT IT CHECKS (all via a PUBLIC resolver, dig @8.8.8.8 — never the box's own):
-#   1. a11oy.net, www, killinchu, elite each still A-resolve to 167.233.50.75.
+#   1. a-11-oy.com, www, killinchu, elite each still A-resolve to 167.233.50.75.
 #   2. SPF  "v=spf1 ... -all"  is still present on the apex TXT.
 #   3. DMARC "p=reject"        is still present on _dmarc TXT.
 #
@@ -35,9 +35,9 @@ set -uo pipefail
 # ---- config (overridable via env for testing) -------------------------------
 EXPECT_IP="${EXPECT_IP:-167.233.50.75}"
 RESOLVER="${RESOLVER:-8.8.8.8}"
-DOMAIN="${DOMAIN:-a11oy.net}"
+DOMAIN="${DOMAIN:-a-11-oy.com}"
 # Hostnames that must A-resolve to the box.
-HOSTS="${HOSTS:-a11oy.net www.a11oy.net killinchu.a11oy.net elite.a11oy.net}"
+HOSTS="${HOSTS:-a-11-oy.com www.a-11-oy.com killinchu.a-11-oy.com elite.a-11-oy.com}"
 # Substrings that must appear (case-insensitive) in the relevant TXT records.
 EXPECT_SPF="${EXPECT_SPF:-v=spf1}"          # plus the -all hard-fail below
 EXPECT_SPF_ALL="${EXPECT_SPF_ALL:--all}"
@@ -132,9 +132,9 @@ emit_alert() {
 
 if [ "${#problems[@]}" -eq 0 ] || [ -z "${problems[0]:-}" ]; then
   if [ -n "$prev_sig" ]; then
-    rec="a11oy.net DNS healthy again (all A->$EXPECT_IP, SPF -all + DMARC p=reject present)"
+    rec="a-11-oy.com DNS healthy again (all A->$EXPECT_IP, SPF -all + DMARC p=reject present)"
     log "RECOVERED $rec"
-    push "a11oy.net DNS RECOVERED: $rec"
+    push "a-11-oy.com DNS RECOVERED: $rec"
     rm -f "$SIG_FILE"
   fi
 else
@@ -143,7 +143,7 @@ else
   if [ "$cur_sig" = "$prev_sig" ]; then
     log "(persisting) $problem_text"
   else
-    emit_alert "a11oy.net DNS DRIFT: $problem_text. Re-apply clean set: /opt/dns/dns-drift-reapply.sh"
+    emit_alert "a-11-oy.com DNS DRIFT: $problem_text. Re-apply clean set: /opt/dns/dns-drift-reapply.sh"
     printf '%s' "$cur_sig" >"$SIG_FILE"
   fi
 fi

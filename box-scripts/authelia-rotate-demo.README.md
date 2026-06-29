@@ -1,9 +1,9 @@
 # authelia-rotate-demo — rotate the public read-only demo login
 
-Box `167.233.50.75`. The a11oy.net Authelia SSO has a password-only, read-only
+Box `167.233.50.75`. The a-11-oy.com Authelia SSO has a password-only, read-only
 `demo` account (group `guests`) meant to be shared publicly (e.g. a LinkedIn
-link) so anyone can try the live UDS dashboard at https://a11oy.net/uds/ and the
-status page at https://a11oy.net/status/. A publicly posted password will
+link) so anyone can try the live UDS dashboard at https://a-11-oy.com/uds/ and the
+status page at https://a-11-oy.com/status/. A publicly posted password will
 eventually be scraped/abused, so it must be cheap to rotate.
 
 ## One command
@@ -24,7 +24,7 @@ What a rotation does, end to end:
 4. Restarts the `authelia` container so the file backend reloads.
 5. Verifies the NEW password authenticates (HTTP 200) and the OLD one no longer
    does (HTTP 401) via the firstfactor API. Localhost calls send
-   `Host`/`X-Forwarded-*` for `a11oy.net` so Authelia's session-cookie domain
+   `Host`/`X-Forwarded-*` for `a-11-oy.com` so Authelia's session-cookie domain
    matches the request URL — otherwise 1FA fails with "no configured session
    cookie domain matches ...".
 6. Records the new password to `/opt/authelia/demo-password.txt` (root-only,
@@ -55,4 +55,4 @@ service/timer to `/etc/systemd/system/`, and enables the monthly timer.
 
 `AUTHELIA_DIR=/opt/authelia`, `USERS_DB=$AUTHELIA_DIR/users_database.yml`,
 `PW_FILE=$AUTHELIA_DIR/demo-password.txt`, `AUTHELIA_IMAGE=authelia/authelia:4.38`,
-`AUTHELIA_CONTAINER=authelia`, `VERIFY_DOMAIN=a11oy.net`.
+`AUTHELIA_CONTAINER=authelia`, `VERIFY_DOMAIN=a-11-oy.com`.
