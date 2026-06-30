@@ -10,5 +10,5 @@
 cryptography==49.0.0
 
 # Real OpenTelemetry spans exported via OTLP/gRPC (PhD Systems Scope 9 fix).
-opentelemetry-sdk==1.42.1
-opentelemetry-exporter-otlp-proto-grpc==1.42.1
+opentelemetry-sdk==1.43.0
+opentelemetry-exporter-otlp-proto-grpc==1.43.0
