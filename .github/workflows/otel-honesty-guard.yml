@@ -1,0 +1,42 @@
+# Copyright 2026 SZL Holdings
+# SPDX-License-Identifier: Apache-2.0
+#
+# otel-honesty-guard.yml — fail the build if szl-receipts advertises tracing ON
+# without a collector to receive the spans.
+#
+# charts/szl-receipts/values.yaml once shipped `otel.enabled: true` with a
+# "KEEP enabled: true" comment while NOTHING collected the spans (no
+# opentelemetry-collector deployed), so the OTLP exporter retried-and-dropped
+# forever — the chart read "tracing ON" but did nothing. This guard stops that
+# drift from creeping back: `otel.enabled: true` is only allowed when a real
+# collector manifest exists in the repo (kind: OpenTelemetryCollector, or a
+# workload running a collector image). The client-side endpoint STRING does not
+# count as evidence a collector is deployed.
+#
+# The check logic lives in scripts/otel-honesty-checks.sh (pure awk/grep, no
+# cluster needed) so it can be unit-tested: scripts/otel-honesty-checks.test.sh
+# feeds it the dishonest state (enabled:true, no collector) and asserts the
+# check FAILS, plus asserts the honest states PASS. The shared
+# run-checks-then-self-test scaffolding lives in guard-scaffold.yml; this
+# workflow is a thin caller. The self-test gates the guard run, so a future edit
+# that neuters the check (green while guarding nothing) is caught first.
+
+name: OTel Honesty Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    uses: ./.github/workflows/guard-scaffold.yml
+    with:
+      test-command: bash scripts/otel-honesty-checks.test.sh
+      checks-command: bash scripts/otel-honesty-checks.sh
+      checks-args: "otel_honest"
+      success-message: "szl-receipts tracing setting is honest: otel.enabled only claims what the repo can back up."
