@@ -32,6 +32,7 @@
 #
 # --force          : restore even if the target Vault is already initialised
 #                    (default refuses, to avoid clobbering a real Vault).
+#                    Unknown or invalid initialization state always refuses.
 # --refresh-box-init : after a successful restore, copy the snapshot's shares to
 #                    the box auto-unseal source (default /root/vault-init/init.json)
 #                    so the vault-auto-unseal timer uses matching shares.
@@ -91,10 +92,16 @@ if [[ -s "$META" ]]; then
     log "snapshot integrity OK ($GOT_SHA)"
   fi
   if [[ -z "$EXPECT_PUBKEY" ]]; then
-    EXPECT_PUBKEY="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("transit_pubkey",""))' "$META" 2>/dev/null || true)"
+    EXPECT_PUBKEY="$(python3 -c 'import json,sys
+v=json.load(open(sys.argv[1])).get("transit_pubkey")
+print(v if isinstance(v,str) else "")' "$META" 2>/dev/null || true)"
   fi
 fi
 [[ -z "$EXPECT_PUBKEY" && -s "$BDIR/pubkey.txt" ]] && EXPECT_PUBKEY="$(head -1 "$BDIR/pubkey.txt")"
+[[ "$EXPECT_PUBKEY" =~ [^[:space:]] ]] || {
+  echo "ERROR: no nonempty expected public key; refusing an unverifiable restore." >&2
+  exit 1
+}
 
 # 2) Wait for a Running Vault pod.
 log "waiting for a Running Vault pod in ns '$NS'..."
@@ -107,12 +114,40 @@ done
 [[ -n "${POD:-}" ]] || { echo "ERROR: no Running Vault pod in ns '$NS'" >&2; exit 1; }
 log "target pod: $NS/$POD"
 
-# 3) Refuse to clobber an already-initialised Vault unless --force.
-INITIALIZED="$(kubectl -n "$NS" exec "$POD" -- sh -c \
-  'vault status -format=json 2>/dev/null || true' | \
-  python3 -c 'import json,sys
-try: print(str(json.load(sys.stdin).get("initialized")).lower())
-except Exception: print("unknown")' 2>/dev/null || echo unknown)"
+# 3) Require an observed, typed initialization state, including with --force.
+# Vault status uses exit 2 for a sealed Vault. Normalize only that documented
+# status inside the pod; a failed kubectl invocation must still fail closed.
+if ! STATUS_JSON="$(kubectl -n "$NS" exec "$POD" -- sh -c '
+  vault status -format=json 2>/dev/null
+  rc=$?
+  case "$rc" in 0|2) exit 0;; *) exit "$rc";; esac
+')"; then
+  echo "ERROR: target Vault status unavailable; refusing storage replacement." >&2
+  exit 1
+fi
+if ! INITIALIZED="$(printf '%s' "$STATUS_JSON" | python3 -c '
+import json,sys
+def reject_constant(_):
+    raise ValueError("non-JSON constant")
+def unique_object(pairs):
+    result={}
+    for key,value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON member")
+        result[key]=value
+    return result
+try:
+    status=json.load(sys.stdin, object_pairs_hook=unique_object,
+                     parse_constant=reject_constant)
+    if not isinstance(status,dict) or type(status.get("initialized")) is not bool:
+        raise ValueError("initialized must be a JSON boolean")
+    print("true" if status["initialized"] else "false")
+except (ValueError,TypeError):
+    sys.exit(1)
+' 2>/dev/null)"; then
+  echo "ERROR: target Vault initialization state invalid or unknown; refusing storage replacement." >&2
+  exit 1
+fi
 log "target Vault initialized=$INITIALIZED"
 if [[ "$INITIALIZED" == "true" && "$FORCE" != "1" ]]; then
   echo "ERROR: target Vault is already initialised. Refusing to overwrite its" >&2
@@ -174,30 +209,32 @@ log "Vault unsealed."
 RT="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("root_token",""))' "$INIT" 2>/dev/null || true)"
 GOT_PUBKEY=""
 if [[ -n "${RT:-}" ]]; then
-  GOT_PUBKEY="$(kubectl -n "$NS" exec "$POD" -- sh -c \
+  if ! GOT_PUBKEY="$(kubectl -n "$NS" exec "$POD" -- sh -c \
     "VAULT_TOKEN=$RT vault read -format=json $TRANSIT_MOUNT/keys/$TRANSIT_KEY" 2>/dev/null | \
     python3 -c '
 import json,sys
 d=json.load(sys.stdin)["data"]; keys=d.get("keys",{})
 lv=str(d.get("latest_version", max((int(k) for k in keys), default="")))
-print(keys.get(lv,{}).get("public_key",""))
-' 2>/dev/null || true)"
-fi
-
-if [[ -n "$GOT_PUBKEY" ]]; then
-  log "restored transit pubkey: $GOT_PUBKEY"
-  if [[ -n "$EXPECT_PUBKEY" ]]; then
-    if [[ "$GOT_PUBKEY" == "$EXPECT_PUBKEY" ]]; then
-      log "PASS: restored signing key matches the pre-recreate pubkey — old receipts still verify."
-    else
-      echo "ERROR: restored pubkey ($GOT_PUBKEY) != expected ($EXPECT_PUBKEY) — signing key was NOT preserved." >&2
-      exit 1
-    fi
-  else
-    log "WARNING: no expected pubkey recorded; cannot assert a match (key restored, unverified)."
+v=keys.get(lv,{}).get("public_key")
+print(v if isinstance(v,str) else "")
+')"; then
+    echo "ERROR: restored transit public key unavailable; refusing an unverifiable restore." >&2
+    exit 1
   fi
 else
-  log "WARNING: could not read restored transit pubkey to verify the match (continuing)."
+  echo "ERROR: snapshot has no root token; cannot verify the restored transit key." >&2
+  exit 1
+fi
+[[ "$GOT_PUBKEY" =~ [^[:space:]] ]] || {
+  echo "ERROR: restored transit public key empty; refusing an unverifiable restore." >&2
+  exit 1
+}
+log "restored transit pubkey: $GOT_PUBKEY"
+if [[ "$GOT_PUBKEY" == "$EXPECT_PUBKEY" ]]; then
+  log "PASS: restored signing key matches the pre-recreate pubkey — old receipts still verify."
+else
+  echo "ERROR: restored pubkey ($GOT_PUBKEY) != expected ($EXPECT_PUBKEY) — signing key was NOT preserved." >&2
+  exit 1
 fi
 
 # 7) Optionally point the box auto-unseal helper at the restored shares.
