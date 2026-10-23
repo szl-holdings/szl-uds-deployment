@@ -215,27 +215,25 @@ if [[ -n "${RT:-}" ]]; then
 import json,sys
 d=json.load(sys.stdin)["data"]; keys=d.get("keys",{})
 lv=str(d.get("latest_version", max((int(k) for k in keys), default="")))
-v=keys.get(lv,{}).get("public_key")
-print(v if isinstance(v,str) else "")
-')"; then
-    echo "ERROR: restored transit public key unavailable; refusing an unverifiable restore." >&2
+pubkey=keys.get(lv,{}).get("public_key")
+if not isinstance(pubkey,str) or not pubkey.strip():
+    sys.exit(1)
+print(pubkey)
+' 2>/dev/null)"; then
+    echo "ERROR: failed to independently read the restored public key; preservation is unverified." >&2
     exit 1
   fi
-else
-  echo "ERROR: snapshot has no root token; cannot verify the restored transit key." >&2
-  exit 1
 fi
+
 [[ "$GOT_PUBKEY" =~ [^[:space:]] ]] || {
-  echo "ERROR: restored transit public key empty; refusing an unverifiable restore." >&2
+  echo "ERROR: restored public key unavailable; preservation is unverified." >&2
   exit 1
 }
-log "restored transit pubkey: $GOT_PUBKEY"
-if [[ "$GOT_PUBKEY" == "$EXPECT_PUBKEY" ]]; then
-  log "PASS: restored signing key matches the pre-recreate pubkey — old receipts still verify."
-else
-  echo "ERROR: restored pubkey ($GOT_PUBKEY) != expected ($EXPECT_PUBKEY) — signing key was NOT preserved." >&2
+if [[ "$GOT_PUBKEY" != "$EXPECT_PUBKEY" ]]; then
+  echo "ERROR: restored public key differs from expected; signing key was NOT preserved." >&2
   exit 1
 fi
+log "PASS: restored signing public key matches the expected pre-recreate public key."
 
 # 7) Optionally point the box auto-unseal helper at the restored shares.
 if [[ "$REFRESH_BOX_INIT" == "1" ]]; then
@@ -247,5 +245,9 @@ if [[ "$REFRESH_BOX_INIT" == "1" ]]; then
   fi
 fi
 
-printf '%s\n' "${GOT_PUBKEY:-$EXPECT_PUBKEY}" > "$SENTINEL" 2>/dev/null || true
+# Emit preservation evidence only from independently read, matching key bytes.
+if ! printf '%s\n' "$GOT_PUBKEY" > "$SENTINEL" 2>/dev/null; then
+  echo "ERROR: verified key match, but could not write the restore sentinel." >&2
+  exit 1
+fi
 log "restore complete."
