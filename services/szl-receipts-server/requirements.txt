@@ -7,8 +7,8 @@
 # reproducible end state and is the documented follow-up.
 
 # Ed25519 signing (PhD Crypto Finding A2 fix).
-cryptography==49.0.0
+cryptography==50.0.2
 
 # Real OpenTelemetry spans exported via OTLP/gRPC (PhD Systems Scope 9 fix).
-opentelemetry-sdk==1.43.0
-opentelemetry-exporter-otlp-proto-grpc==1.43.0
+opentelemetry-sdk==1.45.1
+opentelemetry-exporter-otlp-proto-grpc==1.45.1
